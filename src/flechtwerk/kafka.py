@@ -55,6 +55,15 @@ class KafkaConsumer(ABC):
         ...
 
     @abstractmethod
+    async def offsets_for_transaction(self) -> tuple[dict, str]:
+        """Return (offsets_dict, group_id) for transactional offset commit.
+
+        The offsets dict maps TopicPartition to the next offset to consume.
+        Used by the producer's send_offsets_to_transaction().
+        """
+        ...
+
+    @abstractmethod
     async def close(self) -> None:
         ...
 
@@ -143,6 +152,16 @@ class AIOKafkaConsumerAdapter(KafkaConsumer):
         if self.consumer is not None:
             await self.consumer.commit()
 
+    async def offsets_for_transaction(self) -> tuple[dict, str]:
+        """Build {TopicPartition: offset} from current consumer positions."""
+        if self.consumer is None:
+            return {}, self.group_id
+        offsets = {}
+        for tp in self.consumer.assignment():
+            offset = await self.consumer.position(tp)
+            offsets[tp] = offset
+        return offsets, self.group_id
+
     async def close(self) -> None:
         if self.consumer is not None:
             await self.consumer.stop()
@@ -202,6 +221,8 @@ class AIOKafkaProducerAdapter(KafkaProducer):
             await consumer.commit()
             return
 
+        offsets, group_id = await consumer.offsets_for_transaction()
+
         async with self.producer.transaction():
             for msg in messages:
                 await self.producer.send(
@@ -210,10 +231,8 @@ class AIOKafkaProducerAdapter(KafkaProducer):
                     value=encode_json(msg.value),
                     timestamp_ms=datetime_to_millis(msg.timestamp),
                 )
-            # Commit consumer offsets within the transaction
-            if isinstance(consumer, AIOKafkaConsumerAdapter) and consumer.consumer:
-                offsets = await consumer.consumer.committed(consumer.consumer.assignment())
-                # aiokafka handles offset commit within transaction context
+            if offsets:
+                await self.producer.send_offsets_to_transaction(offsets, group_id)
 
         log.debug("Transaction committed: %d messages", len(messages))
 

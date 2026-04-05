@@ -27,6 +27,9 @@ class FakeKafkaConsumer(KafkaConsumer):
     async def commit(self) -> None:
         self.committed = True
 
+    async def offsets_for_transaction(self) -> tuple[dict, str]:
+        return {}, "fake-group"
+
     async def close(self) -> None:
         pass
 
