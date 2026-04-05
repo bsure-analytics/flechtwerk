@@ -91,15 +91,19 @@ class TransformerRunner:
 
     async def run(self) -> None:
         """Main event loop. Consumes messages and processes them sequentially."""
-        async with self.transformer:
-            await self.consumer.subscribe(self.transformer.input_topics)
+        try:
+            async with self.transformer:
+                await self.consumer.subscribe(self.transformer.input_topics)
 
-            while True:
-                messages = await self.consumer.poll(timeout=1.0)
-                if not messages:
-                    continue
-                for msg in messages:
-                    await self.process_one(msg)
+                while True:
+                    messages = await self.consumer.poll(timeout=1.0)
+                    if not messages:
+                        continue
+                    for msg in messages:
+                        await self.process_one(msg)
+        finally:
+            await self.consumer.close()
+            await self.producer.close()
 
     async def process_one(self, msg: IncomingMessage[dict]) -> None:
         """Process a single incoming message with exactly-once semantics."""

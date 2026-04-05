@@ -90,28 +90,32 @@ class ExtractorRunner:
 
     async def run(self) -> None:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs."""
-        async with self.extractor:
-            await self.consumer.subscribe(self.extractor.input_topics)
-            await self.load_initial_configs()
+        try:
+            async with self.extractor:
+                await self.consumer.subscribe(self.extractor.input_topics)
+                await self.load_initial_configs()
 
-            while True:
-                await self.check_config_updates()
-                active = {
-                    k: v for k, v in self.configs.items()
-                    if not v.get(SUSPENDED)
-                }
-                if active:
-                    log.debug("Polling %d active config(s)", len(active))
-                    results = await asyncio.gather(
-                        *(self.poll_one(k, v) for k, v in active.items()),
-                        return_exceptions=True,
-                    )
-                    for key, result in zip(active.keys(), results):
-                        if isinstance(result, Exception):
-                            log.error("Poll failed for key %s", key, exc_info=result)
-                            raise result
+                while True:
+                    await self.check_config_updates()
+                    active = {
+                        k: v for k, v in self.configs.items()
+                        if not v.get(SUSPENDED)
+                    }
+                    if active:
+                        log.debug("Polling %d active config(s)", len(active))
+                        results = await asyncio.gather(
+                            *(self.poll_one(k, v) for k, v in active.items()),
+                            return_exceptions=True,
+                        )
+                        for key, result in zip(active.keys(), results):
+                            if isinstance(result, Exception):
+                                log.error("Poll failed for key %s", key, exc_info=result)
+                                raise result
 
-                await asyncio.sleep(self.poll_interval.total_seconds())
+                    await asyncio.sleep(self.poll_interval.total_seconds())
+        finally:
+            await self.consumer.close()
+            await self.producer.close()
 
     async def load_initial_configs(self) -> None:
         """Read all existing configs from the topic on startup."""

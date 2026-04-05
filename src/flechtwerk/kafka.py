@@ -47,7 +47,7 @@ class KafkaConsumer(ABC):
         ...
 
     @abstractmethod
-    async def poll(self, timeout: float = 1.0) -> list[IncomingMessage]:
+    async def poll(self, timeout: float = 1.0) -> list[IncomingMessage[dict[str, Any]]]:
         ...
 
     @abstractmethod
@@ -126,7 +126,7 @@ class AIOKafkaConsumerAdapter(KafkaConsumer):
         await self.consumer.start()
         log.info("Subscribed to %s as group %s", topics, self.group_id)
 
-    async def poll(self, timeout: float = 1.0) -> list[IncomingMessage]:
+    async def poll(self, timeout: float = 1.0) -> list[IncomingMessage[dict[str, Any]]]:
         if self.consumer is None:
             return []
         records = await self.consumer.getmany(timeout_ms=int(timeout * 1000))
@@ -216,7 +216,7 @@ class AIOKafkaProducerAdapter(KafkaProducer):
             await self.start()
 
         if not self.transactional_id:
-            # Fallback to at-least-once
+            log.warning("No transactional_id — falling back to at-least-once delivery")
             await self.send_batch(messages)
             await consumer.commit()
             return
@@ -231,8 +231,7 @@ class AIOKafkaProducerAdapter(KafkaProducer):
                     value=encode_json(msg.value),
                     timestamp_ms=datetime_to_millis(msg.timestamp),
                 )
-            if offsets:
-                await self.producer.send_offsets_to_transaction(offsets, group_id)
+            await self.producer.send_offsets_to_transaction(offsets, group_id)
 
         log.debug("Transaction committed: %d messages", len(messages))
 
