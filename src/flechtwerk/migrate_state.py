@@ -1,26 +1,38 @@
 """Bytewax → fretworx state migration.
 
-Reads Bytewax SQLite recovery databases, extracts pickled state and Kafka offsets,
-writes state to RocksDB and commits offsets to fretworx's Kafka consumer group.
+Reads Bytewax SQLite recovery databases, extracts pickled state and Kafka
+offsets, writes state to RocksDB, and commits offsets to fretworx's Kafka
+consumer group.
 
-Called automatically by the fretworx runner on first startup when SQLite state exists.
-Also usable standalone:
+Bytewax does not use Kafka consumer groups (group.id="BYTEWAX_IGNORED").
+It stores per-partition offsets in its SQLite recovery database as ints
+keyed by "{partition_idx}-{topic}". This script extracts those offsets
+and commits them to the fretworx consumer group so transformers resume
+from where Bytewax left off.
+
+Called automatically by the fretworx runner on first startup when SQLite
+state exists. Also usable standalone:
     python -m fretworx.migrate_state --state-dir /data --brokers localhost:9092 \
         --consumer-group ds-sumup-extractor
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import pickle
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# Bytewax partition key format: "{partition_idx}-{topic}"
+BYTEWAX_PARTITION_KEY = re.compile(r"^(\d+)-(.+)$")
 
 
 class MigrationEncoder(json.JSONEncoder):
@@ -38,18 +50,20 @@ class MigrationEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def read_bytewax_sqlite(sqlite_path: Path) -> dict[str, Any]:
-    """Read the latest state snapshot from a Bytewax SQLite recovery database.
+def read_bytewax_sqlite(sqlite_path: Path) -> tuple[dict[str, Any], dict[str, int]]:
+    """Read state and Kafka offsets from a Bytewax SQLite recovery database.
 
-    Bytewax stores state as pickled Python objects. The table structure is
-    internal to Bytewax and may vary between versions.
+    Returns (states, offsets) where:
+    - states: {key: state_dict} — application state for RocksDB
+    - offsets: {"{partition_idx}-{topic}": offset_int} — Kafka partition offsets
     """
-    states = {}
+    states: dict[str, Any] = {}
+    offsets: dict[str, int] = {}
+
     try:
         conn = sqlite3.connect(str(sqlite_path))
         cursor = conn.cursor()
 
-        # Bytewax stores snapshots in a table; get the latest
         tables = cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
@@ -59,18 +73,23 @@ def read_bytewax_sqlite(sqlite_path: Path) -> dict[str, Any]:
             try:
                 rows = cursor.execute(f"SELECT * FROM \"{table_name}\"").fetchall()  # noqa: S608
                 for row in rows:
-                    # Bytewax stores (step_id, key, state_bytes) or similar
                     for cell in row:
                         if isinstance(cell, bytes):
                             try:
                                 unpickled = pickle.loads(cell)  # noqa: S301
                                 if isinstance(unpickled, dict):
-                                    states.update(unpickled)
+                                    # Could be application state or a batch of {key: value} pairs
+                                    for k, v in unpickled.items():
+                                        if isinstance(k, str) and isinstance(v, int) and BYTEWAX_PARTITION_KEY.match(k):
+                                            offsets[k] = v
+                                        elif isinstance(k, str) and isinstance(v, dict):
+                                            states[k] = v
                                 elif isinstance(unpickled, (list, tuple)) and len(unpickled) == 2:
-                                    # Could be (key, state) tuple
                                     k, v = unpickled
                                     if isinstance(k, str) and isinstance(v, dict):
                                         states[k] = v
+                                    elif isinstance(k, str) and isinstance(v, int) and BYTEWAX_PARTITION_KEY.match(k):
+                                        offsets[k] = v
                             except (pickle.UnpicklingError, TypeError, ValueError):
                                 pass
             except sqlite3.OperationalError:
@@ -80,7 +99,52 @@ def read_bytewax_sqlite(sqlite_path: Path) -> dict[str, Any]:
     except sqlite3.DatabaseError:
         log.warning("Could not open SQLite database: %s", sqlite_path)
 
-    return states
+    return states, offsets
+
+
+async def commit_consumer_offsets(
+    brokers: list[str],
+    consumer_group: str,
+    offsets: dict[str, int],
+) -> None:
+    """Commit Bytewax partition offsets to the fretworx consumer group.
+
+    Bytewax stores offsets as {"{partition_idx}-{topic}": offset_int}.
+    This converts them to Kafka TopicPartition objects and commits them.
+    """
+    from aiokafka import AIOKafkaConsumer as AIOConsumer
+    from aiokafka import TopicPartition
+
+    # Parse Bytewax offset keys into TopicPartition objects
+    tp_offsets: dict[TopicPartition, int] = {}
+    for key, offset in offsets.items():
+        match = BYTEWAX_PARTITION_KEY.match(key)
+        if match:
+            partition_idx = int(match.group(1))
+            topic = match.group(2)
+            tp_offsets[TopicPartition(topic, partition_idx)] = offset
+
+    if not tp_offsets:
+        log.warning("No valid partition offsets found — skipping Kafka offset commit")
+        return
+
+    # Extract unique topics for subscription
+    topics = sorted({tp.topic for tp in tp_offsets})
+
+    consumer = AIOConsumer(
+        *topics,
+        bootstrap_servers=",".join(brokers),
+        group_id=consumer_group,
+        enable_auto_commit=False,
+    )
+    await consumer.start()
+
+    try:
+        await consumer.commit(tp_offsets)
+        for tp, offset in sorted(tp_offsets.items(), key=lambda x: (x[0].topic, x[0].partition)):
+            log.info("Committed offset %d for %s/%d in group %s", offset, tp.topic, tp.partition, consumer_group)
+    finally:
+        await consumer.stop()
 
 
 def migrate_bytewax_to_fretworx(
@@ -88,7 +152,7 @@ def migrate_bytewax_to_fretworx(
     brokers: list[str],
     consumer_group: str,
 ) -> None:
-    """Migrate Bytewax SQLite state to fretworx RocksDB state store."""
+    """Migrate Bytewax SQLite state to fretworx RocksDB and commit Kafka offsets."""
     state_path = Path(state_dir)
     sqlite_files = sorted(state_path.glob("part-*.sqlite3"))
 
@@ -98,33 +162,37 @@ def migrate_bytewax_to_fretworx(
 
     log.info("Found %d SQLite recovery database(s) in %s", len(sqlite_files), state_dir)
 
-    # Collect state from all partition files
+    # Collect state and offsets from all partition files
     all_states: dict[str, Any] = {}
+    all_offsets: dict[str, int] = {}
     for sqlite_file in sqlite_files:
         log.info("Reading %s", sqlite_file.name)
-        partition_states = read_bytewax_sqlite(sqlite_file)
+        partition_states, partition_offsets = read_bytewax_sqlite(sqlite_file)
         all_states.update(partition_states)
+        all_offsets.update(partition_offsets)
 
-    if not all_states:
-        log.info("No state found in SQLite databases — nothing to migrate")
-        return
+    # Write state to RocksDB
+    if all_states:
+        from .state import RocksDBStateStore
 
-    # Write to RocksDB
-    from .state import RocksDBStateStore
-
-    rocksdb_path = os.path.join(state_dir, "fretworx")
-    store = RocksDBStateStore(rocksdb_path)
-    try:
-        for key, state in all_states.items():
-            if isinstance(state, dict):
+        rocksdb_path = os.path.join(state_dir, "fretworx")
+        store = RocksDBStateStore(rocksdb_path)
+        try:
+            for key, state in all_states.items():
                 store.put(key, state)
                 log.info("Migrated state for key: %s", key)
-            else:
-                log.warning("Skipping non-dict state for key %s: %s", key, type(state))
-    finally:
-        store.close()
+        finally:
+            store.close()
+        log.info("State migration complete: %d state(s) written to %s", len(all_states), rocksdb_path)
+    else:
+        log.info("No application state found in SQLite databases")
 
-    log.info("Migration complete: %d state(s) written to %s", len(all_states), rocksdb_path)
+    # Commit Kafka offsets
+    if all_offsets:
+        log.info("Found %d Kafka partition offset(s) — committing to group %s", len(all_offsets), consumer_group)
+        asyncio.run(commit_consumer_offsets(brokers, consumer_group, all_offsets))
+    else:
+        log.warning("No Kafka offsets found in SQLite databases — transformer may reprocess from earliest")
 
 
 def main() -> None:
@@ -135,8 +203,11 @@ def main() -> None:
     parser.add_argument("--state-dir", required=True)
     args = parser.parse_args()
 
-    brokers = args.brokers.split(",")
-    migrate_bytewax_to_fretworx(args.state_dir, brokers, args.consumer_group)
+    migrate_bytewax_to_fretworx(
+        args.state_dir,
+        args.brokers.split(","),
+        args.consumer_group,
+    )
 
 
 if __name__ == "__main__":
