@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import AsyncIterator
 
 from .kafka import KafkaConsumer, KafkaProducer
@@ -11,41 +11,67 @@ from .types import Event, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
+TransformFn = Callable[[IncomingMessage[Event], State], AsyncIterator[Message]]
+KeyFn = Callable[[IncomingMessage[Event]], str]
 
-class Transformer(ABC):
-    """Base class for event transformers (stateless or stateful).
 
-    Subclass contract:
-    - Set `input_topics` to the Kafka topic(s) to consume
-    - Override `transform()` to yield output Messages
-    - Set `stateful = True` if the transformer maintains per-key state
-    - Optionally override `key_fn()`, `__aenter__`/`__aexit__`
+class Transformer:
+    """Event transformer (stateless or stateful).
+
+    Can be used directly with a transform function::
+
+        transformer = Transformer(
+            input_topics=["my-topic"],
+            transform=my_transform_fn,
+        )
+
+    Or subclassed for lifecycle management (HTTP clients, dedup instances)::
+
+        class MyTransformer(Transformer):
+            async def __aenter__(self):
+                self.http = httpx.AsyncClient()
+                return self
+
+            async def __aexit__(self, *exc_info):
+                await self.http.aclose()
+
+            async def transform(self, msg, state):
+                ...
     """
 
     input_topics: list[str]
     stateful: bool = False
 
+    def __init__(
+        self,
+        *,
+        input_topics: list[str] | None = None,
+        transform: TransformFn | None = None,
+        key_fn: KeyFn | None = None,
+        stateful: bool | None = None,
+    ):
+        if input_topics is not None:
+            self.input_topics = input_topics
+        if stateful is not None:
+            self.stateful = stateful
+        if transform is not None:
+            self.transform = transform
+        if key_fn is not None:
+            self.key_fn = key_fn
+
     def key_fn(self, msg: IncomingMessage[Event]) -> str:
         """Extract partition key for stateful processing. Default: message key."""
         return msg.key
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Transformer:
         return self
 
-    async def __aexit__(self, *exc_info):
+    async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    @abstractmethod
     async def transform(self, msg: IncomingMessage[Event], state: State) -> AsyncIterator[Message]:
-        """Transform an incoming message into zero or more output Messages.
-
-        For stateful=False: state is an empty dict (ignored by convention).
-        For stateful=True: state is a mutable dict scoped to key_fn(msg).
-            Mutate in place; the framework persists after successful completion.
-        For transformers with no async I/O, simply don't await anything.
-        """
-        ...
-        yield  # pragma: no cover — make this a valid async generator
+        """Transform an incoming message into zero or more output Messages."""
+        raise NotImplementedError("Provide a transform function or override in a subclass")
 
 
 class TransformerRunner:

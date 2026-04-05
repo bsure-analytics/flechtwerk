@@ -50,10 +50,10 @@ class Extractor(ABC):
         """
         return config
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Extractor:
         return self
 
-    async def __aexit__(self, *exc_info):
+    async def __aexit__(self, *exc_info: object) -> None:
         pass
 
     @abstractmethod
