@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .types import State
+
 log = logging.getLogger(__name__)
 
 
@@ -40,11 +42,11 @@ class StateStore(ABC):
     """Port: persistent key-value state store."""
 
     @abstractmethod
-    def get(self, key: str) -> dict[str, Any] | None:
+    def get(self, key: str) -> State | None:
         ...
 
     @abstractmethod
-    def put(self, key: str, state: dict[str, Any]) -> None:
+    def put(self, key: str, state: State) -> None:
         ...
 
     @abstractmethod
@@ -72,14 +74,14 @@ class RocksDBStateStore(StateStore):
         self.db = Rdict(db_path)
         log.info("Opened RocksDB state store at %s", db_path)
 
-    def get(self, key: str) -> dict[str, Any] | None:
+    def get(self, key: str) -> State | None:
         try:
             raw = self.db[key]
         except KeyError:
             return None
         return json.loads(raw, object_hook=state_decoder_hook)
 
-    def put(self, key: str, state: dict[str, Any]) -> None:
+    def put(self, key: str, state: State) -> None:
         raw = json.dumps(state, cls=StateEncoder, sort_keys=True)
         self.db[key] = raw
 
@@ -98,9 +100,9 @@ class InMemoryStateStore(StateStore):
     """Adapter: in-memory state store for testing."""
 
     def __init__(self):
-        self.store: dict[str, dict[str, Any]] = {}
+        self.store: dict[str, State] = {}
 
-    def get(self, key: str) -> dict[str, Any] | None:
+    def get(self, key: str) -> State | None:
         raw = self.store.get(key)
         if raw is None:
             return None
@@ -108,7 +110,7 @@ class InMemoryStateStore(StateStore):
         serialized = json.dumps(raw, cls=StateEncoder, sort_keys=True)
         return json.loads(serialized, object_hook=state_decoder_hook)
 
-    def put(self, key: str, state: dict[str, Any]) -> None:
+    def put(self, key: str, state: State) -> None:
         self.store[key] = state
 
     def delete(self, key: str) -> None:

@@ -4,11 +4,11 @@ from __future__ import annotations
 import copy
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from .kafka import KafkaConsumer, KafkaProducer
 from .state import StateStore
-from .types import IncomingMessage, Message
+from .types import IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class Transformer(ABC):
 
     @abstractmethod
     async def transform(
-        self, msg: IncomingMessage, state: dict[str, Any] | None,
+        self, msg: IncomingMessage, state: State | None,
     ) -> AsyncIterator[Message]:
         """Transform an incoming message into zero or more output Messages.
 

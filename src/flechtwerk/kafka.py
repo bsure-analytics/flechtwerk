@@ -124,13 +124,18 @@ class AIOKafkaConsumerAdapter(KafkaConsumer):
         result = []
         for tp, msgs in records.items():
             for msg in msgs:
+                try:
+                    value = json.loads(msg.value or "{}")
+                except json.JSONDecodeError:
+                    log.warning("Invalid JSON in message at %s/%d, using {}", msg.topic, msg.offset)
+                    value = {}
                 result.append(IncomingMessage(
                     key=msg.key or "",
                     offset=msg.offset,
                     partition=msg.partition,
                     timestamp=millis_to_datetime(msg.timestamp),
                     topic=msg.topic,
-                    value=msg.value or "",
+                    value=value,
                 ))
         return result
 

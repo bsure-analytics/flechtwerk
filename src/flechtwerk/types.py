@@ -6,6 +6,21 @@ from datetime import datetime
 from typing import Any
 
 
+class Config(dict[str, Any]):
+    """Configuration object read from a Kafka config topic."""
+    pass
+
+
+class Event(dict[str, Any]):
+    """Event object read from or written to a Kafka data topic."""
+    pass
+
+
+class State(dict[str, Any]):
+    """Mutable per-key state managed by the framework."""
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class IncomingMessage:
     """A message read from Kafka."""
@@ -15,7 +30,7 @@ class IncomingMessage:
     partition: int
     timestamp: datetime | None
     topic: str
-    value: str
+    value: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)

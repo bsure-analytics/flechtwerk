@@ -1,6 +1,5 @@
 """Tests for fretworx Transformer and TransformerRunner."""
 import asyncio
-import json
 from typing import Any, AsyncIterator
 
 import pytest
@@ -15,7 +14,7 @@ class PassthroughTransformer(Transformer):
     input_topics = ["input-topic"]
 
     async def transform(self, msg, state) -> AsyncIterator[Message]:
-        event = json.loads(msg.value)
+        event = msg.value
         yield Message(key=msg.key, topic="output-topic", value=event)
 
 
@@ -23,7 +22,7 @@ class FilterTransformer(Transformer):
     input_topics = ["input-topic"]
 
     async def transform(self, msg, state) -> AsyncIterator[Message]:
-        event = json.loads(msg.value)
+        event = msg.value
         if event.get("type") == "wanted":
             yield Message(key=msg.key, topic="output", value=event)
 
@@ -32,7 +31,7 @@ class FanOutTransformer(Transformer):
     input_topics = ["input-topic"]
 
     async def transform(self, msg, state) -> AsyncIterator[Message]:
-        event = json.loads(msg.value)
+        event = msg.value
         for product in event.get("products", []):
             yield Message(key=msg.key, topic="products", value=product)
 
@@ -51,9 +50,7 @@ class StatefulCounterTransformer(Transformer):
         )
 
 
-def make_incoming(key: str = "k", value: dict | str = "", topic: str = "input-topic") -> IncomingMessage:
-    if isinstance(value, dict):
-        value = json.dumps(value)
+def make_incoming(key: str = "k", value: dict = {}, topic: str = "input-topic") -> IncomingMessage:
     return IncomingMessage(
         key=key,
         offset=0,
@@ -111,7 +108,7 @@ def test_stateful_counter():
         t = StatefulCounterTransformer()
         state: dict[str, Any] = {}
 
-        msg = make_incoming(value="{}")
+        msg = make_incoming(value={})
         result = [m async for m in t.transform(msg, state)]
         assert result[0].value["count"] == 1
         assert state["count"] == 1
@@ -148,8 +145,8 @@ def test_transformer_runner_processes_messages():
 def test_transformer_runner_stateful():
     async def run():
         msgs = [
-            make_incoming(key="form1", value="{}"),
-            make_incoming(key="form1", value="{}"),
+            make_incoming(key="form1", value={}),
+            make_incoming(key="form1", value={}),
         ]
         consumer = FakeKafkaConsumer(msgs)
         producer = FakeKafkaProducer()

@@ -26,8 +26,8 @@ def test_incoming_message():
         partition=0,
         timestamp=ts,
         topic="t",
-        value='{"data": 1}',
+        value={"data": 1},
     )
     assert msg.key == "k"
     assert msg.offset == 42
-    assert msg.value == '{"data": 1}'
+    assert msg.value == {"data": 1}

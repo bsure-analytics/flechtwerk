@@ -3,16 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from os import getenv
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from .kafka import KafkaConsumer, KafkaProducer
 from .state import StateStore
-from .types import Message
+from .types import Config, Message, State
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +32,11 @@ class Extractor(ABC):
     input_topics: list[str]
     poll_interval_seconds: int | None = None
 
-    def key_fn(self, config: dict[str, Any]) -> str:
+    def key_fn(self, config: Config) -> str:
         """Extract the partitioning key from a config. Default: config["api_key"]."""
         return config[API_KEY]
 
-    async def enrich(self, config: dict[str, Any]) -> dict[str, Any]:
+    async def enrich(self, config: Config) -> Config:
         """One-time enrichment when a config first arrives or updates.
 
         Called once per config message, NOT on every poll tick.
@@ -45,7 +44,7 @@ class Extractor(ABC):
         """
         return config
 
-    async def pre_poll(self, config: dict[str, Any]) -> dict[str, Any]:
+    async def pre_poll(self, config: Config) -> Config:
         """Per-cycle enrichment before each poll invocation.
 
         Called on every poll tick. Override for e.g. TillHub token refresh.
@@ -59,7 +58,7 @@ class Extractor(ABC):
         pass
 
     @abstractmethod
-    async def poll(self, state: dict[str, Any], config: dict[str, Any]) -> AsyncIterator[Message]:
+    async def poll(self, state: State, config: Config) -> AsyncIterator[Message]:
         """Poll an external API. Mutate state in place. Yield Messages.
 
         The framework passes a defensive copy of state. On successful completion
@@ -67,7 +66,7 @@ class Extractor(ABC):
         crash, the copy is discarded and the last-persisted state is retained.
         """
         ...
-        yield  # pragma: no cover — make this a valid async generator
+        yield  # pragma: no cover
 
 
 class ExtractorRunner:
@@ -84,7 +83,7 @@ class ExtractorRunner:
         self.consumer = consumer
         self.producer = producer
         self.state_store = state_store
-        self.configs: dict[str, dict[str, Any]] = {}
+        self.configs: dict[str, Config] = {}
         self.poll_interval = timedelta(
             seconds=extractor.poll_interval_seconds
             or int(getenv("POLL_INTERVAL_SECONDS", "60"))
@@ -131,14 +130,8 @@ class ExtractorRunner:
         for msg in messages:
             await self.apply_config(msg.key, msg.value)
 
-    async def apply_config(self, key: str, raw_value: str) -> None:
-        """Parse, enrich, and store a config update."""
-        try:
-            config = json.loads(raw_value or "{}")
-        except json.JSONDecodeError:
-            log.error("Skipping config with key %s: not valid JSON", key)
-            return
-
+    async def apply_config(self, key: str, config: Config) -> None:
+        """Enrich and store a config update."""
         if not config:
             if key in self.configs:
                 del self.configs[key]
@@ -150,7 +143,7 @@ class ExtractorRunner:
         self.configs[key] = config
         log.info("%s config for key %s", "Updated" if present else "Added", key)
 
-    async def poll_one(self, key: str, config: dict[str, Any]) -> None:
+    async def poll_one(self, key: str, config: Config) -> None:
         """Poll a single config: copy state, run poll, persist on success."""
         state = self.state_store.get(key) or {}
         state_copy = copy.deepcopy(state)

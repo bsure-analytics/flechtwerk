@@ -79,7 +79,7 @@ def test_extractor_runner_polls_configs():
             partition=0,
             timestamp=datetime.now(timezone.utc),
             topic="test-config",
-            value='{"api_key": "key123"}',
+            value={"api_key": "key123"},
         )
         consumer = FakeKafkaConsumer([config_msg])
         producer = FakeKafkaProducer()
@@ -119,7 +119,7 @@ def test_extractor_enrichment():
             partition=0,
             timestamp=None,
             topic="test-config",
-            value='{"api_key": "key1"}',
+            value={"api_key": "key1"},
         )
         consumer = FakeKafkaConsumer([config_msg])
         producer = FakeKafkaProducer()
@@ -187,8 +187,8 @@ def test_empty_config_removes_key():
     """Test that an empty config value removes the config."""
     async def run():
         consumer = FakeKafkaConsumer([
-            IncomingMessage(key="k1", offset=0, partition=0, timestamp=None, topic="cfg", value='{"api_key":"a"}'),
-            IncomingMessage(key="k1", offset=1, partition=0, timestamp=None, topic="cfg", value="{}"),
+            IncomingMessage(key="k1", offset=0, partition=0, timestamp=None, topic="cfg", value={"api_key": "a"}),
+            IncomingMessage(key="k1", offset=1, partition=0, timestamp=None, topic="cfg", value={}),
         ])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
