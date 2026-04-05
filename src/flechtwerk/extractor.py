@@ -147,7 +147,7 @@ class ExtractorRunner:
 
     async def poll_one(self, key: str, config: Config) -> None:
         """Poll a single config: run poll, persist state on success."""
-        state = State(self.state_store.get(key) or {})
+        state = State(await self.state_store.get(key) or {})
 
         config = await self.extractor.pre_poll(config)
 
@@ -156,4 +156,4 @@ class ExtractorRunner:
             messages.append(msg)
 
         await self.producer.send_batch(messages)
-        self.state_store.put(key, state)
+        await self.state_store.put(key, state)

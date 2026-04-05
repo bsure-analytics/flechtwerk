@@ -120,7 +120,7 @@ class TransformerRunner:
         if self.transformer.stateful:
             key = self.transformer.key_fn(event_msg)
 
-        state = State(self.state_store.get(key) or {}) if key else State()
+        state = State(await self.state_store.get(key) or {}) if key else State()
 
         output: list[Message] = []
         async for out_msg in self.transformer.transform(event_msg, state):
@@ -133,4 +133,4 @@ class TransformerRunner:
         )
 
         if key is not None:
-            self.state_store.put(key, state)
+            await self.state_store.put(key, state)

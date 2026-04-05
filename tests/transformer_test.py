@@ -238,7 +238,7 @@ def test_transformer_runner_stateful():
         assert len(producer.sent) == 2
         assert producer.sent[0].value["count"] == 1
         assert producer.sent[1].value["count"] == 2
-        assert state_store.get("form1") == {"count": 2}
+        assert await state_store.get("form1") == {"count": 2}
 
     asyncio.run(run())
 
@@ -343,7 +343,7 @@ def test_transformer_runner_stateless_does_not_persist_state():
         for msg in messages:
             await runner.process_one(msg)
 
-        assert state_store.get("k1") is None
+        assert await state_store.get("k1") is None
 
     asyncio.run(run())
 
@@ -384,8 +384,8 @@ def test_transformer_runner_functional_stateful():
         assert producer.sent[0].value["count"] == 1
         assert producer.sent[1].value["count"] == 2
         assert producer.sent[2].value["count"] == 1  # different key
-        assert state_store.get("f1") == {"count": 2}
-        assert state_store.get("f2") == {"count": 1}
+        assert await state_store.get("f1") == {"count": 2}
+        assert await state_store.get("f2") == {"count": 1}
 
     asyncio.run(run())
 

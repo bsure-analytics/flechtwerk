@@ -103,7 +103,7 @@ class KafkaProducer(ABC):
         ...
 
 
-class AIOKafkaConsumerAdapter(KafkaConsumer):
+class AIOKafkaConsumer(KafkaConsumer):
     """Adapter: aiokafka-based Kafka consumer."""
 
     def __init__(self, brokers: list[str], group_id: str):
@@ -168,7 +168,7 @@ class AIOKafkaConsumerAdapter(KafkaConsumer):
             self.consumer = None
 
 
-class AIOKafkaProducerAdapter(KafkaProducer):
+class AIOKafkaProducer(KafkaProducer):
     """Adapter: aiokafka-based Kafka producer with exactly-once support."""
 
     def __init__(self, brokers: list[str], transactional_id: str | None = None):

@@ -104,7 +104,7 @@ def test_extractor_runner_polls_configs():
         assert producer.sent[0].value["data"] == "polled"
 
         # State should be persisted
-        assert state_store.get("tenant/channel") == {"cursor": 1}
+        assert await state_store.get("tenant/channel") == {"cursor": 1}
 
     asyncio.run(run())
 
@@ -167,7 +167,7 @@ def test_extractor_state_isolation_on_error():
 
     async def run():
         state_store = InMemoryStateStore()
-        state_store.put("k", {"original": True})
+        await state_store.put("k", {"original": True})
         consumer = FakeKafkaConsumer()
         producer = FakeKafkaProducer()
 
@@ -177,7 +177,7 @@ def test_extractor_state_isolation_on_error():
             await runner.poll_one("k", {"api_key": "k"})
 
         # Original state should be preserved
-        assert state_store.get("k") == {"original": True}
+        assert await state_store.get("k") == {"original": True}
 
     asyncio.run(run())
 
@@ -258,7 +258,7 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
 
     async def run():
         state_store = InMemoryStateStore()
-        state_store.put("k", {"cursor": 5})
+        await state_store.put("k", {"cursor": 5})
         consumer = FakeKafkaConsumer()
         producer = FailingProducer()
 
@@ -268,7 +268,7 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
             await runner.poll_one("k", Config({"api_key": "k"}))
 
         # State should NOT be updated (send failed before put)
-        assert state_store.get("k") == {"cursor": 5}
+        assert await state_store.get("k") == {"cursor": 5}
 
     asyncio.run(run())
 
@@ -347,6 +347,6 @@ def test_extractor_poll_yields_no_messages():
         await runner.poll_one("k", Config({"api_key": "k"}))
 
         assert len(producer.sent) == 0
-        assert state_store.get("k") == {"checked": True}
+        assert await state_store.get("k") == {"checked": True}
 
     asyncio.run(run())

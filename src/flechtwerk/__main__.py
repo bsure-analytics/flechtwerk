@@ -14,17 +14,18 @@ import importlib
 import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from .extractor import Extractor, ExtractorRunner
-from .kafka import AIOKafkaConsumerAdapter, AIOKafkaProducerAdapter
-from .state import RocksDBStateStore
+from .kafka import AIOKafkaConsumer, AIOKafkaProducer
+from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse CLI args, accepting both Bytewax and fretworx formats."""
     parser = argparse.ArgumentParser(
         prog="fretworx",
@@ -35,11 +36,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-s", type=int, default=60, help="(Bytewax compat) snapshot interval — ignored")
     parser.add_argument("-w", type=int, default=1, help="(Bytewax compat) worker count — ignored")
 
-    # Shared: state directory (-r for Bytewax, --state-dir for fretworx)
+    # Bytewax state directory — only used for migration (finding SQLite files)
     parser.add_argument(
         "-r", "--state-dir",
         default=os.getenv("STATE_DIR", "/data"),
-        help="State directory for RocksDB (default: /data)",
+        help="Bytewax state directory for migration (default: /data)",
     )
 
     # Module path (positional)
@@ -49,20 +50,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def resolve_stage(module_path: str) -> Extractor | Transformer | None:
-    """Import the module and look for a fretworx Extractor or Transformer."""
+    """Import the module and look for a fretworx stage instance."""
     module = importlib.import_module(module_path)
-
-    # Check for fretworx stage instances
-    for attr_name in ("extractor", "transformer"):
-        obj = getattr(module, attr_name, None)
-        if isinstance(obj, (Extractor, Transformer)):
-            return obj
-
+    stage = getattr(module, "stage", None)
+    if isinstance(stage, (Extractor, Transformer)):
+        return stage
     return None
 
 
-def auto_migrate_if_needed(state_dir: str, brokers: list[str], group_id: str) -> None:
-    """Auto-migrate Bytewax SQLite state to RocksDB if not already done."""
+async def auto_migrate_if_needed(
+    state_dir: str,
+    brokers: list[str],
+    application_id: str,
+    state_store: ChangelogStateStore,
+) -> None:
+    """Auto-migrate Bytewax SQLite state to the changelog-backed state store."""
     state_path = Path(state_dir)
     sentinel = state_path / ".migration-complete"
 
@@ -75,10 +77,10 @@ def auto_migrate_if_needed(state_dir: str, brokers: list[str], group_id: str) ->
         sentinel.touch()
         return
 
-    log.info("Detected Bytewax SQLite state — running migration to RocksDB")
+    log.info("Detected Bytewax SQLite state — running migration")
     try:
         from .migrate_state import migrate_bytewax_to_fretworx
-        migrate_bytewax_to_fretworx(state_dir, brokers, group_id)
+        await migrate_bytewax_to_fretworx(state_store, state_dir, brokers, application_id)
     except Exception:
         log.exception("State migration failed — starting with empty state")
 
@@ -93,49 +95,62 @@ def run_bytewax_fallback(argv: list[str]) -> None:
     cli_main()
 
 
-def main(argv: list[str] | None = None) -> None:
+async def main(argv: list[str]) -> None:
     logging.basicConfig(
         level=os.getenv("LOGLEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
+    args = parse_args(argv)
 
-    raw_argv = argv if argv is not None else sys.argv[1:]
-    args = parse_args(raw_argv)
-
+    application_id = os.getenv("KAFKA_APPLICATION_ID", args.module.replace(".", "-"))
     brokers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092").split(",")
-    group_id = args.module.replace(".", "-")
 
     stage = resolve_stage(args.module)
 
     if stage is None:
         # Not a fretworx module — fall back to Bytewax
-        run_bytewax_fallback(raw_argv)
+        run_bytewax_fallback(argv)
         return
 
-    log.info("Running %s via fretworx", args.module)
-    auto_migrate_if_needed(args.state_dir, brokers, group_id)
+    log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
 
-    state_store = RocksDBStateStore(os.path.join(args.state_dir, "fretworx"))
+    # State store: ephemeral RocksDB backed by Kafka changelog
+    state_dir = tempfile.mkdtemp()
+    inner_store = RocksDBStateStore(os.path.join(state_dir, "state"))
+    changelog_topic = application_id + "-changelog"
+    changelog_producer = AIOKafkaProducer(brokers)
+    state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
+
+    # Create changelog topic if needed
+    num_partitions = len(stage.input_topics)  # match input topic count
+    await ensure_changelog_topic(brokers, changelog_topic, num_partitions)
+
+    # Restore state from changelog
+    changelog_consumer = AIOKafkaConsumer(brokers, application_id + "-changelog-restore")
+    await state_store.restore(changelog_consumer)
+
+    # Auto-migrate Bytewax state if needed
+    await auto_migrate_if_needed(args.state_dir, brokers, application_id, state_store)
 
     try:
         if isinstance(stage, Extractor):
-            consumer = AIOKafkaConsumerAdapter(brokers, group_id)
-            producer = AIOKafkaProducerAdapter(brokers)
+            consumer = AIOKafkaConsumer(brokers, application_id)
+            producer = AIOKafkaProducer(brokers)
             runner = ExtractorRunner(stage, consumer, producer, state_store)
         elif isinstance(stage, Transformer):
-            consumer = AIOKafkaConsumerAdapter(brokers, group_id)
-            producer = AIOKafkaProducerAdapter(
+            consumer = AIOKafkaConsumer(brokers, application_id)
+            producer = AIOKafkaProducer(
                 brokers,
-                transactional_id=f"{group_id}-txn",
+                transactional_id=application_id + "-txn",
             )
             runner = TransformerRunner(stage, consumer, producer, state_store)
         else:
             sys.exit(f"Unknown stage type: {type(stage)}")
 
-        asyncio.run(runner.run())
+        await runner.run()
     finally:
-        state_store.close()
+        await state_store.close()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main(sys.argv[1:]))
