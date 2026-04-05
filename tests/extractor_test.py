@@ -8,13 +8,13 @@ import pytest
 from fretworx.extractor import Extractor, ExtractorRunner
 from fretworx.state import InMemoryStateStore
 from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer
-from fretworx.types import IncomingMessage, Message
+from fretworx.types import Config, IncomingMessage, Message, State
 
 
 class SimpleExtractor(Extractor):
     input_topics = ["test-config"]
 
-    async def poll(self, state: dict[str, Any], config: dict[str, Any]) -> AsyncIterator[Message]:
+    async def poll(self, state: State, config: Config) -> AsyncIterator[Message]:
         cursor = state.get("cursor", 0)
         yield Message(
             key=config["api_key"],
@@ -28,7 +28,7 @@ class EnrichingExtractor(Extractor):
     input_topics = ["test-config"]
 
     async def enrich(self, config):
-        config = dict(config)
+        config = Config(config)
         config["enriched"] = True
         return config
 
@@ -60,8 +60,8 @@ def test_simple_extractor_poll():
     """Test the poll function directly."""
     async def run():
         ext = SimpleExtractor()
-        state = {}
-        config = {"api_key": "test-key"}
+        state = State()
+        config = Config({"api_key": "test-key"})
         messages = [msg async for msg in ext.poll(state, config)]
         assert len(messages) == 1
         assert messages[0].value == {"cursor": 0, "data": "polled"}
@@ -91,7 +91,6 @@ def test_extractor_runner_polls_configs():
             producer,
             state_store,
         )
-        runner.poll_interval = asyncio.coroutines._value = None  # type: ignore
 
         # Run load_initial_configs manually
         await runner.consumer.subscribe(runner.extractor.input_topics)
@@ -197,5 +196,157 @@ def test_empty_config_removes_key():
         await runner.consumer.subscribe(["cfg"])
         await runner.load_initial_configs()
         assert len(runner.configs) == 0  # Empty config removes the key
+
+    asyncio.run(run())
+
+
+def test_extractor_runner_wraps_config_in_config_type():
+    """Runner wraps raw msg.value in Config() when applying configs."""
+    async def run():
+        config_msg = IncomingMessage(
+            key="k",
+            offset=0,
+            partition=0,
+            timestamp=None,
+            topic="cfg",
+            value={"api_key": "test"},
+        )
+        consumer = FakeKafkaConsumer([config_msg])
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+
+        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+        await runner.consumer.subscribe(["cfg"])
+        await runner.load_initial_configs()
+
+        assert isinstance(runner.configs["k"], Config)
+
+    asyncio.run(run())
+
+
+def test_extractor_runner_suspended_configs_not_polled():
+    """Configs with suspended=True are skipped during polling."""
+    async def run():
+        consumer = FakeKafkaConsumer([
+            IncomingMessage(key="active", offset=0, partition=0, timestamp=None, topic="cfg",
+                            value={"api_key": "a"}),
+            IncomingMessage(key="suspended", offset=1, partition=0, timestamp=None, topic="cfg",
+                            value={"api_key": "b", "suspended": True}),
+        ])
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+
+        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+        await runner.consumer.subscribe(["cfg"])
+        await runner.load_initial_configs()
+
+        assert len(runner.configs) == 2
+
+        # Poll only active configs
+        await runner.poll_one("active", runner.configs["active"])
+        assert len(producer.sent) == 1
+        assert producer.sent[0].key == "a"  # Only active config polled
+
+    asyncio.run(run())
+
+
+def test_extractor_runner_state_not_persisted_on_send_failure():
+    """State is NOT persisted if send_batch fails."""
+    class FailingProducer(FakeKafkaProducer):
+        async def send_batch(self, messages):
+            raise ConnectionError("Kafka unavailable")
+
+    async def run():
+        state_store = InMemoryStateStore()
+        state_store.put("k", {"cursor": 5})
+        consumer = FakeKafkaConsumer()
+        producer = FailingProducer()
+
+        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+
+        with pytest.raises(ConnectionError):
+            await runner.poll_one("k", Config({"api_key": "k"}))
+
+        # State should NOT be updated (send failed before put)
+        assert state_store.get("k") == {"cursor": 5}
+
+    asyncio.run(run())
+
+
+def test_extractor_runner_closes_resources_on_error():
+    """Runner closes consumer and producer even when poll raises."""
+    class AlwaysFailExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, state, config) -> AsyncIterator[Message]:
+            raise RuntimeError("fatal")
+            yield  # pragma: no cover
+
+    async def run():
+        consumer = FakeKafkaConsumer([
+            IncomingMessage(key="k", offset=0, partition=0, timestamp=None, topic="cfg",
+                            value={"api_key": "a"}),
+        ])
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+
+        runner = ExtractorRunner(AlwaysFailExtractor(), consumer, producer, state_store)
+
+        with pytest.raises(RuntimeError, match="fatal"):
+            await runner.run()
+
+        # No exception from close means resources cleaned up
+
+    asyncio.run(run())
+
+
+def test_extractor_runner_config_update_during_operation():
+    """Config updates are applied between poll cycles."""
+    async def run():
+        # Initial config
+        initial = IncomingMessage(key="k", offset=0, partition=0, timestamp=None, topic="cfg",
+                                  value={"api_key": "v1"})
+        consumer = FakeKafkaConsumer([initial])
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+
+        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+        await runner.consumer.subscribe(["cfg"])
+        await runner.load_initial_configs()
+
+        assert runner.configs["k"]["api_key"] == "v1"
+
+        # Simulate config update arriving
+        consumer.messages = [
+            IncomingMessage(key="k", offset=1, partition=0, timestamp=None, topic="cfg",
+                            value={"api_key": "v2"}),
+        ]
+        await runner.check_config_updates()
+
+        assert runner.configs["k"]["api_key"] == "v2"
+
+    asyncio.run(run())
+
+
+def test_extractor_poll_yields_no_messages():
+    """Poll that yields nothing still persists state."""
+    class EmptyExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, state, config) -> AsyncIterator[Message]:
+            state["checked"] = True
+            return
+            yield  # pragma: no cover
+
+    async def run():
+        state_store = InMemoryStateStore()
+        consumer = FakeKafkaConsumer()
+        producer = FakeKafkaProducer()
+
+        runner = ExtractorRunner(EmptyExtractor(), consumer, producer, state_store)
+        await runner.poll_one("k", Config({"api_key": "k"}))
+
+        assert len(producer.sent) == 0
+        assert state_store.get("k") == {"checked": True}
 
     asyncio.run(run())

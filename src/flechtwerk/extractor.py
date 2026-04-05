@@ -64,8 +64,7 @@ class Extractor(ABC):
         of the generator, the mutated copy is persisted to the state store. On
         crash, the copy is discarded and the last-persisted state is retained.
         """
-        ...
-        yield  # pragma: no cover
+        raise NotImplementedError("Override poll() in a subclass")
 
 
 class ExtractorRunner:
