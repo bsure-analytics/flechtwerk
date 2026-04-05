@@ -1,14 +1,14 @@
 """Tests for fretworx Extractor and ExtractorRunner."""
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+import json
+from typing import AsyncIterator
 
 import pytest
 
 from fretworx.extractor import Extractor, ExtractorRunner
 from fretworx.state import InMemoryStateStore
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer
-from fretworx.types import Config, IncomingMessage, Message, State
+from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, FakeRecord
+from fretworx.types import Config, Message, State
 
 
 class SimpleExtractor(Extractor):
@@ -56,6 +56,12 @@ class ContextManagerExtractor(Extractor):
         yield Message(key="k", topic="t", value={"entered": self.entered})
 
 
+def make_record(key="k", value=None, topic="test-config", offset=0, partition=0):
+    if value is None:
+        value = {}
+    return FakeRecord(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
+
+
 def test_simple_extractor_poll():
     """Test the poll function directly."""
     async def run():
@@ -73,15 +79,11 @@ def test_simple_extractor_poll():
 def test_extractor_runner_polls_configs():
     """Test that the runner processes configs and polls them."""
     async def run():
-        config_msg = IncomingMessage(
+        record = make_record(
             key="tenant/channel",
-            offset=0,
-            partition=0,
-            timestamp=datetime.now(timezone.utc),
-            topic="test-config",
             value={"api_key": "key123"},
         )
-        consumer = FakeKafkaConsumer([config_msg])
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
@@ -93,7 +95,6 @@ def test_extractor_runner_polls_configs():
         )
 
         # Run load_initial_configs manually
-        await runner.consumer.subscribe(runner.extractor.input_topics)
         await runner.load_initial_configs()
         assert len(runner.configs) == 1
         assert runner.configs["tenant/channel"]["api_key"] == "key123"
@@ -101,7 +102,9 @@ def test_extractor_runner_polls_configs():
         # Run one poll cycle
         await runner.poll_one("tenant/channel", runner.configs["tenant/channel"])
         assert len(producer.sent) == 1
-        assert producer.sent[0].value["data"] == "polled"
+        topic, payload = producer.sent[0]
+        assert topic == "test-output"
+        assert json.loads(payload["value"])["data"] == "polled"
 
         # State should be persisted
         assert await state_store.get("tenant/channel") == {"cursor": 1}
@@ -112,15 +115,8 @@ def test_extractor_runner_polls_configs():
 def test_extractor_enrichment():
     """Test that enrich() is called when configs arrive."""
     async def run():
-        config_msg = IncomingMessage(
-            key="k",
-            offset=0,
-            partition=0,
-            timestamp=None,
-            topic="test-config",
-            value={"api_key": "key1"},
-        )
-        consumer = FakeKafkaConsumer([config_msg])
+        record = make_record(key="k", value={"api_key": "key1"})
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
@@ -130,14 +126,14 @@ def test_extractor_enrichment():
             producer,
             state_store,
         )
-        await runner.consumer.subscribe(runner.extractor.input_topics)
         await runner.load_initial_configs()
 
         # Config should have been enriched
         assert runner.configs["k"]["enriched"] is True
 
         await runner.poll_one("k", runner.configs["k"])
-        assert producer.sent[0].value["enriched"] is True
+        topic, payload = producer.sent[0]
+        assert json.loads(payload["value"])["enriched"] is True
 
     asyncio.run(run())
 
@@ -186,14 +182,13 @@ def test_empty_config_removes_key():
     """Test that an empty config value removes the config."""
     async def run():
         consumer = FakeKafkaConsumer([
-            IncomingMessage(key="k1", offset=0, partition=0, timestamp=None, topic="cfg", value={"api_key": "a"}),
-            IncomingMessage(key="k1", offset=1, partition=0, timestamp=None, topic="cfg", value={}),
+            make_record(key="k1", value={"api_key": "a"}, offset=0),
+            make_record(key="k1", value={}, offset=1),
         ])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
         runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
 
-        await runner.consumer.subscribe(["cfg"])
         await runner.load_initial_configs()
         assert len(runner.configs) == 0  # Empty config removes the key
 
@@ -203,20 +198,12 @@ def test_empty_config_removes_key():
 def test_extractor_runner_wraps_config_in_config_type():
     """Runner wraps raw msg.value in Config() when applying configs."""
     async def run():
-        config_msg = IncomingMessage(
-            key="k",
-            offset=0,
-            partition=0,
-            timestamp=None,
-            topic="cfg",
-            value={"api_key": "test"},
-        )
-        consumer = FakeKafkaConsumer([config_msg])
+        record = make_record(key="k", value={"api_key": "test"}, topic="cfg")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
         runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
-        await runner.consumer.subscribe(["cfg"])
         await runner.load_initial_configs()
 
         assert isinstance(runner.configs["k"], Config)
@@ -228,16 +215,13 @@ def test_extractor_runner_suspended_configs_not_polled():
     """Configs with suspended=True are skipped during polling."""
     async def run():
         consumer = FakeKafkaConsumer([
-            IncomingMessage(key="active", offset=0, partition=0, timestamp=None, topic="cfg",
-                            value={"api_key": "a"}),
-            IncomingMessage(key="suspended", offset=1, partition=0, timestamp=None, topic="cfg",
-                            value={"api_key": "b", "suspended": True}),
+            make_record(key="active", value={"api_key": "a"}, offset=0, topic="cfg"),
+            make_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1, topic="cfg"),
         ])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
         runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
-        await runner.consumer.subscribe(["cfg"])
         await runner.load_initial_configs()
 
         assert len(runner.configs) == 2
@@ -245,15 +229,16 @@ def test_extractor_runner_suspended_configs_not_polled():
         # Poll only active configs
         await runner.poll_one("active", runner.configs["active"])
         assert len(producer.sent) == 1
-        assert producer.sent[0].key == "a"  # Only active config polled
+        topic, payload = producer.sent[0]
+        assert payload["key"] == "a"  # Only active config polled (encode_json passes strings through)
 
     asyncio.run(run())
 
 
 def test_extractor_runner_state_not_persisted_on_send_failure():
-    """State is NOT persisted if send_batch fails."""
+    """State is NOT persisted if send fails."""
     class FailingProducer(FakeKafkaProducer):
-        async def send_batch(self, messages):
+        async def send(self, topic, *, key=None, value=None, timestamp_ms=None):
             raise ConnectionError("Kafka unavailable")
 
     async def run():
@@ -283,10 +268,8 @@ def test_extractor_runner_closes_resources_on_error():
             yield  # pragma: no cover
 
     async def run():
-        consumer = FakeKafkaConsumer([
-            IncomingMessage(key="k", offset=0, partition=0, timestamp=None, topic="cfg",
-                            value={"api_key": "a"}),
-        ])
+        record = make_record(key="k", value={"api_key": "a"}, topic="cfg")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
@@ -304,22 +287,19 @@ def test_extractor_runner_config_update_during_operation():
     """Config updates are applied between poll cycles."""
     async def run():
         # Initial config
-        initial = IncomingMessage(key="k", offset=0, partition=0, timestamp=None, topic="cfg",
-                                  value={"api_key": "v1"})
+        initial = make_record(key="k", value={"api_key": "v1"}, topic="cfg")
         consumer = FakeKafkaConsumer([initial])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
         runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
-        await runner.consumer.subscribe(["cfg"])
         await runner.load_initial_configs()
 
         assert runner.configs["k"]["api_key"] == "v1"
 
         # Simulate config update arriving
-        consumer.messages = [
-            IncomingMessage(key="k", offset=1, partition=0, timestamp=None, topic="cfg",
-                            value={"api_key": "v2"}),
+        consumer.records = [
+            make_record(key="k", value={"api_key": "v2"}, offset=1, topic="cfg"),
         ]
         await runner.check_config_updates()
 

@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable
 from typing import AsyncIterator
 
-from .kafka import KafkaConsumer, KafkaProducer
+from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
 from .state import StateStore
 from .types import Event, IncomingMessage, Message, State
 
@@ -83,30 +83,32 @@ class TransformerRunner:
         consumer: KafkaConsumer,
         producer: KafkaProducer,
         state_store: StateStore,
+        group_id: str,
     ):
         self.transformer = transformer
         self.consumer = consumer
         self.producer = producer
         self.state_store = state_store
+        self.group_id = group_id
 
     async def run(self) -> None:
         """Main event loop. Consumes messages and processes them sequentially."""
         try:
             async with self.transformer:
-                await self.consumer.subscribe(self.transformer.input_topics)
-
                 while True:
-                    messages = await self.consumer.poll(timeout=1.0)
-                    if not messages:
+                    records = await self.consumer.getmany(timeout_ms=1000)
+                    if not records:
                         continue
-                    for msg in messages:
-                        await self.process_one(msg)
+                    for tp, msgs in records.items():
+                        for raw_msg in msgs:
+                            await self.process_one(raw_msg)
         finally:
-            await self.consumer.close()
-            await self.producer.close()
+            await self.consumer.stop()
+            await self.producer.stop()
 
-    async def process_one(self, msg: IncomingMessage[dict]) -> None:
+    async def process_one(self, raw_msg) -> None:
         """Process a single incoming message with exactly-once semantics."""
+        msg = parse_message(raw_msg)
         event_msg = IncomingMessage(
             key=msg.key,
             offset=msg.offset,
@@ -127,10 +129,25 @@ class TransformerRunner:
             output.append(out_msg)
 
         # Exactly-once: produce all messages and commit offset atomically
-        await self.producer.send_transactional(
-            messages=output,
-            consumer=self.consumer,
-        )
+        await self.send_transactional(output)
 
         if key is not None:
             await self.state_store.put(key, state)
+
+    async def send_transactional(self, messages: list[Message]) -> None:
+        """Send messages and commit consumer offsets in a single Kafka transaction."""
+        offsets = {}
+        for tp in self.consumer.assignment():
+            offsets[tp] = await self.consumer.position(tp)
+
+        async with self.producer.transaction():
+            for msg in messages:
+                await self.producer.send(
+                    msg.topic,
+                    key=encode_json(msg.key),
+                    value=encode_json(msg.value),
+                    timestamp_ms=datetime_to_millis(msg.timestamp),
+                )
+            await self.producer.send_offsets_to_transaction(offsets, self.group_id)
+
+        log.debug("Transaction committed: %d messages", len(messages))

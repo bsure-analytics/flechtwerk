@@ -22,6 +22,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import aiokafka
+
 from .state import StateStore
 
 log = logging.getLogger(__name__)
@@ -82,21 +84,16 @@ def read_bytewax_sqlite(sqlite_path: Path) -> tuple[dict[str, Any], dict[str, in
 
 
 async def commit_consumer_offsets(
-    brokers: list[str],
+    bootstrap_servers: str,
     consumer_group: str,
     offsets: dict[str, int],
 ) -> None:
     """Commit Bytewax partition offsets to the fretworx consumer group."""
-    from aiokafka import AIOKafkaConsumer as AIOConsumer
-    from aiokafka import TopicPartition
-
-    tp_offsets: dict[TopicPartition, int] = {}
-    for key, offset in offsets.items():
-        match = BYTEWAX_PARTITION_KEY.match(key)
-        if match:
-            partition_idx = int(match.group(1))
-            topic = match.group(2)
-            tp_offsets[TopicPartition(topic, partition_idx)] = offset
+    tp_offsets = {
+        aiokafka.TopicPartition(m.group(2), int(m.group(1))): offset
+        for key, offset in offsets.items()
+        if (m := BYTEWAX_PARTITION_KEY.match(key))
+    }
 
     if not tp_offsets:
         log.warning("No valid partition offsets found — skipping Kafka offset commit")
@@ -104,14 +101,14 @@ async def commit_consumer_offsets(
 
     topics = sorted({tp.topic for tp in tp_offsets})
 
-    consumer = AIOConsumer(
+    consumer = aiokafka.AIOKafkaConsumer(
         *topics,
-        bootstrap_servers=",".join(brokers),
+        bootstrap_servers=bootstrap_servers,
         group_id=consumer_group,
         enable_auto_commit=False,
     )
-    await consumer.start()
 
+    await consumer.start()
     try:
         await consumer.commit(tp_offsets)
         for tp, offset in sorted(tp_offsets.items(), key=lambda x: (x[0].topic, x[0].partition)):
@@ -123,7 +120,7 @@ async def commit_consumer_offsets(
 async def migrate_bytewax_to_fretworx(
     state_store: StateStore,
     state_dir: str,
-    brokers: list[str],
+    bootstrap_servers: str,
     application_id: str,
 ) -> None:
     """Migrate Bytewax SQLite state to the changelog-backed state store and commit Kafka offsets."""
@@ -160,6 +157,6 @@ async def migrate_bytewax_to_fretworx(
     # Commit Kafka consumer offsets
     if all_offsets:
         log.info("Found %d Kafka partition offset(s) — committing to group %s", len(all_offsets), application_id)
-        await commit_consumer_offsets(brokers, application_id, all_offsets)
+        await commit_consumer_offsets(bootstrap_servers, application_id, all_offsets)
     else:
         log.warning("No Kafka offsets found in SQLite databases — transformer may reprocess from earliest")

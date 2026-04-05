@@ -16,13 +16,21 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Final
+
+import aiokafka
 
 from .extractor import Extractor, ExtractorRunner
-from .kafka import AIOKafkaConsumer, AIOKafkaProducer
-from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
+from .migrate_state import migrate_bytewax_to_fretworx
+from .state import ChangelogStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic, get_max_partition_count
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
+
+# Comma-separated Kafka broker addresses
+KAFKA_BOOTSTRAP_SERVERS: Final = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+# Log level (DEBUG, INFO, WARNING, ERROR)
+LOGLEVEL: Final = os.getenv("LOGLEVEL", "INFO")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -49,38 +57,33 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resolve_stage(module_path: str) -> Extractor | Transformer | None:
-    """Import the module and look for a fretworx stage instance."""
+def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | None:
+    """Import the module and look for a fretworx stage instance.
+
+    Returns (stage, application_id) or None if not a fretworx module.
+    """
     module = importlib.import_module(module_path)
     stage = getattr(module, "stage", None)
-    if isinstance(stage, (Extractor, Transformer)):
-        return stage
-    return None
+    if not isinstance(stage, (Extractor, Transformer)):
+        return None
+    default_id = module_path.removeprefix("ds.").replace(".", "-").replace("_", "-")
+    application_id = str(getattr(module, "KAFKA_APPLICATION_ID", default_id))
+    return stage, application_id
 
 
 async def auto_migrate_if_needed(
-    state_dir: str,
-    brokers: list[str],
-    application_id: str,
-    state_store: ChangelogStateStore,
+        state_dir: str,
+        bootstrap_servers: str,
+        application_id: str,
+        state_store: ChangelogStateStore,
 ) -> None:
     """Auto-migrate Bytewax SQLite state to the changelog-backed state store."""
-    state_path = Path(state_dir)
-    sentinel = state_path / ".migration-complete"
-
+    sentinel = Path(state_dir) / ".migration-complete"
     if sentinel.exists():
         return
 
-    sqlite_files = list(state_path.glob("part-*.sqlite3"))
-    if not sqlite_files:
-        # Fresh deployment or no Bytewax state — nothing to migrate
-        sentinel.touch()
-        return
-
-    log.info("Detected Bytewax SQLite state — running migration")
     try:
-        from .migrate_state import migrate_bytewax_to_fretworx
-        await migrate_bytewax_to_fretworx(state_store, state_dir, brokers, application_id)
+        await migrate_bytewax_to_fretworx(state_store, state_dir, bootstrap_servers, application_id)
     except Exception:
         log.exception("State migration failed — starting with empty state")
 
@@ -97,59 +100,74 @@ def run_bytewax_fallback(argv: list[str]) -> None:
 
 async def main(argv: list[str]) -> None:
     logging.basicConfig(
-        level=os.getenv("LOGLEVEL", "INFO").upper(),
+        level=LOGLEVEL.upper(),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
     args = parse_args(argv)
-
-    application_id = os.getenv("KAFKA_APPLICATION_ID", args.module.replace(".", "-"))
-    brokers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092").split(",")
-
-    stage = resolve_stage(args.module)
-
-    if stage is None:
-        # Not a fretworx module — fall back to Bytewax
+    result = resolve_stage(args.module)
+    if result is None:
         run_bytewax_fallback(argv)
         return
 
+    stage, application_id = result
     log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
 
-    # State store: ephemeral RocksDB backed by Kafka changelog
-    state_dir = tempfile.mkdtemp()
-    inner_store = RocksDBStateStore(os.path.join(state_dir, "state"))
-    changelog_topic = application_id + "-changelog"
-    changelog_producer = AIOKafkaProducer(brokers)
-    state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
+    state_store = await setup_state_store(application_id, stage.input_topics)
+    await auto_migrate_if_needed(args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, state_store)
 
-    # Create changelog topic if needed
-    num_partitions = len(stage.input_topics)  # match input topic count
-    await ensure_changelog_topic(brokers, changelog_topic, num_partitions)
-
-    # Restore state from changelog
-    changelog_consumer = AIOKafkaConsumer(brokers, application_id + "-changelog-restore")
-    await state_store.restore(changelog_consumer)
-
-    # Auto-migrate Bytewax state if needed
-    await auto_migrate_if_needed(args.state_dir, brokers, application_id, state_store)
-
+    runner = await create_runner(stage, application_id, state_store)
     try:
-        if isinstance(stage, Extractor):
-            consumer = AIOKafkaConsumer(brokers, application_id)
-            producer = AIOKafkaProducer(brokers)
-            runner = ExtractorRunner(stage, consumer, producer, state_store)
-        elif isinstance(stage, Transformer):
-            consumer = AIOKafkaConsumer(brokers, application_id)
-            producer = AIOKafkaProducer(
-                brokers,
-                transactional_id=application_id + "-txn",
-            )
-            runner = TransformerRunner(stage, consumer, producer, state_store)
-        else:
-            sys.exit(f"Unknown stage type: {type(stage)}")
-
         await runner.run()
     finally:
         await state_store.close()
+
+
+async def setup_state_store(application_id: str, input_topics: list[str]) -> ChangelogStateStore:
+    """Create an ephemeral RocksDB state store backed by a Kafka changelog topic."""
+    changelog_topic = application_id + "-changelog"
+    changelog_producer = aiokafka.AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        key_serializer=lambda k: k.encode("utf-8") if k else b"",
+        value_serializer=lambda v: v.encode("utf-8") if v else b"",
+    )
+    inner_store = RocksDBStateStore(Path(tempfile.mkdtemp()) / "state")
+    state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
+
+    num_partitions = await get_max_partition_count(KAFKA_BOOTSTRAP_SERVERS, input_topics)
+    await ensure_changelog_topic(KAFKA_BOOTSTRAP_SERVERS, changelog_topic, num_partitions)
+    await state_store.restore(KAFKA_BOOTSTRAP_SERVERS)
+    return state_store
+
+
+async def create_runner(
+        stage: Extractor | Transformer,
+        application_id: str,
+        state_store: StateStore,
+) -> ExtractorRunner | TransformerRunner:
+    """Create a consumer, producer, and runner for the given stage."""
+    consumer = aiokafka.AIOKafkaConsumer(
+        *stage.input_topics,
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        auto_offset_reset="earliest",
+        enable_auto_commit=False,
+        group_id=application_id,
+    )
+    producer_kwargs = {
+        "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
+        "key_serializer": lambda k: k.encode("utf-8") if k else b"",
+        "value_serializer": lambda v: v.encode("utf-8") if v else b"",
+    }
+
+    if isinstance(stage, Transformer):
+        producer_kwargs["transactional_id"] = application_id + "-txn"
+
+    producer = aiokafka.AIOKafkaProducer(**producer_kwargs)
+    await consumer.start()
+    await producer.start()
+
+    if isinstance(stage, Extractor):
+        return ExtractorRunner(stage, consumer, producer, state_store)
+    return TransformerRunner(stage, consumer, producer, state_store, application_id)
 
 
 if __name__ == "__main__":

@@ -1,65 +1,99 @@
 """Test doubles for fretworx framework testing."""
 from __future__ import annotations
 
-from .kafka import KafkaConsumer, KafkaProducer
-from .types import IncomingMessage, Message
+from dataclasses import dataclass
+from typing import Any
+
+from .types import Message
 
 
-class FakeKafkaConsumer(KafkaConsumer):
-    """Test double: feeds a list of IncomingMessage objects, then returns empty."""
+@dataclass
+class FakeRecord:
+    """Mimics an aiokafka ConsumerRecord for testing."""
 
-    def __init__(self, messages: list[IncomingMessage] | None = None):
-        self.messages = list(messages or [])
+    key: str
+    value: str
+    offset: int = 0
+    partition: int = 0
+    timestamp: int | None = None
+    topic: str = "test-topic"
+
+
+class FakeKafkaConsumer:
+    """Test double matching the KafkaConsumer Protocol."""
+
+    def __init__(self, records: list[FakeRecord] | None = None):
+        self.records = list(records or [])
         self.committed = False
-        self.subscribed_topics: list[str] = []
+        self.started = False
 
-    async def subscribe(self, topics: list[str]) -> None:
-        self.subscribed_topics = topics
+    async def start(self) -> None:
+        self.started = True
 
-    async def poll(self, timeout: float = 1.0) -> list[IncomingMessage]:
-        if not self.messages:
-            return []
-        # Return all remaining messages in one batch
-        batch = self.messages
-        self.messages = []
-        return batch
-
-    async def commit(self) -> None:
-        self.committed = True
-
-    async def offsets_for_transaction(self) -> tuple[dict, str]:
-        return {}, "fake-group"
-
-    async def close(self) -> None:
+    async def stop(self) -> None:
         pass
 
+    async def getmany(self, timeout_ms: int = 0) -> dict:
+        if not self.records:
+            return {}
+        # Group records by (topic, partition) like aiokafka does
+        from collections import defaultdict
+        groups: dict[Any, list] = defaultdict(list)
+        for record in self.records:
+            tp = (record.topic, record.partition)
+            groups[tp].append(record)
+        self.records = []
+        return dict(groups)
 
-class FakeKafkaProducer(KafkaProducer):
-    """Test double: collects sent messages for assertions."""
+    async def commit(self, offsets: dict | None = None) -> None:
+        self.committed = True
+
+    async def seek_to_beginning(self) -> None:
+        pass
+
+    async def position(self, tp: Any) -> int:
+        return 0
+
+    def assignment(self) -> set:
+        return set()
+
+
+class FakeKafkaProducer:
+    """Test double matching the KafkaProducer Protocol."""
 
     def __init__(self):
-        self.sent: list[Message] = []
+        self.sent: list[tuple[str, dict]] = []
         self.flushed = False
-        self.transaction_count = 0
+        self.transaction_active = False
 
-    async def send(self, message: Message) -> None:
-        self.sent.append(message)
+    async def start(self) -> None:
+        pass
 
-    async def send_batch(self, messages: list[Message]) -> None:
-        self.sent.extend(messages)
-        self.flushed = True
+    async def stop(self) -> None:
+        pass
 
-    async def send_transactional(
-        self,
-        messages: list[Message],
-        consumer: KafkaConsumer,
-    ) -> None:
-        self.sent.extend(messages)
-        self.transaction_count += 1
-        await consumer.commit()
+    async def send(self, topic: str, *, key: Any = None, value: Any = None, timestamp_ms: int | None = None) -> None:
+        self.sent.append((topic, {"key": key, "value": value, "timestamp_ms": timestamp_ms}))
 
     async def flush(self) -> None:
         self.flushed = True
 
-    async def close(self) -> None:
+    def transaction(self):
+        return FakeTransaction(self)
+
+    async def send_offsets_to_transaction(self, offsets: dict, group_id: str) -> None:
         pass
+
+
+class FakeTransaction:
+    """Fake async context manager for producer transactions."""
+
+    def __init__(self, producer: FakeKafkaProducer):
+        self.producer = producer
+
+    async def __aenter__(self):
+        self.producer.transaction_active = True
+        return self
+
+    async def __aexit__(self, *exc_info):
+        self.producer.transaction_active = False

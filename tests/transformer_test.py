@@ -1,13 +1,14 @@
 """Tests for fretworx Transformer and TransformerRunner."""
 import asyncio
-from typing import Any, AsyncIterator
+import json
+from typing import AsyncIterator
 
 import pytest
 
 from fretworx.state import InMemoryStateStore
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer
+from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, FakeRecord
 from fretworx.transformer import Transformer, TransformerRunner
-from fretworx.types import Event, IncomingMessage, Message, State
+from fretworx.types import Event, Message, State
 
 
 # --- Subclass-based transformers (for backward compat testing) ---
@@ -53,15 +54,16 @@ class StatefulCounterTransformer(Transformer):
         )
 
 
-def make_incoming(key: str = "k", value: dict = {}, topic: str = "input-topic") -> IncomingMessage:
-    return IncomingMessage(
-        key=key,
-        offset=0,
-        partition=0,
-        timestamp=None,
-        topic=topic,
-        value=value,
-    )
+def make_record(key="k", value=None, topic="input-topic", offset=0, partition=0):
+    if value is None:
+        value = {}
+    return FakeRecord(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
+
+
+def make_incoming(key="k", value=None, topic="input-topic"):
+    """Build an IncomingMessage-like object via parse_message on a FakeRecord."""
+    from fretworx.kafka import parse_message
+    return parse_message(make_record(key=key, value=value, topic=topic))
 
 
 # --- Subclass transform tests ---
@@ -198,46 +200,46 @@ def test_subclass_stateful_not_overridden_by_init():
 
 def test_transformer_runner_processes_messages():
     async def run():
-        incoming = make_incoming(key="k1", value={"data": "hello"})
-        consumer = FakeKafkaConsumer([incoming])
+        record = make_record(key="k1", value={"data": "hello"})
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(PassthroughTransformer(), consumer, producer, state_store)
-        await runner.consumer.subscribe(["input-topic"])
+        runner = TransformerRunner(PassthroughTransformer(), consumer, producer, state_store, "test-group")
 
-        # Process one message
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
         assert len(producer.sent) == 1
-        assert producer.sent[0].value == {"data": "hello"}
-        assert producer.transaction_count == 1  # exactly-once
+        topic, payload = producer.sent[0]
+        assert topic == "output-topic"
+        assert json.loads(payload["value"]) == {"data": "hello"}
 
     asyncio.run(run())
 
 
 def test_transformer_runner_stateful():
     async def run():
-        msgs = [
-            make_incoming(key="form1", value={}),
-            make_incoming(key="form1", value={}),
+        recs = [
+            make_record(key="form1", value={}, offset=0),
+            make_record(key="form1", value={}, offset=1),
         ]
-        consumer = FakeKafkaConsumer(msgs)
+        consumer = FakeKafkaConsumer(recs)
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(StatefulCounterTransformer(), consumer, producer, state_store)
-        await runner.consumer.subscribe(["input-topic"])
+        runner = TransformerRunner(StatefulCounterTransformer(), consumer, producer, state_store, "test-group")
 
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
         assert len(producer.sent) == 2
-        assert producer.sent[0].value["count"] == 1
-        assert producer.sent[1].value["count"] == 2
+        assert json.loads(producer.sent[0][1]["value"])["count"] == 1
+        assert json.loads(producer.sent[1][1]["value"])["count"] == 2
         assert await state_store.get("form1") == {"count": 2}
 
     asyncio.run(run())
@@ -254,16 +256,16 @@ def test_transformer_runner_wraps_value_in_event():
     t = Transformer(input_topics=["in"], transform=spy_transform)
 
     async def run():
-        incoming = make_incoming(value={"data": 1})
-        consumer = FakeKafkaConsumer([incoming])
+        record = make_record(value={"data": 1}, topic="in")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(t, consumer, producer, state_store)
-        await runner.consumer.subscribe(["in"])
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        runner = TransformerRunner(t, consumer, producer, state_store, "test-group")
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
         assert received_types == ["Event"]
 
@@ -283,14 +285,14 @@ def test_transformer_runner_event_is_protective_copy():
     t = Transformer(input_topics=["in"], transform=mutating_transform)
 
     async def run():
-        incoming = make_incoming(value=original)
-        consumer = FakeKafkaConsumer([incoming])
+        record = make_record(value=original, topic="in")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore())
-        await runner.consumer.subscribe(["in"])
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore(), "test-group")
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
         # Transform mutated its copy, but original is untouched
         assert "mutated" not in original
@@ -309,14 +311,14 @@ def test_transformer_runner_stateless_gets_empty_state():
     t = Transformer(input_topics=["in"], transform=spy_transform)
 
     async def run():
-        incoming = make_incoming()
-        consumer = FakeKafkaConsumer([incoming])
+        record = make_record(topic="in")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore())
-        await runner.consumer.subscribe(["in"])
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore(), "test-group")
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
         assert received_states == [{}]
         assert isinstance(received_states[0], State)
@@ -334,14 +336,14 @@ def test_transformer_runner_stateless_does_not_persist_state():
 
     async def run():
         state_store = InMemoryStateStore()
-        incoming = make_incoming(key="k1")
-        consumer = FakeKafkaConsumer([incoming])
+        record = make_record(key="k1", topic="in")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, state_store)
-        await runner.consumer.subscribe(["in"])
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        runner = TransformerRunner(t, consumer, producer, state_store, "test-group")
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
         assert await state_store.get("k1") is None
 
@@ -366,24 +368,24 @@ def test_transformer_runner_functional_stateful():
     )
 
     async def run():
-        msgs = [
-            make_incoming(value={"form_id": "f1"}),
-            make_incoming(value={"form_id": "f1"}),
-            make_incoming(value={"form_id": "f2"}),
+        recs = [
+            make_record(value={"form_id": "f1"}, topic="in", offset=0),
+            make_record(value={"form_id": "f1"}, topic="in", offset=1),
+            make_record(value={"form_id": "f2"}, topic="in", offset=2),
         ]
-        consumer = FakeKafkaConsumer(msgs)
+        consumer = FakeKafkaConsumer(recs)
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(t, consumer, producer, state_store)
-        await runner.consumer.subscribe(["in"])
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        runner = TransformerRunner(t, consumer, producer, state_store, "test-group")
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
-        assert producer.sent[0].value["count"] == 1
-        assert producer.sent[1].value["count"] == 2
-        assert producer.sent[2].value["count"] == 1  # different key
+        assert json.loads(producer.sent[0][1]["value"])["count"] == 1
+        assert json.loads(producer.sent[1][1]["value"])["count"] == 2
+        assert json.loads(producer.sent[2][1]["value"])["count"] == 1  # different key
         assert await state_store.get("f1") == {"count": 2}
         assert await state_store.get("f2") == {"count": 1}
 
@@ -425,12 +427,12 @@ def test_transformer_runner_closes_resources_on_error():
             yield  # pragma: no cover
 
     async def run():
-        incoming = make_incoming()
-        consumer = FakeKafkaConsumer([incoming])
+        record = make_record(topic="in")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(FailingTransformer(), consumer, producer, state_store)
+        runner = TransformerRunner(FailingTransformer(), consumer, producer, state_store, "test-group")
 
         with pytest.raises(RuntimeError, match="boom"):
             await runner.run()
@@ -450,16 +452,15 @@ def test_transformer_runner_filter_yields_nothing():
     t = Transformer(input_topics=["in"], transform=skip_all)
 
     async def run():
-        incoming = make_incoming()
-        consumer = FakeKafkaConsumer([incoming])
+        record = make_record(topic="in")
+        consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore())
-        await runner.consumer.subscribe(["in"])
-        messages = await runner.consumer.poll()
-        for msg in messages:
-            await runner.process_one(msg)
+        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore(), "test-group")
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
 
         assert len(producer.sent) == 0
-        assert producer.transaction_count == 1  # transaction still committed
 
     asyncio.run(run())

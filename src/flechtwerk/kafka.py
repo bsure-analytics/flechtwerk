@@ -1,15 +1,48 @@
-"""Kafka consumer/producer ports and aiokafka adapters."""
+"""Kafka Protocols, utilities, and changelog restore."""
 from __future__ import annotations
 
 import json
 import logging
-from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-from .types import IncomingMessage, Message
+import aiokafka
+
+from .types import IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
+
+
+# --- Protocols ---
+
+
+@runtime_checkable
+class KafkaConsumer(Protocol):
+    """Protocol matching the subset of aiokafka.AIOKafkaConsumer we use."""
+
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    async def getmany(self, timeout_ms: int = 0) -> dict: ...
+    async def commit(self, offsets: dict | None = None) -> None: ...
+    async def seek_to_beginning(self) -> None: ...
+    async def position(self, tp: Any) -> int: ...
+    def assignment(self) -> set: ...
+
+
+@runtime_checkable
+class KafkaProducer(Protocol):
+    """Protocol matching the subset of aiokafka.AIOKafkaProducer we use."""
+
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    async def send(self, topic: str, *, key: Any = None, value: Any = None, timestamp_ms: int | None = None) -> Any: ...
+    async def flush(self) -> None: ...
+    def transaction(self) -> Any: ...
+    async def send_offsets_to_transaction(self, offsets: dict, group_id: str) -> None: ...
+
+
+# --- Utilities ---
 
 
 def encode_json(value: Any) -> str:
@@ -39,207 +72,89 @@ def millis_to_datetime(millis: int | None) -> datetime | None:
     return datetime.fromtimestamp(millis / 1000, tz=timezone.utc)
 
 
-class KafkaConsumer(ABC):
-    """Port: async Kafka consumer."""
-
-    @abstractmethod
-    async def subscribe(self, topics: list[str]) -> None:
-        ...
-
-    @abstractmethod
-    async def poll(self, timeout: float = 1.0) -> list[IncomingMessage[dict[str, Any]]]:
-        ...
-
-    @abstractmethod
-    async def commit(self) -> None:
-        ...
-
-    @abstractmethod
-    async def offsets_for_transaction(self) -> tuple[dict, str]:
-        """Return (offsets_dict, group_id) for transactional offset commit.
-
-        The offsets dict maps TopicPartition to the next offset to consume.
-        Used by the producer's send_offsets_to_transaction().
-        """
-        ...
-
-    @abstractmethod
-    async def close(self) -> None:
-        ...
+def parse_message(msg: Any) -> IncomingMessage[dict[str, Any]]:
+    """Parse an aiokafka ConsumerRecord into an IncomingMessage."""
+    key = (msg.key.decode("utf-8") if isinstance(msg.key, bytes) else msg.key) or ""
+    raw_value = (msg.value.decode("utf-8") if isinstance(msg.value, bytes) else msg.value) or ""
+    try:
+        value = json.loads(raw_value) if raw_value else {}
+    except json.JSONDecodeError:
+        log.warning("Invalid JSON in message at %s/%d, using {}", msg.topic, msg.offset)
+        value = {}
+    return IncomingMessage(
+        key=key,
+        offset=msg.offset,
+        partition=msg.partition,
+        timestamp=millis_to_datetime(msg.timestamp),
+        topic=msg.topic,
+        value=value,
+    )
 
 
-class KafkaProducer(ABC):
-    """Port: async Kafka producer."""
-
-    @abstractmethod
-    async def send(self, message: Message) -> None:
-        ...
-
-    async def send_batch(self, messages: list[Message]) -> None:
-        """Send multiple messages. Default: send one at a time."""
-        for msg in messages:
-            await self.send(msg)
-        await self.flush()
-
-    async def send_transactional(
-        self,
-        messages: list[Message],
-        consumer: KafkaConsumer,
-    ) -> None:
-        """Send messages and commit consumer offsets atomically (exactly-once).
-
-        Override in adapters that support Kafka transactions.
-        Default: send + commit (at-least-once fallback).
-        """
-        await self.send_batch(messages)
-        await consumer.commit()
-
-    @abstractmethod
-    async def flush(self) -> None:
-        ...
-
-    @abstractmethod
-    async def close(self) -> None:
-        ...
+# --- Changelog restore ---
 
 
-class AIOKafkaConsumer(KafkaConsumer):
-    """Adapter: aiokafka-based Kafka consumer."""
+async def restore_changelog(
+    bootstrap_servers: str,
+    topic: str,
+    put: Any,
+    delete: Any,
+) -> int:
+    """Read an entire compacted changelog topic to rebuild state.
 
-    def __init__(self, brokers: list[str], group_id: str):
-        self.brokers = brokers
-        self.group_id = group_id
-        self.consumer = None
+    Uses manual partition assignment (no consumer group). Seeks to
+    beginning and reads until no more messages arrive.
 
-    async def subscribe(self, topics: list[str]) -> None:
-        from aiokafka import AIOKafkaConsumer as AIOConsumer
+    Args:
+        bootstrap_servers: Kafka bootstrap servers (comma-separated)
+        topic: Changelog topic name
+        put: async callable(key, value) to store a state entry
+        delete: async callable(key) to remove a state entry
 
-        self.consumer = AIOConsumer(
-            *topics,
-            bootstrap_servers=",".join(self.brokers),
-            auto_offset_reset="earliest",
-            enable_auto_commit=False,
-            group_id=self.group_id,
-            value_deserializer=lambda v: v.decode("utf-8") if v else "",
-            key_deserializer=lambda k: k.decode("utf-8") if k else "",
-        )
-        await self.consumer.start()
-        log.info("Subscribed to %s as group %s", topics, self.group_id)
+    Returns:
+        Number of entries restored.
+    """
+    consumer = aiokafka.AIOKafkaConsumer(
+        bootstrap_servers=bootstrap_servers,
+        value_deserializer=lambda v: v.decode("utf-8") if v else "",
+        key_deserializer=lambda k: k.decode("utf-8") if k else "",
+        enable_auto_commit=False,
+    )
+    await consumer.start()
 
-    async def poll(self, timeout: float = 1.0) -> list[IncomingMessage[dict[str, Any]]]:
-        if self.consumer is None:
-            return []
-        records = await self.consumer.getmany(timeout_ms=int(timeout * 1000))
-        result = []
-        for tp, msgs in records.items():
-            for msg in msgs:
-                try:
-                    value = json.loads(msg.value or "{}")
-                except json.JSONDecodeError:
-                    log.warning("Invalid JSON in message at %s/%d, using {}", msg.topic, msg.offset)
-                    value = {}
-                result.append(IncomingMessage(
-                    key=msg.key or "",
-                    offset=msg.offset,
-                    partition=msg.partition,
-                    timestamp=millis_to_datetime(msg.timestamp),
-                    topic=msg.topic,
-                    value=value,
-                ))
-        return result
+    try:
+        partitions = consumer.partitions_for_topic(topic)
+        if not partitions:
+            log.info("No partitions found for changelog topic %s", topic)
+            return 0
 
-    async def commit(self) -> None:
-        if self.consumer is not None:
-            await self.consumer.commit()
+        tps = [aiokafka.TopicPartition(topic, p) for p in partitions]
+        consumer.assign(tps)
+        await consumer.seek_to_beginning()
 
-    async def offsets_for_transaction(self) -> tuple[dict, str]:
-        """Build {TopicPartition: offset} from current consumer positions."""
-        if self.consumer is None:
-            return {}, self.group_id
-        offsets = {}
-        for tp in self.consumer.assignment():
-            offset = await self.consumer.position(tp)
-            offsets[tp] = offset
-        return offsets, self.group_id
+        count = 0
+        while True:
+            records = await consumer.getmany(timeout_ms=2000)
+            if not records:
+                break
+            for tp, msgs in records.items():
+                for msg in msgs:
+                    key = msg.key or ""
+                    raw_value = msg.value or ""
+                    if raw_value:
+                        try:
+                            value = json.loads(raw_value)
+                        except json.JSONDecodeError:
+                            continue
+                        if value:
+                            await put(key, State(value))
+                        else:
+                            await delete(key)
+                    else:
+                        await delete(key)
+                    count += 1
 
-    async def close(self) -> None:
-        if self.consumer is not None:
-            await self.consumer.stop()
-            self.consumer = None
-
-
-class AIOKafkaProducer(KafkaProducer):
-    """Adapter: aiokafka-based Kafka producer with exactly-once support."""
-
-    def __init__(self, brokers: list[str], transactional_id: str | None = None):
-        self.brokers = brokers
-        self.transactional_id = transactional_id
-        self.producer = None
-
-    async def start(self) -> None:
-        from aiokafka import AIOKafkaProducer as AIOProducer
-
-        kwargs: dict[str, Any] = {
-            "bootstrap_servers": ",".join(self.brokers),
-            "key_serializer": lambda k: k.encode("utf-8") if k else b"",
-            "value_serializer": lambda v: v.encode("utf-8") if v else b"",
-        }
-        if self.transactional_id:
-            kwargs["transactional_id"] = self.transactional_id
-
-        self.producer = AIOProducer(**kwargs)
-        await self.producer.start()
-        log.info("Producer started (transactional=%s)", self.transactional_id is not None)
-
-    async def send(self, message: Message) -> None:
-        if self.producer is None:
-            await self.start()
-        await self.producer.send(
-            topic=message.topic,
-            key=encode_json(message.key),
-            value=encode_json(message.value),
-            timestamp_ms=datetime_to_millis(message.timestamp),
-        )
-
-    async def send_batch(self, messages: list[Message]) -> None:
-        for msg in messages:
-            await self.send(msg)
-        await self.flush()
-
-    async def send_transactional(
-        self,
-        messages: list[Message],
-        consumer: KafkaConsumer,
-    ) -> None:
-        """Exactly-once: produce + commit offset in a single Kafka transaction."""
-        if self.producer is None:
-            await self.start()
-
-        if not self.transactional_id:
-            log.warning("No transactional_id — falling back to at-least-once delivery")
-            await self.send_batch(messages)
-            await consumer.commit()
-            return
-
-        offsets, group_id = await consumer.offsets_for_transaction()
-
-        async with self.producer.transaction():
-            for msg in messages:
-                await self.producer.send(
-                    topic=msg.topic,
-                    key=encode_json(msg.key),
-                    value=encode_json(msg.value),
-                    timestamp_ms=datetime_to_millis(msg.timestamp),
-                )
-            await self.producer.send_offsets_to_transaction(offsets, group_id)
-
-        log.debug("Transaction committed: %d messages", len(messages))
-
-    async def flush(self) -> None:
-        if self.producer is not None:
-            await self.producer.flush()
-
-    async def close(self) -> None:
-        if self.producer is not None:
-            await self.producer.stop()
-            self.producer = None
+        log.info("Restored %d state entries from %s", count, topic)
+        return count
+    finally:
+        await consumer.stop()

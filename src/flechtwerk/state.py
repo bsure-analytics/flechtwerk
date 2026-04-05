@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .kafka import KafkaConsumer, KafkaProducer
-from .types import Message, State
+from .kafka import KafkaProducer, encode_json, restore_changelog
+from .types import State
 
 log = logging.getLogger(__name__)
 
@@ -64,20 +64,19 @@ class StateStore(ABC):
 
 
 class RocksDBStateStore(StateStore):
-    """Adapter: RocksDB-backed state store.
+    """RocksDB-backed state store.
 
     State values are JSON-serialized with custom encoding for datetime/set/tuple.
     Every put() writes to the RocksDB WAL immediately — no periodic snapshots.
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: Path):
         from rocksdict import Rdict
 
-        self.path = Path(path)
-        self.path.mkdir(parents=True, exist_ok=True)
-        db_path = str(self.path / "state.db")
-        self.db = Rdict(db_path)
-        log.info("Opened RocksDB state store at %s", db_path)
+        path.mkdir(parents=True, exist_ok=True)
+        self.db_path = path / "state.db"
+        self.db = Rdict(str(self.db_path))
+        log.info("Opened RocksDB state store at %s", self.db_path)
 
     async def get(self, key: str) -> State | None:
         try:
@@ -98,25 +97,23 @@ class RocksDBStateStore(StateStore):
 
     async def close(self) -> None:
         self.db.close()
-        log.info("Closed RocksDB state store at %s", self.path)
+        log.info("Closed RocksDB state store at %s", self.db_path)
 
 
 class InMemoryStateStore(StateStore):
-    """Adapter: in-memory state store for testing."""
+    """In-memory state store for testing."""
 
     def __init__(self):
-        self.store: dict[str, State] = {}
+        self.store: dict[str, str] = {}
 
     async def get(self, key: str) -> State | None:
         raw = self.store.get(key)
         if raw is None:
             return None
-        # Round-trip through JSON to match RocksDB behavior (datetime/set encoding)
-        serialized = json.dumps(raw, cls=StateEncoder, sort_keys=True)
-        return json.loads(serialized, object_hook=state_decoder_hook)
+        return json.loads(raw, object_hook=state_decoder_hook)
 
     async def put(self, key: str, state: State) -> None:
-        self.store[key] = state
+        self.store[key] = json.dumps(state, cls=StateEncoder, sort_keys=True)
 
     async def delete(self, key: str) -> None:
         self.store.pop(key, None)
@@ -126,7 +123,7 @@ class InMemoryStateStore(StateStore):
 
 
 class ChangelogStateStore(StateStore):
-    """Adapter: state store backed by a compacted Kafka changelog topic.
+    """State store backed by a compacted Kafka changelog topic.
 
     Wraps an inner StateStore (typically RocksDB) and produces every state
     change to a Kafka topic. On startup, restore() rebuilds the inner store
@@ -143,35 +140,42 @@ class ChangelogStateStore(StateStore):
 
     async def put(self, key: str, state: State) -> None:
         await self.inner.put(key, state)
-        await self.producer.send(Message(key=key, topic=self.topic, value=state))
+        await self.producer.send(
+            self.topic,
+            key=encode_json(key),
+            value=encode_json(dict(state)),
+        )
 
     async def delete(self, key: str) -> None:
         await self.inner.delete(key)
-        await self.producer.send(Message(key=key, topic=self.topic, value={}))
+        await self.producer.send(
+            self.topic,
+            key=encode_json(key),
+            value=encode_json({}),
+        )
 
     async def close(self) -> None:
         await self.producer.flush()
         await self.inner.close()
 
-    async def restore(self, consumer: KafkaConsumer) -> None:
-        """Consume the entire changelog topic to rebuild the inner state store."""
-        await consumer.subscribe([self.topic])
-        count = 0
-        while True:
-            messages = await consumer.poll(timeout=2.0)
-            if not messages:
-                break
-            for msg in messages:
-                if msg.value:
-                    await self.inner.put(msg.key, State(msg.value))
-                else:
-                    await self.inner.delete(msg.key)
-                count += 1
-        await consumer.close()
-        log.info("Restored %d state entries from %s", count, self.topic)
+    async def restore(self, bootstrap_servers: str) -> None:
+        """Rebuild the inner store from the changelog topic."""
+        await restore_changelog(bootstrap_servers, self.topic, self.inner.put, self.inner.delete)
 
 
-async def ensure_changelog_topic(brokers: list[str], topic: str, num_partitions: int) -> None:
+async def get_max_partition_count(bootstrap_servers: str, topics: list[str]) -> int:
+    """Query the broker for the maximum partition count across topics."""
+    import aiokafka
+
+    consumer = aiokafka.AIOKafkaConsumer(bootstrap_servers=bootstrap_servers)
+    await consumer.start()
+    try:
+        return max([len(consumer.partitions_for_topic(t) or []) for t in topics], default=1)
+    finally:
+        await consumer.stop()
+
+
+async def ensure_changelog_topic(bootstrap_servers: str, topic: str, num_partitions: int) -> None:
     """Create the changelog topic if it doesn't exist.
 
     Uses the Kafka AdminClient API (CreateTopicsRequest), which works even
@@ -181,7 +185,7 @@ async def ensure_changelog_topic(brokers: list[str], topic: str, num_partitions:
     from aiokafka.admin import AIOKafkaAdminClient, NewTopic
     from aiokafka.errors import TopicAlreadyExistsError
 
-    admin = AIOKafkaAdminClient(bootstrap_servers=",".join(brokers))
+    admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap_servers)
     await admin.start()
     try:
         await admin.create_topics([

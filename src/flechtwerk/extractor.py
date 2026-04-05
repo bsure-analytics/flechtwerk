@@ -8,7 +8,7 @@ from datetime import timedelta
 from os import getenv
 from typing import AsyncIterator
 
-from .kafka import KafkaConsumer, KafkaProducer
+from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
 from .state import StateStore
 from .types import Config, Message, State
 
@@ -91,7 +91,6 @@ class ExtractorRunner:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs."""
         try:
             async with self.extractor:
-                await self.consumer.subscribe(self.extractor.input_topics)
                 await self.load_initial_configs()
 
                 while True:
@@ -113,24 +112,28 @@ class ExtractorRunner:
 
                     await asyncio.sleep(self.poll_interval.total_seconds())
         finally:
-            await self.consumer.close()
-            await self.producer.close()
+            await self.consumer.stop()
+            await self.producer.stop()
 
     async def load_initial_configs(self) -> None:
         """Read all existing configs from the topic on startup."""
         while True:
-            messages = await self.consumer.poll(timeout=2.0)
-            if not messages:
+            records = await self.consumer.getmany(timeout_ms=2000)
+            if not records:
                 break
-            for msg in messages:
-                await self.apply_config(msg.key, Config(msg.value))
+            for tp, msgs in records.items():
+                for raw_msg in msgs:
+                    msg = parse_message(raw_msg)
+                    await self.apply_config(msg.key, Config(msg.value))
         log.info("Loaded %d initial config(s)", len(self.configs))
 
     async def check_config_updates(self) -> None:
         """Non-blocking check for config changes."""
-        messages = await self.consumer.poll(timeout=0)
-        for msg in messages:
-            await self.apply_config(msg.key, Config(msg.value))
+        records = await self.consumer.getmany(timeout_ms=0)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                msg = parse_message(raw_msg)
+                await self.apply_config(msg.key, Config(msg.value))
 
     async def apply_config(self, key: str, config: Config) -> None:
         """Enrich and store a config update."""
@@ -155,5 +158,16 @@ class ExtractorRunner:
         async for msg in self.extractor.poll(state, config):
             messages.append(msg)
 
-        await self.producer.send_batch(messages)
+        await self.send_batch(messages)
         await self.state_store.put(key, state)
+
+    async def send_batch(self, messages: list[Message]) -> None:
+        """Send messages to Kafka."""
+        for msg in messages:
+            await self.producer.send(
+                msg.topic,
+                key=encode_json(msg.key),
+                value=encode_json(msg.value),
+                timestamp_ms=datetime_to_millis(msg.timestamp),
+            )
+        await self.producer.flush()
