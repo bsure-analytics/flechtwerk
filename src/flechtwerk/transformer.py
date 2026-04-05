@@ -1,14 +1,13 @@
 """Transformer base class and runner for event-driven stream processing."""
 from __future__ import annotations
 
-import copy
 import logging
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
 from .kafka import KafkaConsumer, KafkaProducer
 from .state import StateStore
-from .types import IncomingMessage, Message, State
+from .types import Event, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class Transformer(ABC):
     input_topics: list[str]
     stateful: bool = False
 
-    def key_fn(self, msg: IncomingMessage) -> str:
+    def key_fn(self, msg: IncomingMessage[Event]) -> str:
         """Extract partition key for stateful processing. Default: message key."""
         return msg.key
 
@@ -37,12 +36,10 @@ class Transformer(ABC):
         pass
 
     @abstractmethod
-    async def transform(
-        self, msg: IncomingMessage, state: State | None,
-    ) -> AsyncIterator[Message]:
+    async def transform(self, msg: IncomingMessage[Event], state: State) -> AsyncIterator[Message]:
         """Transform an incoming message into zero or more output Messages.
 
-        For stateful=False: state is always None.
+        For stateful=False: state is an empty dict (ignored by convention).
         For stateful=True: state is a mutable dict scoped to key_fn(msg).
             Mutate in place; the framework persists after successful completion.
         For transformers with no async I/O, simply don't await anything.
@@ -78,19 +75,25 @@ class TransformerRunner:
                 for msg in messages:
                     await self.process_one(msg)
 
-    async def process_one(self, msg: IncomingMessage) -> None:
+    async def process_one(self, msg: IncomingMessage[dict]) -> None:
         """Process a single incoming message with exactly-once semantics."""
-        state = None
-        state_copy = None
-        key = None
+        event_msg = IncomingMessage(
+            key=msg.key,
+            offset=msg.offset,
+            partition=msg.partition,
+            timestamp=msg.timestamp,
+            topic=msg.topic,
+            value=Event(msg.value),
+        )
 
+        key = None
         if self.transformer.stateful:
-            key = self.transformer.key_fn(msg)
-            state = self.state_store.get(key) or {}
-            state_copy = copy.deepcopy(state)
+            key = self.transformer.key_fn(event_msg)
+
+        state = State(self.state_store.get(key) or {}) if key else State()
 
         output: list[Message] = []
-        async for out_msg in self.transformer.transform(msg, state_copy):
+        async for out_msg in self.transformer.transform(event_msg, state):
             output.append(out_msg)
 
         # Exactly-once: produce all messages and commit offset atomically
@@ -99,5 +102,5 @@ class TransformerRunner:
             consumer=self.consumer,
         )
 
-        if self.transformer.stateful and key is not None:
-            self.state_store.put(key, state_copy)
+        if key is not None:
+            self.state_store.put(key, state)

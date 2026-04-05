@@ -39,7 +39,11 @@ def state_decoder_hook(obj: dict) -> Any:
 
 
 class StateStore(ABC):
-    """Port: persistent key-value state store."""
+    """Port: persistent key-value state store.
+
+    Contract: get() returns a protective copy. Callers may mutate the
+    returned dict without affecting the store's internal state.
+    """
 
     @abstractmethod
     def get(self, key: str) -> State | None:

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Generic, TypeVar
+
+V = TypeVar("V", bound=dict[str, Any])
 
 
 class Config(dict[str, Any]):
@@ -22,7 +24,7 @@ class State(dict[str, Any]):
 
 
 @dataclass(frozen=True, slots=True)
-class IncomingMessage:
+class IncomingMessage(Generic[V]):
     """A message read from Kafka."""
 
     key: str
@@ -30,7 +32,7 @@ class IncomingMessage:
     partition: int
     timestamp: datetime | None
     topic: str
-    value: dict[str, Any]
+    value: V
 
 
 @dataclass(frozen=True, slots=True)

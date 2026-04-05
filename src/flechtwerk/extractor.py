@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 from abc import ABC, abstractmethod
 from datetime import timedelta
@@ -121,14 +120,14 @@ class ExtractorRunner:
             if not messages:
                 break
             for msg in messages:
-                await self.apply_config(msg.key, msg.value)
+                await self.apply_config(msg.key, Config(msg.value))
         log.info("Loaded %d initial config(s)", len(self.configs))
 
     async def check_config_updates(self) -> None:
         """Non-blocking check for config changes."""
         messages = await self.consumer.poll(timeout=0)
         for msg in messages:
-            await self.apply_config(msg.key, msg.value)
+            await self.apply_config(msg.key, Config(msg.value))
 
     async def apply_config(self, key: str, config: Config) -> None:
         """Enrich and store a config update."""
@@ -144,15 +143,14 @@ class ExtractorRunner:
         log.info("%s config for key %s", "Updated" if present else "Added", key)
 
     async def poll_one(self, key: str, config: Config) -> None:
-        """Poll a single config: copy state, run poll, persist on success."""
-        state = self.state_store.get(key) or {}
-        state_copy = copy.deepcopy(state)
+        """Poll a single config: run poll, persist state on success."""
+        state = State(self.state_store.get(key) or {})
 
         config = await self.extractor.pre_poll(config)
 
         messages: list[Message] = []
-        async for msg in self.extractor.poll(state_copy, config):
+        async for msg in self.extractor.poll(state, config):
             messages.append(msg)
 
         await self.producer.send_batch(messages)
-        self.state_store.put(key, state_copy)
+        self.state_store.put(key, state)
