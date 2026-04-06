@@ -1,10 +1,13 @@
 """CLI entry point for fretworx.
 
-Accepts Bytewax CLI args for drop-in compatibility:
+Usage:
+    python -m fretworx ds.ariadne.extractor
+
+Bytewax CLI args are accepted for drop-in compatibility:
     python -m fretworx -w 2 -r /data -s 60 -b 0 ds.ariadne.extractor
 
-Also supports native fretworx args:
-    python -m fretworx --state-dir /data ds.ariadne.extractor
+The -r/--state-dir flag enables one-time Bytewax SQLite state migration.
+Without it, no migration is attempted.
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ import aiokafka
 
 from .extractor import Extractor, ExtractorRunner
 from .migrate_state import migrate_bytewax_to_fretworx
-from .state import ChangelogStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic, get_max_partition_count
+from .state import ChangelogStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -47,14 +50,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # Bytewax state directory — only used for migration (finding SQLite files)
     parser.add_argument(
         "-r", "--state-dir",
-        default=os.getenv("STATE_DIR", "/data"),
-        help="Bytewax state directory for migration (default: /data)",
+        default=None,
+        help="Bytewax state directory for migration",
     )
 
     # Module path (positional)
     parser.add_argument("module", help="Python module path (e.g., ds.ariadne.extractor)")
 
-    return parser.parse_args(argv)
+    return parser.parse_args(argv[1:])
 
 
 def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | None:
@@ -69,6 +72,23 @@ def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | Non
     default_id = module_path.removeprefix("ds.").replace(".", "-").replace("_", "-")
     application_id = str(getattr(module, "KAFKA_APPLICATION_ID", default_id))
     return stage, application_id
+
+
+async def setup_state_store(application_id: str) -> ChangelogStateStore:
+    """Create an ephemeral RocksDB state store backed by a Kafka changelog topic."""
+    changelog_topic = application_id + "-changelog"
+
+    await ensure_changelog_topic(KAFKA_BOOTSTRAP_SERVERS, changelog_topic)
+
+    changelog_producer = aiokafka.AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        key_serializer=lambda k: k.encode("utf-8") if k else b"",
+        value_serializer=lambda v: v.encode("utf-8") if v else b"",
+    )
+    inner_store = RocksDBStateStore(Path(tempfile.mkdtemp()) / "state")
+    state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
+    await state_store.restore(KAFKA_BOOTSTRAP_SERVERS)
+    return state_store
 
 
 async def auto_migrate_if_needed(
@@ -88,55 +108,6 @@ async def auto_migrate_if_needed(
         log.exception("State migration failed — starting with empty state")
 
     sentinel.touch()
-
-
-def run_bytewax_fallback(argv: list[str]) -> None:
-    """Delegate to bytewax.run for non-migrated stages."""
-    log.info("Module exports a Bytewax Dataflow — delegating to bytewax.run")
-    sys.argv = ["bytewax.run"] + argv
-    from bytewax.run import cli_main
-    cli_main()
-
-
-async def main(argv: list[str]) -> None:
-    logging.basicConfig(
-        level=LOGLEVEL.upper(),
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    )
-    args = parse_args(argv)
-    result = resolve_stage(args.module)
-    if result is None:
-        run_bytewax_fallback(argv)
-        return
-
-    stage, application_id = result
-    log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
-
-    state_store = await setup_state_store(application_id, stage.input_topics)
-    await auto_migrate_if_needed(args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, state_store)
-
-    runner = await create_runner(stage, application_id, state_store)
-    try:
-        await runner.run()
-    finally:
-        await state_store.close()
-
-
-async def setup_state_store(application_id: str, input_topics: list[str]) -> ChangelogStateStore:
-    """Create an ephemeral RocksDB state store backed by a Kafka changelog topic."""
-    changelog_topic = application_id + "-changelog"
-    changelog_producer = aiokafka.AIOKafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        key_serializer=lambda k: k.encode("utf-8") if k else b"",
-        value_serializer=lambda v: v.encode("utf-8") if v else b"",
-    )
-    inner_store = RocksDBStateStore(Path(tempfile.mkdtemp()) / "state")
-    state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
-
-    num_partitions = await get_max_partition_count(KAFKA_BOOTSTRAP_SERVERS, input_topics)
-    await ensure_changelog_topic(KAFKA_BOOTSTRAP_SERVERS, changelog_topic, num_partitions)
-    await state_store.restore(KAFKA_BOOTSTRAP_SERVERS)
-    return state_store
 
 
 async def create_runner(
@@ -170,5 +141,38 @@ async def create_runner(
     return TransformerRunner(stage, consumer, producer, state_store, application_id)
 
 
+def run_bytewax_fallback() -> None:
+    """Delegate to bytewax.run for non-migrated stages."""
+    log.info("Module exports a Bytewax Dataflow — delegating to bytewax.run")
+    sys.argv[0] = "bytewax.run"
+    from bytewax.run import cli_main
+    cli_main()
+
+
+async def main() -> None:
+    logging.basicConfig(
+        level=LOGLEVEL.upper(),
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    )
+    args = parse_args(sys.argv)
+    result = resolve_stage(args.module)
+    if result is None:
+        run_bytewax_fallback()
+        return
+
+    stage, application_id = result
+    log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
+
+    state_store = await setup_state_store(application_id)
+    try:
+        if args.state_dir:
+            await auto_migrate_if_needed(args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, state_store)
+
+        runner = await create_runner(stage, application_id, state_store)
+        await runner.run()
+    finally:
+        await state_store.close()
+
+
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1:]))
+    asyncio.run(main())

@@ -163,41 +163,36 @@ class ChangelogStateStore(StateStore):
         await restore_changelog(bootstrap_servers, self.topic, self.inner.put, self.inner.delete)
 
 
-async def get_max_partition_count(bootstrap_servers: str, topics: list[str]) -> int:
-    """Query the broker for the maximum partition count across topics."""
-    import aiokafka
-
-    consumer = aiokafka.AIOKafkaConsumer(bootstrap_servers=bootstrap_servers)
-    await consumer.start()
-    try:
-        return max([len(consumer.partitions_for_topic(t) or []) for t in topics], default=1)
-    finally:
-        await consumer.stop()
-
-
-async def ensure_changelog_topic(bootstrap_servers: str, topic: str, num_partitions: int) -> None:
+async def ensure_changelog_topic(bootstrap_servers: str, topic: str) -> None:
     """Create the changelog topic if it doesn't exist.
 
+    Uses broker defaults for partition count and replication factor.
     Uses the Kafka AdminClient API (CreateTopicsRequest), which works even
-    when auto.create.topics.enable=false on the broker. This is the same
-    mechanism Kafka Streams uses for internal topics.
+    when auto.create.topics.enable=false on the broker.
     """
     from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-    from aiokafka.errors import TopicAlreadyExistsError
+    from aiokafka.errors import TopicAlreadyExistsError, for_code
 
     admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap_servers)
     await admin.start()
     try:
-        await admin.create_topics([
+        response = await admin.create_topics([
             NewTopic(
                 name=topic,
-                num_partitions=num_partitions,
-                replication_factor=3,
+                num_partitions=-1,
+                replication_factor=-1,
+                replica_assignments={},
                 topic_configs={"cleanup.policy": "compact"},
             ),
         ])
-        log.info("Created changelog topic %s (%d partitions, compacted)", topic, num_partitions)
-    except TopicAlreadyExistsError:
-        log.debug("Changelog topic %s already exists", topic)
+        for t, error_code, *rest in response.topic_errors:
+            error = for_code(error_code)
+            if error is TopicAlreadyExistsError:
+                log.debug("Changelog topic %s already exists", t)
+            elif error_code != 0:
+                error_message = rest[0] if rest else ""
+                raise error(f"{t}: {error_message}")
+            else:
+                log.info("Created changelog topic %s (compacted)", t)
     finally:
         await admin.close()

@@ -1,15 +1,15 @@
 """Kafka Protocols, utilities, and changelog restore."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
 import aiokafka
 
-from .types import IncomingMessage, Message, State
+from .types import IncomingMessage, State
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +94,14 @@ def parse_message(msg: Any) -> IncomingMessage[dict[str, Any]]:
 # --- Changelog restore ---
 
 
+async def _stop_consumer(consumer: aiokafka.AIOKafkaConsumer) -> None:
+    """Stop a consumer, suppressing the CancelledError from aiokafka's coordinator."""
+    try:
+        await consumer.stop()
+    except asyncio.CancelledError:
+        pass
+
+
 async def restore_changelog(
     bootstrap_servers: str,
     topic: str,
@@ -116,12 +124,12 @@ async def restore_changelog(
     """
     consumer = aiokafka.AIOKafkaConsumer(
         bootstrap_servers=bootstrap_servers,
+        group_id=None,
         value_deserializer=lambda v: v.decode("utf-8") if v else "",
         key_deserializer=lambda k: k.decode("utf-8") if k else "",
-        enable_auto_commit=False,
     )
-    await consumer.start()
 
+    await consumer.start()
     try:
         partitions = consumer.partitions_for_topic(topic)
         if not partitions:
@@ -157,4 +165,4 @@ async def restore_changelog(
         log.info("Restored %d state entries from %s", count, topic)
         return count
     finally:
-        await consumer.stop()
+        await _stop_consumer(consumer)
