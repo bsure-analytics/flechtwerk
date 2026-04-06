@@ -14,14 +14,14 @@ from fretworx.types import Config, Message, State
 class SimpleExtractor(Extractor):
     input_topics = ["test-config"]
 
-    async def poll(self, state: State, config: Config) -> AsyncIterator[Message]:
+    async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
         cursor = state.get("cursor", 0)
         yield Message(
             key=config["api_key"],
             topic="test-output",
             value={"cursor": cursor, "data": "polled"},
         )
-        state["cursor"] = cursor + 1
+        yield State(cursor=cursor + 1)
 
 
 class EnrichingExtractor(Extractor):
@@ -32,7 +32,7 @@ class EnrichingExtractor(Extractor):
         config["enriched"] = True
         return config
 
-    async def poll(self, state, config) -> AsyncIterator[Message]:
+    async def poll(self, config, state) -> AsyncIterator[Message | State]:
         yield Message(
             key=config["api_key"],
             topic="out",
@@ -52,7 +52,7 @@ class ContextManagerExtractor(Extractor):
     async def __aexit__(self, *exc_info):
         self.exited = True
 
-    async def poll(self, state, config) -> AsyncIterator[Message]:
+    async def poll(self, config, state) -> AsyncIterator[Message | State]:
         yield Message(key="k", topic="t", value={"entered": self.entered})
 
 
@@ -68,10 +68,13 @@ def test_simple_extractor_poll():
         ext = SimpleExtractor()
         state = State()
         config = Config({"api_key": "test-key"})
-        messages = [msg async for msg in ext.poll(state, config)]
+        items = [item async for item in ext.poll(config, state)]
+        messages = [i for i in items if isinstance(i, Message)]
+        states = [i for i in items if isinstance(i, State)]
         assert len(messages) == 1
         assert messages[0].value == {"cursor": 0, "data": "polled"}
-        assert state["cursor"] == 1
+        assert len(states) == 1
+        assert states[0]["cursor"] == 1
 
     asyncio.run(run())
 
@@ -156,8 +159,7 @@ def test_extractor_state_isolation_on_error():
     class FailingExtractor(Extractor):
         input_topics = ["cfg"]
 
-        async def poll(self, state, config) -> AsyncIterator[Message]:
-            state["should_not_persist"] = True
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
             raise RuntimeError("Simulated API failure")
             yield  # unreachable but makes this an async generator
 
@@ -230,7 +232,7 @@ def test_extractor_runner_suspended_configs_not_polled():
         await runner.poll_one("active", runner.configs["active"])
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
-        assert payload["key"] == "a"  # Only active config polled (encode_json passes strings through)
+        assert payload["key"] == "a"
 
     asyncio.run(run())
 
@@ -263,7 +265,7 @@ def test_extractor_runner_closes_resources_on_error():
     class AlwaysFailExtractor(Extractor):
         input_topics = ["cfg"]
 
-        async def poll(self, state, config) -> AsyncIterator[Message]:
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
             raise RuntimeError("fatal")
             yield  # pragma: no cover
 
@@ -278,15 +280,12 @@ def test_extractor_runner_closes_resources_on_error():
         with pytest.raises(RuntimeError, match="fatal"):
             await runner.run()
 
-        # No exception from close means resources cleaned up
-
     asyncio.run(run())
 
 
 def test_extractor_runner_config_update_during_operation():
     """Config updates are applied between poll cycles."""
     async def run():
-        # Initial config
         initial = make_record(key="k", value={"api_key": "v1"}, topic="cfg")
         consumer = FakeKafkaConsumer([initial])
         producer = FakeKafkaProducer()
@@ -297,7 +296,6 @@ def test_extractor_runner_config_update_during_operation():
 
         assert runner.configs["k"]["api_key"] == "v1"
 
-        # Simulate config update arriving
         consumer.records = [
             make_record(key="k", value={"api_key": "v2"}, offset=1, topic="cfg"),
         ]
@@ -308,13 +306,12 @@ def test_extractor_runner_config_update_during_operation():
     asyncio.run(run())
 
 
-def test_extractor_poll_yields_no_messages():
-    """Poll that yields nothing still persists state."""
+def test_extractor_poll_yields_no_state():
+    """Poll that yields no State does not persist."""
     class EmptyExtractor(Extractor):
         input_topics = ["cfg"]
 
-        async def poll(self, state, config) -> AsyncIterator[Message]:
-            state["checked"] = True
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
             return
             yield  # pragma: no cover
 
@@ -327,6 +324,6 @@ def test_extractor_poll_yields_no_messages():
         await runner.poll_one("k", Config({"api_key": "k"}))
 
         assert len(producer.sent) == 0
-        assert await state_store.get("k") == {"checked": True}
+        assert await state_store.get("k") is None
 
     asyncio.run(run())

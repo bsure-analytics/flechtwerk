@@ -43,14 +43,14 @@ class FanOutTransformer(Transformer):
 class StatefulCounterTransformer(Transformer):
     input_topics = ["input-topic"]
 
-    async def transform(self, msg, state) -> AsyncIterator[Message]:
+    async def transform(self, msg, state) -> AsyncIterator[Message | State]:
         count = state.get("count", 0) + 1
-        state["count"] = count
         yield Message(
             key=msg.key,
             topic="output",
             value={"count": count},
         )
+        yield State(count=count)
 
 
 def make_record(key="k", value=None, topic="input-topic", offset=0, partition=0):
@@ -116,13 +116,17 @@ def test_stateful_counter():
         state = State()
 
         msg = make_incoming(value={})
-        result = [m async for m in t.transform(msg, state)]
-        assert result[0].value["count"] == 1
-        assert state["count"] == 1
+        items = [i async for i in t.transform(msg, state)]
+        messages = [i for i in items if isinstance(i, Message)]
+        states = [i for i in items if isinstance(i, State)]
+        assert messages[0].value["count"] == 1
+        assert states[0]["count"] == 1
 
-        result = [m async for m in t.transform(msg, state)]
-        assert result[0].value["count"] == 2
-        assert state["count"] == 2
+        items = [i async for i in t.transform(msg, states[0])]
+        messages = [i for i in items if isinstance(i, Message)]
+        states = [i for i in items if isinstance(i, State)]
+        assert messages[0].value["count"] == 2
+        assert states[0]["count"] == 2
 
     asyncio.run(run())
 
@@ -162,7 +166,6 @@ def test_functional_transformer_with_key_fn():
 
     msg = make_incoming(value={"id": "custom-key"})
     assert t.key_fn(msg) == "custom-key"
-    assert t.stateless is False
 
 
 def test_functional_transformer_default_key_fn():
@@ -187,10 +190,10 @@ def test_transformer_no_transform_raises():
     asyncio.run(run())
 
 
-def test_subclass_stateless_not_overridden_by_init():
-    """Subclass stateless=False (default) is not overridden by __init__."""
+def test_subclass_defaults_not_overridden_by_init():
+    """Subclass class attributes are not overridden by __init__ defaults."""
     t = StatefulCounterTransformer()
-    assert t.stateless is False
+    assert t.input_topics == ["input-topic"]
 
 
 # --- TransformerRunner tests ---
@@ -325,12 +328,11 @@ def test_transformer_runner_stateless_gets_empty_state():
 
 
 def test_transformer_runner_stateless_does_not_persist_state():
-    """Stateless transformer's state is not persisted to the store."""
-    async def mutating_transform(msg, state):
-        state["should_not_persist"] = True
+    """Transformer that never yields State does not persist to the store."""
+    async def stateless_transform(msg, state):
         yield Message(key=msg.key, topic="out", value={})
 
-    t = Transformer(input_topics=["in"], stateless=True, transform=mutating_transform)
+    t = Transformer(input_topics=["in"], transform=stateless_transform)
 
     async def run():
         state_store = InMemoryStateStore()
@@ -352,8 +354,8 @@ def test_transformer_runner_functional_stateful():
     """Functional stateful transformer with custom key_fn via runner."""
     async def my_transform(msg, state):
         count = state.get("count", 0) + 1
-        state["count"] = count
         yield Message(key=msg.key, topic="out", value={"count": count})
+        yield State(count=count)
 
     def my_key_fn(msg):
         return msg.value.get("form_id", msg.key)

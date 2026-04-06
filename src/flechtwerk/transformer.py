@@ -13,7 +13,7 @@ from .types import Event, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
-TransformFn = Callable[[IncomingMessage[Event], State], AsyncIterator[Message]]
+TransformFn = Callable[[IncomingMessage[Event], State], AsyncIterator[Message | State]]
 KeyFn = Callable[[IncomingMessage[Event]], str]
 
 
@@ -42,7 +42,6 @@ class Transformer:
     """
 
     input_topics: list[str]
-    stateless: bool = False
 
     def __init__(
         self,
@@ -50,12 +49,9 @@ class Transformer:
         input_topics: list[str] | None = None,
         transform: TransformFn | None = None,
         key_fn: KeyFn | None = None,
-        stateless: bool | None = None,
     ):
         if input_topics is not None:
             self.input_topics = input_topics
-        if stateless is not None:
-            self.stateless = stateless
         if transform is not None:
             self.transform = transform
         if key_fn is not None:
@@ -71,8 +67,13 @@ class Transformer:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    async def transform(self, msg: IncomingMessage[Event], state: State) -> AsyncIterator[Message]:
-        """Transform an incoming message into zero or more output Messages."""
+    async def transform(self, msg: IncomingMessage[Event], state: State) -> AsyncIterator[Message | State]:
+        """Transform an incoming message into zero or more output Messages.
+
+        Yield a State to persist it. The runner collects the last yielded State
+        and writes it to the state store after the generator is exhausted. If no
+        State is yielded, nothing is persisted (stateless behavior).
+        """
         raise NotImplementedError("Provide a transform function or override in a subclass")
 
 
@@ -121,22 +122,23 @@ class TransformerRunner:
             value=Event(msg.value),
         )
 
-        key = None
-        if not self.transformer.stateless:
-            key = self.transformer.key_fn(event_msg)
-
-        state = State(await self.state_store.get(key) or {}) if key else State()
+        key = self.transformer.key_fn(event_msg)
+        state = State(await self.state_store.get(key) or {})
 
         output: list[Message] = []
-        async for out_msg in self.transformer.transform(event_msg, state):
-            output.append(out_msg)
+        new_state = None
+        async for item in self.transformer.transform(event_msg, state):
+            if isinstance(item, State):
+                new_state = item
+            else:
+                output.append(item)
 
         # Exactly-once: produce all messages and commit offset atomically
         tp = aiokafka.TopicPartition(msg.topic, msg.partition)
         await self.send_transactional(output, {tp: msg.offset + 1})
 
-        if key is not None:
-            await self.state_store.put(key, state)
+        if new_state is not None:
+            await self.state_store.put(key, new_state)
 
     async def send_transactional(self, messages: list[Message], offsets: dict) -> None:
         """Send messages and commit consumer offsets in a single Kafka transaction."""

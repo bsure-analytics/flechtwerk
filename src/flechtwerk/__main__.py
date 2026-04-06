@@ -25,7 +25,7 @@ import aiokafka
 
 from .extractor import Extractor, ExtractorRunner
 from .migrate_state import migrate_bytewax_to_fretworx
-from .state import ChangelogStateStore, InMemoryStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic
+from .state import ChangelogStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -160,10 +160,9 @@ async def main() -> None:
     stage, application_id = result
     log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
 
-    stateless = isinstance(stage, Transformer) and stage.stateless
-    state_store = InMemoryStateStore() if stateless else await setup_state_store(application_id)
+    state_store = await setup_state_store(application_id)
     try:
-        if not stateless and args.state_dir:
+        if args.state_dir:
             await auto_migrate_if_needed(args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, state_store)
 
         runner = await create_runner(stage, application_id, state_store)

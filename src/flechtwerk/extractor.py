@@ -57,12 +57,13 @@ class Extractor(ABC):
         pass
 
     @abstractmethod
-    async def poll(self, state: State, config: Config) -> AsyncIterator[Message]:
-        """Poll an external API. Mutate state in place. Yield Messages.
+    async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
+        """Poll an external API and yield Messages.
 
-        The framework passes a defensive copy of state. On successful completion
-        of the generator, the mutated copy is persisted to the state store. On
-        crash, the copy is discarded and the last-persisted state is retained.
+        Yield a State to persist it. The runner collects the last yielded State
+        and writes it to the state store after the generator is exhausted. If no
+        State is yielded, nothing is persisted. On crash, the last-persisted
+        state is retained.
         """
         raise NotImplementedError("Override poll() in a subclass")
 
@@ -151,15 +152,19 @@ class ExtractorRunner:
     async def poll_one(self, key: str, config: Config) -> None:
         """Poll a single config: run poll, persist state on success."""
         state = State(await self.state_store.get(key) or {})
-
         config = await self.extractor.pre_poll(config)
 
         messages: list[Message] = []
-        async for msg in self.extractor.poll(state, config):
-            messages.append(msg)
+        new_state = None
+        async for item in self.extractor.poll(config, state):
+            if isinstance(item, State):
+                new_state = item
+            else:
+                messages.append(item)
 
         await self.send_batch(messages)
-        await self.state_store.put(key, state)
+        if new_state is not None:
+            await self.state_store.put(key, new_state)
 
     async def send_batch(self, messages: list[Message]) -> None:
         """Send messages to Kafka."""
