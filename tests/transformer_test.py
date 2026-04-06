@@ -5,6 +5,7 @@ from typing import AsyncIterator
 
 import pytest
 
+from fretworx.module import FretworxModule
 from fretworx.state import InMemoryStateStore
 from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, FakeRecord
 from fretworx.transformer import Transformer, TransformerRunner
@@ -63,6 +64,18 @@ def make_incoming(key="k", value=None, topic="input-topic"):
     """Build an IncomingMessage-like object via parse_message on a FakeRecord."""
     from fretworx.kafka import parse_message
     return parse_message(make_record(key=key, value=value, topic=topic))
+
+
+def make_module(transformer, consumer=None, producer=None, state_store=None):
+    """Create a FretworxModule with monkey-patched fake resources."""
+    mod = FretworxModule()
+    mod.application_id = "test-group"
+    mod.bootstrap_servers = "localhost:9092"
+    mod.stage = transformer
+    mod.consumer = consumer or FakeKafkaConsumer()
+    mod.producer = producer or FakeKafkaProducer()
+    mod.state_store = state_store or InMemoryStateStore()
+    return mod
 
 
 # --- Subclass transform tests ---
@@ -206,7 +219,8 @@ def test_transformer_runner_processes_messages():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(PassthroughTransformer(), consumer, producer, state_store, "test-group")
+        mod = make_module(PassthroughTransformer(), consumer, producer, state_store)
+        runner = mod.runner
 
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
@@ -231,7 +245,8 @@ def test_transformer_runner_stateful():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(StatefulCounterTransformer(), consumer, producer, state_store, "test-group")
+        mod = make_module(StatefulCounterTransformer(), consumer, producer, state_store)
+        runner = mod.runner
 
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
@@ -262,7 +277,8 @@ def test_transformer_runner_wraps_value_in_event():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(t, consumer, producer, state_store, "test-group")
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
             for raw_msg in msgs:
@@ -289,7 +305,8 @@ def test_transformer_runner_event_is_protective_copy():
         record = make_record(value=original, topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore(), "test-group")
+        mod = make_module(t, consumer, producer, InMemoryStateStore())
+        runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
             for raw_msg in msgs:
@@ -315,7 +332,8 @@ def test_transformer_runner_stateless_gets_empty_state():
         record = make_record(topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore(), "test-group")
+        mod = make_module(t, consumer, producer, InMemoryStateStore())
+        runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
             for raw_msg in msgs:
@@ -339,7 +357,8 @@ def test_transformer_runner_stateless_does_not_persist_state():
         record = make_record(key="k1", topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, state_store, "test-group")
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
             for raw_msg in msgs:
@@ -376,7 +395,8 @@ def test_transformer_runner_functional_stateful():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(t, consumer, producer, state_store, "test-group")
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
             for raw_msg in msgs:
@@ -416,8 +436,8 @@ def test_transformer_context_manager():
     asyncio.run(run())
 
 
-def test_transformer_runner_closes_resources_on_error():
-    """Runner closes consumer and producer even when transform raises."""
+def test_transformer_runner_error_propagates_from_run():
+    """Errors from transform propagate out of run()."""
     class FailingTransformer(Transformer):
         input_topics = ["in"]
 
@@ -431,13 +451,11 @@ def test_transformer_runner_closes_resources_on_error():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = TransformerRunner(FailingTransformer(), consumer, producer, state_store, "test-group")
+        mod = make_module(FailingTransformer(), consumer, producer, state_store)
+        runner = mod.runner
 
         with pytest.raises(RuntimeError, match="boom"):
             await runner.run()
-
-        # Resources should be closed despite the error
-        # FakeKafkaConsumer/Producer don't track close, but no exception means success
 
     asyncio.run(run())
 
@@ -454,7 +472,8 @@ def test_transformer_runner_filter_yields_nothing():
         record = make_record(topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
-        runner = TransformerRunner(t, consumer, producer, InMemoryStateStore(), "test-group")
+        mod = make_module(t, consumer, producer, InMemoryStateStore())
+        runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
         for tp, msgs in records.items():
             for raw_msg in msgs:

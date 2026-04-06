@@ -9,24 +9,19 @@ Bytewax CLI args are accepted for drop-in compatibility:
 The -r/--state-dir flag enables one-time Bytewax SQLite state migration.
 Without it, no migration is attempted.
 """
-from __future__ import annotations
-
 import argparse
 import asyncio
 import importlib
 import logging
 import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import Final
 
-import aiokafka
-
-from .extractor import Extractor, ExtractorRunner
+from .extractor import Extractor
 from .migrate_state import migrate_bytewax_to_fretworx
-from .state import ChangelogStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic
-from .transformer import Transformer, TransformerRunner
+from .module import FretworxModule
+from .transformer import Transformer
 
 log = logging.getLogger(__name__)
 
@@ -74,25 +69,11 @@ def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | Non
     return stage, application_id
 
 
-async def setup_state_store(application_id: str) -> ChangelogStateStore:
-    """Create an ephemeral RocksDB state store backed by a Kafka changelog topic."""
-    changelog_topic = application_id + "-changelog"
-
-    await ensure_changelog_topic(KAFKA_BOOTSTRAP_SERVERS, changelog_topic)
-
-    changelog_producer = aiokafka.AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
-    await changelog_producer.start()
-    inner_store = RocksDBStateStore(Path(tempfile.mkdtemp()) / "state")
-    state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
-    await state_store.restore(KAFKA_BOOTSTRAP_SERVERS)
-    return state_store
-
-
 async def auto_migrate_if_needed(
         state_dir: str,
         bootstrap_servers: str,
         application_id: str,
-        state_store: ChangelogStateStore,
+        state_store,
 ) -> None:
     """Auto-migrate Bytewax SQLite state to the changelog-backed state store."""
     sentinel = Path(state_dir) / ".migration-complete"
@@ -105,37 +86,6 @@ async def auto_migrate_if_needed(
         log.exception("State migration failed — starting with empty state")
 
     sentinel.touch()
-
-
-async def create_runner(
-        stage: Extractor | Transformer,
-        application_id: str,
-        state_store: StateStore,
-) -> ExtractorRunner | TransformerRunner:
-    """Create a consumer, producer, and runner for the given stage."""
-    consumer = aiokafka.AIOKafkaConsumer(
-        *stage.input_topics,
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        auto_offset_reset="earliest",
-        enable_auto_commit=False,
-        group_id=application_id,
-    )
-    producer_kwargs = {
-        "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
-        "key_serializer": lambda k: k.encode("utf-8") if k else b"",
-        "value_serializer": lambda v: v.encode("utf-8") if v else b"",
-    }
-
-    if isinstance(stage, Transformer):
-        producer_kwargs["transactional_id"] = application_id + "-txn"
-
-    producer = aiokafka.AIOKafkaProducer(**producer_kwargs)
-    await consumer.start()
-    await producer.start()
-
-    if isinstance(stage, Extractor):
-        return ExtractorRunner(stage, consumer, producer, state_store)
-    return TransformerRunner(stage, consumer, producer, state_store, application_id)
 
 
 def run_bytewax_fallback() -> None:
@@ -160,15 +110,17 @@ async def main() -> None:
     stage, application_id = result
     log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
 
-    state_store = await setup_state_store(application_id)
-    try:
-        if args.state_dir:
-            await auto_migrate_if_needed(args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, state_store)
+    fretworx = FretworxModule()
+    fretworx.application_id = application_id
+    fretworx.bootstrap_servers = KAFKA_BOOTSTRAP_SERVERS
+    fretworx.stage = stage
 
-        runner = await create_runner(stage, application_id, state_store)
-        await runner.run()
-    finally:
-        await state_store.close()
+    async with fretworx:
+        if args.state_dir:
+            await auto_migrate_if_needed(
+                args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, fretworx.state_store,
+            )
+        await fretworx.runner.run()
 
 
 if __name__ == "__main__":

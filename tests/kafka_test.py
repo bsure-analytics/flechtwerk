@@ -5,17 +5,17 @@ from fretworx.kafka import datetime_to_millis, encode_json, millis_to_datetime
 
 
 def test_encode_json_string_passthrough():
-    assert encode_json("already a string") == "already a string"
+    assert encode_json("already a string") == b"already a string"
 
 
 def test_encode_json_dict():
     result = encode_json({"b": 2, "a": 1})
-    assert result == '{"a":1,"b":2}'  # sorted keys, compact
+    assert result == b'{"a":1,"b":2}'  # sorted keys, compact
 
 
 def test_encode_json_unicode():
     result = encode_json({"name": "Müller"})
-    assert "Müller" in result  # ensure_ascii=False
+    assert "Müller".encode("utf-8") in result  # ensure_ascii=False
 
 
 def test_encode_json_rejects_nan():
@@ -26,7 +26,7 @@ def test_encode_json_rejects_nan():
 
 def test_encode_json_nested():
     result = encode_json({"outer": {"inner": [1, 2, 3]}})
-    assert result == '{"outer":{"inner":[1,2,3]}}'
+    assert result == b'{"outer":{"inner":[1,2,3]}}'
 
 
 def test_datetime_to_millis():

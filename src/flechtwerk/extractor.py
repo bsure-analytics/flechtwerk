@@ -1,12 +1,12 @@
 """Extractor base class and runner for poll-driven data extraction."""
-from __future__ import annotations
-
 import asyncio
 import logging
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from os import getenv
 from typing import AsyncIterator
+
+from reactor_di import lookup
 
 from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
 from .state import StateStore
@@ -50,7 +50,7 @@ class Extractor(ABC):
         """
         return config
 
-    async def __aenter__(self) -> Extractor:
+    async def __aenter__(self) -> "Extractor":
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -69,52 +69,53 @@ class Extractor(ABC):
 
 
 class ExtractorRunner:
-    """Orchestrates concurrent polling for an Extractor subclass."""
+    """Orchestrates concurrent polling for an Extractor subclass.
 
-    def __init__(
-        self,
-        extractor: Extractor,
-        consumer: KafkaConsumer,
-        producer: KafkaProducer,
-        state_store: StateStore,
-    ):
-        self.extractor = extractor
-        self.consumer = consumer
-        self.producer = producer
-        self.state_store = state_store
+    Attributes are set by the DI container (reactor-di) or directly in tests.
+    """
+
+    consumer: KafkaConsumer
+    extractor: lookup[Extractor, "stage"]
+    producer: KafkaProducer
+    state_store: StateStore
+
+    def __init__(self):
         self.configs: dict[str, Config] = {}
-        self.poll_interval = timedelta(
-            seconds=extractor.poll_interval_seconds
+
+    @property
+    def poll_interval(self) -> timedelta:
+        return timedelta(
+            seconds=self.extractor.poll_interval_seconds
             or int(getenv("POLL_INTERVAL_SECONDS", "60"))
         )
 
     async def run(self) -> None:
-        """Main event loop. Runs until cancelled or an unrecoverable error occurs."""
-        try:
-            async with self.extractor:
-                await self.load_initial_configs()
+        """Main event loop. Runs until cancelled or an unrecoverable error occurs.
 
-                while True:
-                    await self.check_config_updates()
-                    active = {
-                        k: v for k, v in self.configs.items()
-                        if not v.get(SUSPENDED)
-                    }
-                    if active:
-                        log.debug("Polling %d active config(s)", len(active))
-                        results = await asyncio.gather(
-                            *(self.poll_one(k, v) for k, v in active.items()),
-                            return_exceptions=True,
-                        )
-                        for key, result in zip(active.keys(), results):
-                            if isinstance(result, Exception):
-                                log.error("Poll failed for key %s", key, exc_info=result)
-                                raise result
+        Resource lifecycle (consumer/producer start/stop) is managed by
+        FretworxModule, not the runner.
+        """
+        async with self.extractor:
+            await self.load_initial_configs()
 
-                    await asyncio.sleep(self.poll_interval.total_seconds())
-        finally:
-            await self.consumer.stop()
-            await self.producer.stop()
+            while True:
+                await self.check_config_updates()
+                active = {
+                    k: v for k, v in self.configs.items()
+                    if not v.get(SUSPENDED)
+                }
+                if active:
+                    log.debug("Polling %d active config(s)", len(active))
+                    results = await asyncio.gather(
+                        *(self.poll_one(k, v) for k, v in active.items()),
+                        return_exceptions=True,
+                    )
+                    for key, result in zip(active.keys(), results):
+                        if isinstance(result, Exception):
+                            log.error("Poll failed for key %s", key, exc_info=result)
+                            raise result
+
+                await asyncio.sleep(self.poll_interval.total_seconds())
 
     async def load_initial_configs(self) -> None:
         """Read all existing configs from the topic on startup."""

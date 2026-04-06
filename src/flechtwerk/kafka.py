@@ -1,6 +1,4 @@
 """Kafka Protocols, utilities, and changelog restore."""
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -46,17 +44,20 @@ class KafkaProducer(Protocol):
 # --- Utilities ---
 
 
-def encode_json(value: Any) -> str:
-    """Encode a value to compact, sorted-key JSON matching Bytewax's serialization."""
+def encode_json(value: Any) -> bytes:
+    """Encode a value to compact, sorted-key JSON bytes for Kafka.
+
+    Returns UTF-8 bytes ready for the producer (no serializer needed).
+    """
     if isinstance(value, str):
-        return value
+        return value.encode("utf-8")
     return json.dumps(
         value,
         allow_nan=False,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-    )
+    ).encode("utf-8")
 
 
 def datetime_to_millis(dt: datetime | None) -> int | None:
@@ -95,72 +96,54 @@ def parse_message(msg: Any) -> IncomingMessage[dict[str, Any]]:
 # --- Changelog restore ---
 
 
-async def _stop_consumer(consumer: aiokafka.AIOKafkaConsumer) -> None:
-    """Stop a consumer, suppressing the CancelledError from aiokafka's coordinator."""
-    try:
-        await consumer.stop()
-    except asyncio.CancelledError:
-        pass
-
-
 async def restore_changelog(
-    bootstrap_servers: str,
+    consumer: aiokafka.AIOKafkaConsumer,
     topic: str,
     put: Any,
     delete: Any,
 ) -> int:
     """Read an entire compacted changelog topic to rebuild state.
 
-    Uses manual partition assignment (no consumer group). Seeks to
-    beginning and reads until no more messages arrive.
+    Uses manual partition assignment (no consumer group). The consumer
+    must already be started with group_id=None.
 
     Args:
-        bootstrap_servers: Kafka bootstrap servers (comma-separated)
-        topic: Changelog topic name
-        put: async callable(key, value) to store a state entry
-        delete: async callable(key) to remove a state entry
+        consumer: An already-started AIOKafkaConsumer (group_id=None).
+        topic: Changelog topic name.
+        put: async callable(key, value) to store a state entry.
+        delete: async callable(key) to remove a state entry.
 
     Returns:
         Number of entries restored.
     """
-    consumer = aiokafka.AIOKafkaConsumer(
-        bootstrap_servers=bootstrap_servers,
-        group_id=None,
-        key_deserializer=lambda k: k.decode("utf-8") if k else "",
-    )
+    # Force metadata fetch for this topic (start() only fetches for subscribed topics)
+    await consumer._client.set_topics([topic])
+    partitions = consumer.partitions_for_topic(topic)
+    if not partitions:
+        log.info("No partitions found for changelog topic %s", topic)
+        return 0
 
-    await consumer.start()
-    try:
-        # Force metadata fetch for this topic (start() only fetches for subscribed topics)
-        await consumer._client.set_topics([topic])
-        partitions = consumer.partitions_for_topic(topic)
-        if not partitions:
-            log.info("No partitions found for changelog topic %s", topic)
-            return 0
+    tps = [aiokafka.TopicPartition(topic, p) for p in partitions]
+    consumer.assign(tps)
+    await consumer.seek_to_beginning()
 
-        tps = [aiokafka.TopicPartition(topic, p) for p in partitions]
-        consumer.assign(tps)
-        await consumer.seek_to_beginning()
-
-        count = 0
-        while True:
-            records = await consumer.getmany(timeout_ms=2000)
-            if not records:
-                break
-            for tp, msgs in records.items():
-                for msg in msgs:
-                    key = msg.key or ""
-                    if msg.value:
-                        value = pickle.loads(msg.value)  # noqa: S301
-                        if value:
-                            await put(key, State(value))
-                        else:
-                            await delete(key)
+    count = 0
+    while True:
+        records = await consumer.getmany(timeout_ms=2000)
+        if not records:
+            break
+        for tp, msgs in records.items():
+            for msg in msgs:
+                key = (msg.key.decode("utf-8") if isinstance(msg.key, bytes) else msg.key) or ""
+                if msg.value:
+                    value = pickle.loads(msg.value)  # noqa: S301
+                    if value:
+                        await put(key, State(value))
                     else:
                         await delete(key)
-                    count += 1
+                else:
+                    await delete(key)
+                count += 1
 
-        log.info("Restored %d state entries from %s", count, topic)
-        return count
-    finally:
-        await _stop_consumer(consumer)
+    log.info("Restored %d state entries from %s", count, topic)
+    return count

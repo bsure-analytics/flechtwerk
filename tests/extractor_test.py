@@ -6,6 +6,7 @@ from typing import AsyncIterator
 import pytest
 
 from fretworx.extractor import Extractor, ExtractorRunner
+from fretworx.module import FretworxModule
 from fretworx.state import InMemoryStateStore
 from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, FakeRecord
 from fretworx.types import Config, Message, State
@@ -62,6 +63,18 @@ def make_record(key="k", value=None, topic="test-config", offset=0, partition=0)
     return FakeRecord(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
 
 
+def make_module(extractor, consumer=None, producer=None, state_store=None):
+    """Create a FretworxModule with monkey-patched fake resources."""
+    mod = FretworxModule()
+    mod.application_id = "test"
+    mod.bootstrap_servers = "localhost:9092"
+    mod.stage = extractor
+    mod.consumer = consumer or FakeKafkaConsumer()
+    mod.producer = producer or FakeKafkaProducer()
+    mod.state_store = state_store or InMemoryStateStore()
+    return mod
+
+
 def test_simple_extractor_poll():
     """Test the poll function directly."""
     async def run():
@@ -90,12 +103,8 @@ def test_extractor_runner_polls_configs():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = ExtractorRunner(
-            SimpleExtractor(),
-            consumer,
-            producer,
-            state_store,
-        )
+        mod = make_module(SimpleExtractor(), consumer, producer, state_store)
+        runner = mod.runner
 
         # Run load_initial_configs manually
         await runner.load_initial_configs()
@@ -123,12 +132,8 @@ def test_extractor_enrichment():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        runner = ExtractorRunner(
-            EnrichingExtractor(),
-            consumer,
-            producer,
-            state_store,
-        )
+        mod = make_module(EnrichingExtractor(), consumer, producer, state_store)
+        runner = mod.runner
         await runner.load_initial_configs()
 
         # Config should have been enriched
@@ -166,10 +171,9 @@ def test_extractor_state_isolation_on_error():
     async def run():
         state_store = InMemoryStateStore()
         await state_store.put("k", {"original": True})
-        consumer = FakeKafkaConsumer()
-        producer = FakeKafkaProducer()
 
-        runner = ExtractorRunner(FailingExtractor(), consumer, producer, state_store)
+        mod = make_module(FailingExtractor(), state_store=state_store)
+        runner = mod.runner
 
         with pytest.raises(RuntimeError, match="Simulated API failure"):
             await runner.poll_one("k", {"api_key": "k"})
@@ -187,9 +191,9 @@ def test_empty_config_removes_key():
             make_record(key="k1", value={"api_key": "a"}, offset=0),
             make_record(key="k1", value={}, offset=1),
         ])
-        producer = FakeKafkaProducer()
-        state_store = InMemoryStateStore()
-        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+
+        mod = make_module(SimpleExtractor(), consumer)
+        runner = mod.runner
 
         await runner.load_initial_configs()
         assert len(runner.configs) == 0  # Empty config removes the key
@@ -202,10 +206,9 @@ def test_extractor_runner_wraps_config_in_config_type():
     async def run():
         record = make_record(key="k", value={"api_key": "test"}, topic="cfg")
         consumer = FakeKafkaConsumer([record])
-        producer = FakeKafkaProducer()
-        state_store = InMemoryStateStore()
 
-        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+        mod = make_module(SimpleExtractor(), consumer)
+        runner = mod.runner
         await runner.load_initial_configs()
 
         assert isinstance(runner.configs["k"], Config)
@@ -221,9 +224,9 @@ def test_extractor_runner_suspended_configs_not_polled():
             make_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1, topic="cfg"),
         ])
         producer = FakeKafkaProducer()
-        state_store = InMemoryStateStore()
 
-        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+        mod = make_module(SimpleExtractor(), consumer, producer)
+        runner = mod.runner
         await runner.load_initial_configs()
 
         assert len(runner.configs) == 2
@@ -232,7 +235,7 @@ def test_extractor_runner_suspended_configs_not_polled():
         await runner.poll_one("active", runner.configs["active"])
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
-        assert payload["key"] == "a"
+        assert payload["key"] == b"a"
 
     asyncio.run(run())
 
@@ -246,10 +249,10 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
     async def run():
         state_store = InMemoryStateStore()
         await state_store.put("k", {"cursor": 5})
-        consumer = FakeKafkaConsumer()
         producer = FailingProducer()
 
-        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+        mod = make_module(SimpleExtractor(), producer=producer, state_store=state_store)
+        runner = mod.runner
 
         with pytest.raises(ConnectionError):
             await runner.poll_one("k", Config({"api_key": "k"}))
@@ -260,8 +263,8 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
     asyncio.run(run())
 
 
-def test_extractor_runner_closes_resources_on_error():
-    """Runner closes consumer and producer even when poll raises."""
+def test_extractor_runner_error_propagates_from_run():
+    """Errors from poll propagate out of run()."""
     class AlwaysFailExtractor(Extractor):
         input_topics = ["cfg"]
 
@@ -272,10 +275,9 @@ def test_extractor_runner_closes_resources_on_error():
     async def run():
         record = make_record(key="k", value={"api_key": "a"}, topic="cfg")
         consumer = FakeKafkaConsumer([record])
-        producer = FakeKafkaProducer()
-        state_store = InMemoryStateStore()
 
-        runner = ExtractorRunner(AlwaysFailExtractor(), consumer, producer, state_store)
+        mod = make_module(AlwaysFailExtractor(), consumer)
+        runner = mod.runner
 
         with pytest.raises(RuntimeError, match="fatal"):
             await runner.run()
@@ -288,10 +290,9 @@ def test_extractor_runner_config_update_during_operation():
     async def run():
         initial = make_record(key="k", value={"api_key": "v1"}, topic="cfg")
         consumer = FakeKafkaConsumer([initial])
-        producer = FakeKafkaProducer()
-        state_store = InMemoryStateStore()
 
-        runner = ExtractorRunner(SimpleExtractor(), consumer, producer, state_store)
+        mod = make_module(SimpleExtractor(), consumer)
+        runner = mod.runner
         await runner.load_initial_configs()
 
         assert runner.configs["k"]["api_key"] == "v1"
@@ -317,10 +318,10 @@ def test_extractor_poll_yields_no_state():
 
     async def run():
         state_store = InMemoryStateStore()
-        consumer = FakeKafkaConsumer()
         producer = FakeKafkaProducer()
 
-        runner = ExtractorRunner(EmptyExtractor(), consumer, producer, state_store)
+        mod = make_module(EmptyExtractor(), producer=producer, state_store=state_store)
+        runner = mod.runner
         await runner.poll_one("k", Config({"api_key": "k"}))
 
         assert len(producer.sent) == 0

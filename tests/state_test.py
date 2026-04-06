@@ -76,7 +76,8 @@ def test_in_memory_nested_state():
 
 def test_rocksdb_put_and_get(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore(tmp_path / "test-db")
+        store = RocksDBStateStore()
+        store.path = tmp_path / "test-db"
         try:
             await store.put("key1", {"cursor": "2024-01-01", "count": 42})
             result = await store.get("key1")
@@ -88,7 +89,8 @@ def test_rocksdb_put_and_get(tmp_path):
 
 def test_rocksdb_get_missing_returns_none(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore(tmp_path / "test-db")
+        store = RocksDBStateStore()
+        store.path = tmp_path / "test-db"
         try:
             assert await store.get("nonexistent") is None
         finally:
@@ -98,7 +100,8 @@ def test_rocksdb_get_missing_returns_none(tmp_path):
 
 def test_rocksdb_delete(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore(tmp_path / "test-db")
+        store = RocksDBStateStore()
+        store.path = tmp_path / "test-db"
         try:
             await store.put("key1", {"x": 1})
             await store.delete("key1")
@@ -110,7 +113,8 @@ def test_rocksdb_delete(tmp_path):
 
 def test_rocksdb_datetime_round_trip(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore(tmp_path / "test-db")
+        store = RocksDBStateStore()
+        store.path = tmp_path / "test-db"
         try:
             dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
             await store.put("key", {"last_time": dt})
@@ -124,7 +128,8 @@ def test_rocksdb_datetime_round_trip(tmp_path):
 
 def test_rocksdb_set_round_trip(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore(tmp_path / "test-db")
+        store = RocksDBStateStore()
+        store.path = tmp_path / "test-db"
         try:
             await store.put("key", {"hashes": {"abc", "def"}})
             restored = await store.get("key")
@@ -143,7 +148,10 @@ def test_changelog_put_writes_to_inner_and_producer():
     async def run():
         inner = InMemoryStateStore()
         producer = FakeKafkaProducer()
-        store = ChangelogStateStore(inner, producer, "test-changelog")
+        store = ChangelogStateStore()
+        store.inner = inner
+        store.producer = producer
+        store.topic = "test-changelog"
 
         await store.put("k1", State({"cursor": 42}))
 
@@ -161,7 +169,10 @@ def test_changelog_get_reads_from_inner():
     async def run():
         inner = InMemoryStateStore()
         producer = FakeKafkaProducer()
-        store = ChangelogStateStore(inner, producer, "test-changelog")
+        store = ChangelogStateStore()
+        store.inner = inner
+        store.producer = producer
+        store.topic = "test-changelog"
 
         await inner.put("k1", State({"data": 1}))
         result = await store.get("k1")
@@ -175,7 +186,10 @@ def test_changelog_delete_writes_tombstone():
     async def run():
         inner = InMemoryStateStore()
         producer = FakeKafkaProducer()
-        store = ChangelogStateStore(inner, producer, "test-changelog")
+        store = ChangelogStateStore()
+        store.inner = inner
+        store.producer = producer
+        store.topic = "test-changelog"
 
         await store.put("k1", State({"data": 1}))
         await store.delete("k1")
@@ -218,15 +232,59 @@ def test_changelog_inner_store_tombstone_deletes():
     asyncio.run(run())
 
 
-def test_changelog_close_stops_producer():
+def test_changelog_close_closes_inner():
+    """close() closes the inner store but does NOT stop the producer.
+
+    Producer lifecycle is managed by the DI container (FretworxModule),
+    not by the state store.
+    """
     async def run():
         inner = InMemoryStateStore()
         producer = FakeKafkaProducer()
-        store = ChangelogStateStore(inner, producer, "test-changelog")
+        store = ChangelogStateStore()
+        store.inner = inner
+        store.producer = producer
+        store.topic = "test-changelog"
 
         await store.put("k1", State({"data": 1}))
         await store.close()
 
-        assert producer.stopped
+        # Producer should NOT be stopped (module manages that)
+        assert not hasattr(producer, "stopped") or not producer.stopped
+
+    asyncio.run(run())
+
+
+# --- FretworxModule DI wiring tests ---
+
+
+def test_module_wires_changelog_state_store():
+    """FretworxModule wires ChangelogStateStore via reactor-di lookups."""
+    from fretworx.extractor import Extractor
+    from fretworx.module import FretworxModule
+
+    class StubExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, config, state):
+            return
+            yield  # pragma: no cover
+
+    async def run():
+        mod = FretworxModule()
+        mod.application_id = "test-app"
+        mod.bootstrap_servers = "localhost:9092"
+        mod.stage = StubExtractor()
+
+        store = mod.state_store
+
+        # inner_store → ChangelogStateStore.inner (via lookup)
+        assert store.inner is mod.inner_store
+
+        # producer → shared (via name match)
+        assert store.producer is mod.producer
+
+        # changelog_topic → ChangelogStateStore.topic (via lookup)
+        assert store.topic == "test-app-changelog"
 
     asyncio.run(run())
