@@ -1,6 +1,7 @@
 """Tests for fretworx state store."""
 import asyncio
 import json
+import pickle
 from datetime import datetime, timezone
 
 from fretworx.state import ChangelogStateStore, InMemoryStateStore, RocksDBStateStore
@@ -165,8 +166,8 @@ def test_changelog_put_writes_to_inner_and_producer():
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
         assert topic == "test-changelog"
-        assert payload["key"] == "k1"  # encode_json passes strings through
-        assert json.loads(payload["value"]) == {"cursor": 42}
+        assert payload["key"] == b"k1"
+        assert pickle.loads(payload["value"]) == {"cursor": 42}
 
     asyncio.run(run())
 
@@ -198,7 +199,7 @@ def test_changelog_delete_writes_tombstone():
         assert len(producer.sent) == 2
         topic, payload = producer.sent[1]
         assert topic == "test-changelog"
-        assert json.loads(payload["value"]) == {}
+        assert payload["value"] == b""
 
     asyncio.run(run())
 

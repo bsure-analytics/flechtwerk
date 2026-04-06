@@ -5,6 +5,8 @@ import logging
 from collections.abc import Callable
 from typing import AsyncIterator
 
+import aiokafka
+
 from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
 from .state import StateStore
 from .types import Event, IncomingMessage, Message, State
@@ -99,8 +101,9 @@ class TransformerRunner:
                     records = await self.consumer.getmany(timeout_ms=1000)
                     if not records:
                         continue
-                    for tp, msgs in records.items():
-                        for raw_msg in msgs:
+                    topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
+                    for tp in sorted(records, key=lambda tp: topic_order.get(getattr(tp, "topic", tp[0]), 0)):
+                        for raw_msg in records[tp]:
                             await self.process_one(raw_msg)
         finally:
             await self.consumer.stop()
@@ -129,17 +132,14 @@ class TransformerRunner:
             output.append(out_msg)
 
         # Exactly-once: produce all messages and commit offset atomically
-        await self.send_transactional(output)
+        tp = aiokafka.TopicPartition(msg.topic, msg.partition)
+        await self.send_transactional(output, {tp: msg.offset + 1})
 
         if key is not None:
             await self.state_store.put(key, state)
 
-    async def send_transactional(self, messages: list[Message]) -> None:
+    async def send_transactional(self, messages: list[Message], offsets: dict) -> None:
         """Send messages and commit consumer offsets in a single Kafka transaction."""
-        offsets = {}
-        for tp in self.consumer.assignment():
-            offsets[tp] = await self.consumer.position(tp)
-
         async with self.producer.transaction():
             for msg in messages:
                 await self.producer.send(

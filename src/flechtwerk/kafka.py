@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import pickle
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
@@ -125,12 +126,13 @@ async def restore_changelog(
     consumer = aiokafka.AIOKafkaConsumer(
         bootstrap_servers=bootstrap_servers,
         group_id=None,
-        value_deserializer=lambda v: v.decode("utf-8") if v else "",
         key_deserializer=lambda k: k.decode("utf-8") if k else "",
     )
 
     await consumer.start()
     try:
+        # Force metadata fetch for this topic (start() only fetches for subscribed topics)
+        await consumer._client.set_topics([topic])
         partitions = consumer.partitions_for_topic(topic)
         if not partitions:
             log.info("No partitions found for changelog topic %s", topic)
@@ -148,12 +150,8 @@ async def restore_changelog(
             for tp, msgs in records.items():
                 for msg in msgs:
                     key = msg.key or ""
-                    raw_value = msg.value or ""
-                    if raw_value:
-                        try:
-                            value = json.loads(raw_value)
-                        except json.JSONDecodeError:
-                            continue
+                    if msg.value:
+                        value = pickle.loads(msg.value)  # noqa: S301
                         if value:
                             await put(key, State(value))
                         else:

@@ -82,9 +82,8 @@ async def setup_state_store(application_id: str) -> ChangelogStateStore:
 
     changelog_producer = aiokafka.AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        key_serializer=lambda k: k.encode("utf-8") if k else b"",
-        value_serializer=lambda v: v.encode("utf-8") if v else b"",
     )
+    await changelog_producer.start()
     inner_store = RocksDBStateStore(Path(tempfile.mkdtemp()) / "state")
     state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
     await state_store.restore(KAFKA_BOOTSTRAP_SERVERS)

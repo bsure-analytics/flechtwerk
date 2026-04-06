@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import pickle
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .kafka import KafkaProducer, encode_json, restore_changelog
+from .kafka import KafkaProducer, restore_changelog
 from .types import State
 
 log = logging.getLogger(__name__)
@@ -142,16 +143,16 @@ class ChangelogStateStore(StateStore):
         await self.inner.put(key, state)
         await self.producer.send(
             self.topic,
-            key=encode_json(key),
-            value=encode_json(dict(state)),
+            key=key.encode("utf-8"),
+            value=pickle.dumps(dict(state)),
         )
 
     async def delete(self, key: str) -> None:
         await self.inner.delete(key)
         await self.producer.send(
             self.topic,
-            key=encode_json(key),
-            value=encode_json({}),
+            key=key.encode("utf-8"),
+            value=b"",
         )
 
     async def close(self) -> None:
