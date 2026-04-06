@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import pickle
+import shutil
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -63,7 +64,6 @@ class StateStore(ABC):
     async def close(self) -> None:
         ...
 
-
 class RocksDBStateStore(StateStore):
     """RocksDB-backed state store.
 
@@ -98,7 +98,8 @@ class RocksDBStateStore(StateStore):
 
     async def close(self) -> None:
         self.db.close()
-        log.info("Closed RocksDB state store at %s", self.db_path)
+        shutil.rmtree(self.db_path.parent, ignore_errors=True)
+        log.info("Closed and removed RocksDB state store at %s", self.db_path)
 
 
 class InMemoryStateStore(StateStore):
@@ -156,7 +157,7 @@ class ChangelogStateStore(StateStore):
         )
 
     async def close(self) -> None:
-        await self.producer.flush()
+        await self.producer.stop()
         await self.inner.close()
 
     async def restore(self, bootstrap_servers: str) -> None:

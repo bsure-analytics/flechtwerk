@@ -70,7 +70,7 @@ class FakeKafkaProducer:
         pass
 
     async def stop(self) -> None:
-        pass
+        self.stopped = True
 
     async def send(self, topic: str, *, key: Any = None, value: Any = None, timestamp_ms: int | None = None) -> None:
         self.sent.append((topic, {"key": key, "value": value, "timestamp_ms": timestamp_ms}))

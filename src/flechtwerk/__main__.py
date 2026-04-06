@@ -25,7 +25,7 @@ import aiokafka
 
 from .extractor import Extractor, ExtractorRunner
 from .migrate_state import migrate_bytewax_to_fretworx
-from .state import ChangelogStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic
+from .state import ChangelogStateStore, InMemoryStateStore, RocksDBStateStore, StateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -80,9 +80,7 @@ async def setup_state_store(application_id: str) -> ChangelogStateStore:
 
     await ensure_changelog_topic(KAFKA_BOOTSTRAP_SERVERS, changelog_topic)
 
-    changelog_producer = aiokafka.AIOKafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-    )
+    changelog_producer = aiokafka.AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
     await changelog_producer.start()
     inner_store = RocksDBStateStore(Path(tempfile.mkdtemp()) / "state")
     state_store = ChangelogStateStore(inner_store, changelog_producer, changelog_topic)
@@ -162,9 +160,10 @@ async def main() -> None:
     stage, application_id = result
     log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
 
-    state_store = await setup_state_store(application_id)
+    stateless = isinstance(stage, Transformer) and stage.stateless
+    state_store = InMemoryStateStore() if stateless else await setup_state_store(application_id)
     try:
-        if args.state_dir:
+        if not stateless and args.state_dir:
             await auto_migrate_if_needed(args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, state_store)
 
         runner = await create_runner(stage, application_id, state_store)
@@ -174,4 +173,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("Shutting down")

@@ -42,7 +42,7 @@ class Transformer:
     """
 
     input_topics: list[str]
-    stateful: bool = False
+    stateless: bool = False
 
     def __init__(
         self,
@@ -50,12 +50,12 @@ class Transformer:
         input_topics: list[str] | None = None,
         transform: TransformFn | None = None,
         key_fn: KeyFn | None = None,
-        stateful: bool | None = None,
+        stateless: bool | None = None,
     ):
         if input_topics is not None:
             self.input_topics = input_topics
-        if stateful is not None:
-            self.stateful = stateful
+        if stateless is not None:
+            self.stateless = stateless
         if transform is not None:
             self.transform = transform
         if key_fn is not None:
@@ -122,7 +122,7 @@ class TransformerRunner:
         )
 
         key = None
-        if self.transformer.stateful:
+        if not self.transformer.stateless:
             key = self.transformer.key_fn(event_msg)
 
         state = State(await self.state_store.get(key) or {}) if key else State()

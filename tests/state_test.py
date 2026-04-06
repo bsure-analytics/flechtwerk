@@ -135,21 +135,6 @@ def test_rocksdb_set_round_trip(tmp_path):
     asyncio.run(run(tmp_path))
 
 
-def test_rocksdb_persistence_across_reopen(tmp_path):
-    async def run(tmp_path):
-        db_path = tmp_path / "test-db"
-
-        store = RocksDBStateStore(db_path)
-        await store.put("key", {"persisted": True})
-        await store.close()
-
-        store2 = RocksDBStateStore(db_path)
-        try:
-            assert await store2.get("key") == {"persisted": True}
-        finally:
-            await store2.close()
-    asyncio.run(run(tmp_path))
-
 
 # --- ChangelogStateStore tests ---
 
@@ -233,7 +218,7 @@ def test_changelog_inner_store_tombstone_deletes():
     asyncio.run(run())
 
 
-def test_changelog_close_flushes_producer():
+def test_changelog_close_stops_producer():
     async def run():
         inner = InMemoryStateStore()
         producer = FakeKafkaProducer()
@@ -242,6 +227,6 @@ def test_changelog_close_flushes_producer():
         await store.put("k1", State({"data": 1}))
         await store.close()
 
-        assert producer.flushed
+        assert producer.stopped
 
     asyncio.run(run())
