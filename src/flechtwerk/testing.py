@@ -1,4 +1,6 @@
 """Test doubles for fretworx framework testing."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any
 

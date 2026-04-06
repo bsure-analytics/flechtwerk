@@ -1,4 +1,6 @@
 """State store port and adapters (RocksDB, in-memory, changelog-backed)."""
+from __future__ import annotations
+
 import json
 import logging
 import pickle

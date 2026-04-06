@@ -1,4 +1,6 @@
 """Kafka Protocols, utilities, and changelog restore."""
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

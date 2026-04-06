@@ -1,4 +1,6 @@
 """Transformer base class and runner for event-driven stream processing."""
+from __future__ import annotations
+
 import logging
 from collections.abc import Callable
 from typing import AsyncIterator
@@ -61,7 +63,7 @@ class Transformer:
         """Extract partition key for stateful processing. Default: message key."""
         return msg.key
 
-    async def __aenter__(self) -> "Transformer":
+    async def __aenter__(self) -> Transformer:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:

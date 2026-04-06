@@ -1,4 +1,6 @@
 """Extractor base class and runner for poll-driven data extraction."""
+from __future__ import annotations
+
 import asyncio
 import logging
 from abc import ABC, abstractmethod
@@ -50,7 +52,7 @@ class Extractor(ABC):
         """
         return config
 
-    async def __aenter__(self) -> "Extractor":
+    async def __aenter__(self) -> Extractor:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:

@@ -10,6 +10,8 @@ and the ChangelogStateStore. For transformers, this closes the transactional
 gap — state changelog writes participate in the same Kafka transaction as
 output messages and offset commits.
 """
+from __future__ import annotations
+
 import logging
 import tempfile
 from functools import cached_property
@@ -90,7 +92,7 @@ class FretworxModule:
         """
         return self.extractor_runner if isinstance(self.stage, Extractor) else self.transformer_runner
 
-    async def __aenter__(self) -> "FretworxModule":
+    async def __aenter__(self) -> FretworxModule:
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         await admin.start()
         try:

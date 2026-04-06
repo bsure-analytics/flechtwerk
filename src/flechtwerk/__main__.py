@@ -9,6 +9,8 @@ Bytewax CLI args are accepted for drop-in compatibility:
 The -r/--state-dir flag enables one-time Bytewax SQLite state migration.
 Without it, no migration is attempted.
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import importlib

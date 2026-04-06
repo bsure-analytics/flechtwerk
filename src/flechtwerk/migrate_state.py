@@ -13,6 +13,8 @@ from where Bytewax left off.
 Called automatically by the fretworx runner on first startup when SQLite
 state exists.
 """
+from __future__ import annotations
+
 import logging
 import pickle
 import re
