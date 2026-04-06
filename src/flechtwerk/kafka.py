@@ -1,10 +1,10 @@
 """Kafka Protocols, utilities, and changelog restore."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import pickle
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
@@ -101,8 +101,8 @@ def parse_message(msg: Any) -> IncomingMessage[dict[str, Any]]:
 async def restore_changelog(
     consumer: aiokafka.AIOKafkaConsumer,
     topic: str,
-    put: Any,
-    delete: Any,
+    put: Callable[[str, State], Awaitable[None]],
+    delete: Callable[[str], Awaitable[None]],
 ) -> int:
     """Read an entire compacted changelog topic to rebuild state.
 

@@ -17,7 +17,7 @@ import tempfile
 from functools import cached_property
 from pathlib import Path
 
-import aiokafka
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
 from reactor_di import CachingStrategy, module
 
@@ -57,8 +57,8 @@ class FretworxModule:
         return self.application_id + "-changelog"
 
     @cached_property
-    def consumer(self) -> aiokafka.AIOKafkaConsumer:
-        return aiokafka.AIOKafkaConsumer(
+    def consumer(self) -> AIOKafkaConsumer:
+        return AIOKafkaConsumer(
             *self.stage.input_topics,
             bootstrap_servers=self.bootstrap_servers,
             auto_offset_reset="earliest",
@@ -71,7 +71,7 @@ class FretworxModule:
         return Path(tempfile.mkdtemp()) / "state"
 
     @cached_property
-    def producer(self) -> aiokafka.AIOKafkaProducer:
+    def producer(self) -> AIOKafkaProducer:
         """Single shared producer — no serializers.
 
         Runners encode output to bytes via encode_json().
@@ -81,7 +81,7 @@ class FretworxModule:
         kwargs: dict = {"bootstrap_servers": self.bootstrap_servers}
         if isinstance(self.stage, Transformer):
             kwargs["transactional_id"] = self.application_id + "-txn"
-        return aiokafka.AIOKafkaProducer(**kwargs)
+        return AIOKafkaProducer(**kwargs)
 
     @cached_property
     def runner(self) -> ExtractorRunner | TransformerRunner:
@@ -100,7 +100,7 @@ class FretworxModule:
         finally:
             await admin.close()
 
-        restore = aiokafka.AIOKafkaConsumer(bootstrap_servers=self.bootstrap_servers, group_id=None)
+        restore = AIOKafkaConsumer(bootstrap_servers=self.bootstrap_servers, group_id=None)
         await restore.start()
         try:
             await self.state_store.restore(restore)
