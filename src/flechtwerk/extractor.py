@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from datetime import timedelta
 from os import getenv
 from typing import AsyncIterator, Final
 
@@ -16,7 +15,7 @@ from .types import Config, Message, State
 
 log = logging.getLogger(__name__)
 
-# Seconds between poll cycles (overridden per-extractor via poll_interval_seconds)
+# Seconds between poll cycles
 POLL_INTERVAL_SECONDS: Final = int(getenv("POLL_INTERVAL_SECONDS", "60"))
 
 API_KEY = "api_key"
@@ -34,7 +33,6 @@ class Extractor(ABC):
     """
 
     input_topics: list[str]
-    poll_interval_seconds: int = POLL_INTERVAL_SECONDS
 
     def key_fn(self, config: Config) -> str:
         """Extract the partitioning key from a config. Default: config["api_key"]."""
@@ -87,10 +85,6 @@ class ExtractorRunner:
     def __init__(self):
         self.configs: dict[str, Config] = {}
 
-    @property
-    def poll_interval(self) -> timedelta:
-        return timedelta(seconds=self.extractor.poll_interval_seconds)
-
     async def run(self) -> None:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
 
@@ -117,7 +111,7 @@ class ExtractorRunner:
                             log.error("Poll failed for key %s", key, exc_info=result)
                             raise result
 
-                await asyncio.sleep(self.poll_interval.total_seconds())
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def load_initial_configs(self) -> None:
         """Read all existing configs from the topic on startup."""
