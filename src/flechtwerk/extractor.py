@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from os import getenv
-from typing import AsyncIterator
+from typing import AsyncIterator, Final
 
 from reactor_di import lookup
 
@@ -15,6 +15,9 @@ from .state import StateStore
 from .types import Config, Message, State
 
 log = logging.getLogger(__name__)
+
+# Seconds between poll cycles (overridden per-extractor via poll_interval_seconds)
+POLL_INTERVAL_SECONDS: Final = int(getenv("POLL_INTERVAL_SECONDS", "60"))
 
 API_KEY = "api_key"
 SUSPENDED = "suspended"
@@ -31,7 +34,7 @@ class Extractor(ABC):
     """
 
     input_topics: list[str]
-    poll_interval_seconds: int | None = None
+    poll_interval_seconds: int = POLL_INTERVAL_SECONDS
 
     def key_fn(self, config: Config) -> str:
         """Extract the partitioning key from a config. Default: config["api_key"]."""
@@ -86,10 +89,7 @@ class ExtractorRunner:
 
     @property
     def poll_interval(self) -> timedelta:
-        return timedelta(
-            seconds=self.extractor.poll_interval_seconds
-            or int(getenv("POLL_INTERVAL_SECONDS", "60"))
-        )
+        return timedelta(seconds=self.extractor.poll_interval_seconds)
 
     async def run(self) -> None:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
