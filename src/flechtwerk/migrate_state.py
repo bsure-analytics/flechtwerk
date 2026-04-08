@@ -15,6 +15,7 @@ state exists.
 """
 from __future__ import annotations
 
+import io
 import logging
 import pickle
 import re
@@ -32,8 +33,27 @@ log = logging.getLogger(__name__)
 BYTEWAX_PARTITION_KEY = re.compile(r"^(\d+)-(.+)$")
 
 
+class BytewaxUnpickler(pickle.Unpickler):
+    """Unpickler that maps Bytewax-era ds.shared types to fretworx.types."""
+
+    def find_class(self, module: str, name: str) -> type:
+        if module == "ds.shared" and name in ("Config", "Event", "State"):
+            module = "fretworx.types"
+        return super().find_class(module, name)
+
+
+def unpickle(data: bytes) -> Any:
+    return BytewaxUnpickler(io.BytesIO(data)).load()
+
+
 def read_bytewax_sqlite(sqlite_path: Path) -> tuple[dict[str, Any], dict[str, int]]:
     """Read state and Kafka offsets from a Bytewax SQLite recovery database.
+
+    Bytewax stores state snapshots in a `snaps` table with columns:
+    - step_id: Bytewax operator name (e.g., "...kafka_input")
+    - state_key: "{partition_idx}-{topic}" for Kafka offsets, or app state key
+    - snap_epoch: snapshot epoch number
+    - ser_change: pickled value (int for offsets, dict for app state)
 
     Returns (states, offsets) where:
     - states: {key: state_dict} — application state
@@ -44,37 +64,28 @@ def read_bytewax_sqlite(sqlite_path: Path) -> tuple[dict[str, Any], dict[str, in
 
     try:
         conn = sqlite3.connect(str(sqlite_path))
-        cursor = conn.cursor()
-
-        tables = cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
+        rows = conn.execute(
+            "SELECT step_id, state_key, ser_change FROM snaps"
         ).fetchall()
-        table_names = [t[0] for t in tables]
 
-        for table_name in table_names:
+        for step_id, state_key, ser_change in rows:
+            if not isinstance(ser_change, bytes):
+                continue
             try:
-                rows = cursor.execute(f"SELECT * FROM \"{table_name}\"").fetchall()  # noqa: S608
-                for row in rows:
-                    for cell in row:
-                        if isinstance(cell, bytes):
-                            try:
-                                unpickled = pickle.loads(cell)  # noqa: S301
-                                if isinstance(unpickled, dict):
-                                    for k, v in unpickled.items():
-                                        if isinstance(k, str) and isinstance(v, int) and BYTEWAX_PARTITION_KEY.match(k):
-                                            offsets[k] = v
-                                        elif isinstance(k, str) and isinstance(v, dict):
-                                            states[k] = v
-                                elif isinstance(unpickled, (list, tuple)) and len(unpickled) == 2:
-                                    k, v = unpickled
-                                    if isinstance(k, str) and isinstance(v, dict):
-                                        states[k] = v
-                                    elif isinstance(k, str) and isinstance(v, int) and BYTEWAX_PARTITION_KEY.match(k):
-                                        offsets[k] = v
-                            except (pickle.UnpicklingError, TypeError, ValueError):
-                                pass
-            except sqlite3.OperationalError:
-                log.warning("Could not read table %s in %s", table_name, sqlite_path)
+                value = unpickle(ser_change)
+            except (pickle.UnpicklingError, TypeError, ValueError):
+                log.warning("Could not unpickle snap for step_id=%s, state_key=%s", step_id, state_key)
+                continue
+
+            if isinstance(value, int) and value >= 0 and BYTEWAX_PARTITION_KEY.match(state_key):
+                offsets[state_key] = value
+                log.debug("Found offset %s = %d (step_id=%s)", state_key, value, step_id)
+            elif isinstance(value, dict):
+                states[state_key] = value
+                log.debug("Found state for key %s (step_id=%s)", state_key, step_id)
+            elif isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+                states[state_key] = value[0]
+                log.debug("Found state for key %s (step_id=%s, unwrapped list)", state_key, step_id)
 
         conn.close()
     except sqlite3.DatabaseError:
@@ -83,49 +94,14 @@ def read_bytewax_sqlite(sqlite_path: Path) -> tuple[dict[str, Any], dict[str, in
     return states, offsets
 
 
-async def commit_consumer_offsets(
-    bootstrap_servers: str,
-    consumer_group: str,
-    offsets: dict[str, int],
-) -> None:
-    """Commit Bytewax partition offsets to the fretworx consumer group."""
-    tp_offsets = {
-        aiokafka.TopicPartition(m.group(2), int(m.group(1))): offset
-        for key, offset in offsets.items()
-        if (m := BYTEWAX_PARTITION_KEY.match(key))
-    }
-
-    if not tp_offsets:
-        log.warning("No valid partition offsets found — skipping Kafka offset commit")
-        return
-
-    topics = sorted({tp.topic for tp in tp_offsets})
-
-    consumer = aiokafka.AIOKafkaConsumer(
-        *topics,
-        bootstrap_servers=bootstrap_servers,
-        group_id=consumer_group,
-        enable_auto_commit=False,
-    )
-
-    await consumer.start()
-    try:
-        await consumer.commit(tp_offsets)
-        for tp, offset in sorted(tp_offsets.items(), key=lambda x: (x[0].topic, x[0].partition)):
-            log.info("Committed offset %d for %s/%d in group %s", offset, tp.topic, tp.partition, consumer_group)
-    finally:
-        await consumer.stop()
-
-
 async def migrate_bytewax_to_fretworx(
     state_store: StateStore,
-    state_dir: str,
-    bootstrap_servers: str,
+    state_dir: Path,
     group_id: str,
+    producer: Any,
 ) -> None:
     """Migrate Bytewax SQLite state to the changelog-backed state store and commit Kafka offsets."""
-    state_path = Path(state_dir)
-    sqlite_files = sorted(state_path.glob("part-*.sqlite3"))
+    sqlite_files = sorted(state_dir.glob("part-*.sqlite3"))
 
     if not sqlite_files:
         log.info("No SQLite recovery databases found in %s — nothing to migrate", state_dir)
@@ -154,9 +130,18 @@ async def migrate_bytewax_to_fretworx(
     else:
         log.info("No application state found in SQLite databases")
 
-    # Commit Kafka consumer offsets
+    # Commit Kafka consumer offsets via the transactional producer
     if all_offsets:
-        log.info("Found %d Kafka partition offset(s) — committing to group %s", len(all_offsets), group_id)
-        await commit_consumer_offsets(bootstrap_servers, group_id, all_offsets)
+        tp_offsets = {
+            aiokafka.TopicPartition(m.group(2), int(m.group(1))): offset
+            for key, offset in all_offsets.items()
+            if (m := BYTEWAX_PARTITION_KEY.match(key))
+        }
+        if tp_offsets:
+            await producer.send_offsets_to_transaction(tp_offsets, group_id)
+            for tp, offset in sorted(tp_offsets.items(), key=lambda x: (x[0].topic, x[0].partition)):
+                log.info("Committed offset %d for %s/%d in group %s", offset, tp.topic, tp.partition, group_id)
+        else:
+            log.warning("No valid partition offsets found — skipping Kafka offset commit")
     else:
         log.warning("No Kafka offsets found in SQLite databases — transformer may reprocess from earliest")

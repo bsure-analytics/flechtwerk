@@ -48,6 +48,9 @@ class FakeKafkaConsumer:
     async def commit(self, offsets: dict | None = None) -> None:
         self.committed = True
 
+    def subscribe(self, topics: list[str]) -> None:
+        pass
+
     async def seek_to_beginning(self) -> None:
         pass
 

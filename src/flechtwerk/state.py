@@ -1,12 +1,10 @@
 """State store port and adapters (RocksDB, in-memory, changelog-backed)."""
 from __future__ import annotations
 
-import json
 import logging
 import pickle
 import shutil
 from abc import ABC, abstractmethod
-from datetime import datetime
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -17,31 +15,6 @@ from .kafka import KafkaProducer, restore_changelog
 from .types import State
 
 log = logging.getLogger(__name__)
-
-
-class StateEncoder(json.JSONEncoder):
-    """JSON encoder that handles datetime and set.
-
-    Note: tuples are natively serialized as JSON arrays and round-trip as lists.
-    This is acceptable — no business logic depends on the tuple/list distinction.
-    """
-
-    def default(self, obj):
-        if isinstance(obj, datetime):
-            return {"__type__": "datetime", "value": obj.isoformat()}
-        if isinstance(obj, (set, frozenset)):
-            return {"__type__": "set", "value": sorted(obj, key=str)}
-        return super().default(obj)
-
-
-def state_decoder_hook(obj: dict) -> Any:
-    """JSON object hook that restores datetime and set."""
-    type_tag = obj.get("__type__")
-    if type_tag == "datetime":
-        return datetime.fromisoformat(obj["value"])
-    if type_tag == "set":
-        return set(obj["value"])
-    return obj
 
 
 class StateStore(ABC):
@@ -70,7 +43,8 @@ class StateStore(ABC):
 class RocksDBStateStore(StateStore):
     """RocksDB-backed state store.
 
-    State values are JSON-serialized with custom encoding for datetime/set/tuple.
+    State values are pickle-serialized for round-trip safety (handles sets,
+    datetimes, and arbitrary Python types natively).
     Every put() writes to the RocksDB WAL immediately — no periodic snapshots.
 
     The ``path`` attribute is set by the DI container (reactor-di) or directly
@@ -93,11 +67,10 @@ class RocksDBStateStore(StateStore):
             raw = self.db[key]
         except KeyError:
             return None
-        return json.loads(raw, object_hook=state_decoder_hook)
+        return pickle.loads(raw)  # noqa: S301
 
     async def put(self, key: str, state: State) -> None:
-        raw = json.dumps(state, cls=StateEncoder, sort_keys=True)
-        self.db[key] = raw
+        self.db[key] = pickle.dumps(state)
 
     async def delete(self, key: str) -> None:
         try:
@@ -115,16 +88,16 @@ class InMemoryStateStore(StateStore):
     """In-memory state store for testing."""
 
     def __init__(self):
-        self.store: dict[str, str] = {}
+        self.store: dict[str, bytes] = {}
 
     async def get(self, key: str) -> State | None:
         raw = self.store.get(key)
         if raw is None:
             return None
-        return json.loads(raw, object_hook=state_decoder_hook)
+        return pickle.loads(raw)  # noqa: S301
 
     async def put(self, key: str, state: State) -> None:
-        self.store[key] = json.dumps(state, cls=StateEncoder, sort_keys=True)
+        self.store[key] = pickle.dumps(state)
 
     async def delete(self, key: str) -> None:
         self.store.pop(key, None)
@@ -157,7 +130,7 @@ class ChangelogStateStore(StateStore):
         await self.producer.send(
             self.topic,
             key=key.encode("utf-8"),
-            value=pickle.dumps(dict(state)),
+            value=pickle.dumps(state),
         )
 
     async def delete(self, key: str) -> None:

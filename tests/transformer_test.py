@@ -197,9 +197,8 @@ def test_transformer_no_transform_raises():
     async def run():
         t = Transformer(input_topics=["in"])
         msg = make_incoming()
-        with pytest.raises(TypeError):
-            async for _ in t.transform(msg, State()):
-                pass
+        with pytest.raises(NotImplementedError):
+            await t.transform(msg, State())
 
     asyncio.run(run())
 

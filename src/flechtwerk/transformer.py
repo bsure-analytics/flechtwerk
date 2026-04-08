@@ -43,15 +43,19 @@ class Transformer:
                 ...
     """
 
+    group_id: str
     input_topics: list[str]
 
     def __init__(
         self,
         *,
+        group_id: str | None = None,
         input_topics: list[str] | None = None,
         transform: TransformFn | None = None,
         key_fn: KeyFn | None = None,
     ):
+        if group_id is not None:
+            self.group_id = group_id
         if input_topics is not None:
             self.input_topics = input_topics
         if transform is not None:
@@ -99,6 +103,7 @@ class TransformerRunner:
         Resource lifecycle (consumer/producer start/stop) is managed by
         FretworxModule, not the runner.
         """
+        self.consumer.subscribe(self.transformer.input_topics)
         async with self.transformer:
             while True:
                 records = await self.consumer.getmany(timeout_ms=1000)

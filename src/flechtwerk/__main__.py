@@ -21,8 +21,10 @@ from pathlib import Path
 from typing import Final
 
 from .extractor import Extractor
+from .kafka import KafkaProducer
 from .migrate_state import migrate_bytewax_to_fretworx
 from .module import FretworxModule
+from .state import StateStore
 from .transformer import Transformer
 
 log = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "-r", "--state-dir",
         default=None,
         help="Bytewax state directory for migration",
+        type=Path,
     )
 
     # Module path (positional)
@@ -68,28 +71,33 @@ def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | Non
     stage = getattr(module, "stage", None)
     if not isinstance(stage, (Extractor, Transformer)):
         return None
-    default_id = module_path.removeprefix("ds.").replace(".", "-").replace("_", "-")
-    group_id = str(getattr(module, "KAFKA_GROUP_ID", default_id))
+    if not hasattr(stage, "group_id"):
+        raise ValueError(f"{module_path}: stage must set group_id")
+    group_id = stage.group_id
     return stage, group_id
 
 
 async def auto_migrate_if_needed(
-        state_dir: str,
-        bootstrap_servers: str,
+        state_dir: Path,
         group_id: str,
-        state_store,
+        state_store: StateStore,
+        producer: KafkaProducer,
 ) -> None:
     """Auto-migrate Bytewax SQLite state to the changelog-backed state store."""
-    sentinel = Path(state_dir) / ".migration-complete"
+    sentinel = state_dir / ".migration-complete"
     if sentinel.exists():
         return
 
-    try:
-        await migrate_bytewax_to_fretworx(state_store, state_dir, bootstrap_servers, group_id)
-    except Exception:
-        log.exception("State migration failed — starting with empty state")
-
+    async with producer.transaction():
+        await migrate_bytewax_to_fretworx(state_store, state_dir, group_id, producer)
     sentinel.touch()
+
+
+# Note: auto_migrate_if_needed requires a transactional producer because
+# send_offsets_to_transaction is used for offset commits. All current
+# Bytewax stages that need migration use Transformer (which is transactional).
+# If a non-transactional Extractor ever needs migration, this will need
+# a different offset commit strategy.
 
 
 def run_bytewax_fallback() -> None:
@@ -124,7 +132,7 @@ async def main() -> None:
     async with fretworx:
         if args.state_dir:
             await auto_migrate_if_needed(
-                args.state_dir, KAFKA_BOOTSTRAP_SERVERS, group_id, fretworx.state_store,
+                args.state_dir, group_id, fretworx.state_store, fretworx.producer,
             )
         await fretworx.runner.run()
 

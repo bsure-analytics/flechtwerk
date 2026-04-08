@@ -26,12 +26,14 @@ class Extractor(ABC):
     """Base class for poll-driven extractors.
 
     Subclass contract:
+    - Set `group_id` to the Kafka consumer group ID
     - Set `input_topics` to the Kafka config topic(s)
     - Override `poll()` to yield Messages from an external API
     - Optionally override `enrich()`, `pre_poll()`, `key_fn()`
     - Optionally override `__aenter__`/`__aexit__` for resource management
     """
 
+    group_id: str
     input_topics: list[str]
 
     def key_fn(self, config: Config) -> str:
@@ -91,6 +93,7 @@ class ExtractorRunner:
         Resource lifecycle (consumer/producer start/stop) is managed by
         FretworxModule, not the runner.
         """
+        self.consumer.subscribe(self.extractor.input_topics)
         async with self.extractor:
             await self.load_initial_configs()
 
