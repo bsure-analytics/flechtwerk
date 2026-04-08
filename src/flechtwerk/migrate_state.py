@@ -121,7 +121,7 @@ async def migrate_bytewax_to_fretworx(
     state_store: StateStore,
     state_dir: str,
     bootstrap_servers: str,
-    application_id: str,
+    group_id: str,
 ) -> None:
     """Migrate Bytewax SQLite state to the changelog-backed state store and commit Kafka offsets."""
     state_path = Path(state_dir)
@@ -156,7 +156,7 @@ async def migrate_bytewax_to_fretworx(
 
     # Commit Kafka consumer offsets
     if all_offsets:
-        log.info("Found %d Kafka partition offset(s) — committing to group %s", len(all_offsets), application_id)
-        await commit_consumer_offsets(bootstrap_servers, application_id, all_offsets)
+        log.info("Found %d Kafka partition offset(s) — committing to group %s", len(all_offsets), group_id)
+        await commit_consumer_offsets(bootstrap_servers, group_id, all_offsets)
     else:
         log.warning("No Kafka offsets found in SQLite databases — transformer may reprocess from earliest")

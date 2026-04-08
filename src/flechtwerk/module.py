@@ -32,11 +32,12 @@ log = logging.getLogger(__name__)
 class FretworxModule:
     """DI container for all Kafka resources.
 
-    Set application_id, bootstrap_servers, and stage before first access.
+    Set client_id, group_id, and stage before first access.
     Then use as an async context manager to start/stop resources::
 
         mod = FretworxModule()
-        mod.application_id = "ariadne-extractor"
+        mod.client_id = "ariadne-extractor-0"
+        mod.group_id = "ariadne-extractor"
         mod.bootstrap_servers = "localhost:9092"
         mod.stage = my_extractor
 
@@ -44,8 +45,9 @@ class FretworxModule:
             await mod.runner.run()
     """
 
-    application_id: str
     bootstrap_servers: str
+    client_id: str
+    group_id: str
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
     stage: Extractor | Transformer
@@ -54,7 +56,7 @@ class FretworxModule:
 
     @cached_property
     def changelog_topic(self) -> str:
-        return self.application_id + "-changelog"
+        return self.group_id + "-changelog"
 
     @cached_property
     def consumer(self) -> AIOKafkaConsumer:
@@ -62,8 +64,9 @@ class FretworxModule:
             *self.stage.input_topics,
             bootstrap_servers=self.bootstrap_servers,
             auto_offset_reset="earliest",
+            client_id=self.client_id,
             enable_auto_commit=False,
-            group_id=self.application_id,
+            group_id=self.group_id,
         )
 
     @cached_property
@@ -78,9 +81,12 @@ class FretworxModule:
         ChangelogStateStore sends pickle bytes directly. No serializers
         avoids the conflict between str-encoded output and bytes-encoded state.
         """
-        kwargs: dict = {"bootstrap_servers": self.bootstrap_servers}
+        kwargs: dict = {
+            "bootstrap_servers": self.bootstrap_servers,
+            "client_id": self.client_id,
+        }
         if isinstance(self.stage, Transformer):
-            kwargs["transactional_id"] = self.application_id + "-txn"
+            kwargs["transactional_id"] = self.client_id
         return AIOKafkaProducer(**kwargs)
 
     @cached_property

@@ -69,7 +69,8 @@ def make_incoming(key="k", value=None, topic="input-topic"):
 def make_module(transformer, consumer=None, producer=None, state_store=None):
     """Create a FretworxModule with monkey-patched fake resources."""
     mod = FretworxModule()
-    mod.application_id = "test-group"
+    mod.client_id = "test-group"
+    mod.group_id = "test-group"
     mod.bootstrap_servers = "localhost:9092"
     mod.stage = transformer
     mod.consumer = consumer or FakeKafkaConsumer()

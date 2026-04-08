@@ -88,7 +88,7 @@ class TransformerRunner:
     """
 
     consumer: KafkaConsumer
-    group_id: lookup[str, "application_id"]
+    group_id: str
     producer: KafkaProducer
     state_store: StateStore
     transformer: lookup[Transformer, "stage"]

@@ -272,7 +272,8 @@ def test_module_wires_changelog_state_store():
 
     async def run():
         mod = FretworxModule()
-        mod.application_id = "test-app"
+        mod.client_id = "test-app"
+        mod.group_id = "test-app"
         mod.bootstrap_servers = "localhost:9092"
         mod.stage = StubExtractor()
 

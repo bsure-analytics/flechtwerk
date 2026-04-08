@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 
 # Comma-separated Kafka broker addresses
 KAFKA_BOOTSTRAP_SERVERS: Final = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+# Kafka client ID — identifies this instance (defaults to group ID for single-instance local dev)
+KAFKA_CLIENT_ID: Final = os.getenv("KAFKA_CLIENT_ID")
 # Log level (DEBUG, INFO, WARNING, ERROR)
 LOGLEVEL: Final = os.getenv("LOGLEVEL", "INFO")
 
@@ -60,21 +62,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | None:
     """Import the module and look for a fretworx stage instance.
 
-    Returns (stage, application_id) or None if not a fretworx module.
+    Returns (stage, group_id) or None if not a fretworx module.
     """
     module = importlib.import_module(module_path)
     stage = getattr(module, "stage", None)
     if not isinstance(stage, (Extractor, Transformer)):
         return None
     default_id = module_path.removeprefix("ds.").replace(".", "-").replace("_", "-")
-    application_id = str(getattr(module, "KAFKA_APPLICATION_ID", default_id))
-    return stage, application_id
+    group_id = str(getattr(module, "KAFKA_GROUP_ID", default_id))
+    return stage, group_id
 
 
 async def auto_migrate_if_needed(
         state_dir: str,
         bootstrap_servers: str,
-        application_id: str,
+        group_id: str,
         state_store,
 ) -> None:
     """Auto-migrate Bytewax SQLite state to the changelog-backed state store."""
@@ -83,7 +85,7 @@ async def auto_migrate_if_needed(
         return
 
     try:
-        await migrate_bytewax_to_fretworx(state_store, state_dir, bootstrap_servers, application_id)
+        await migrate_bytewax_to_fretworx(state_store, state_dir, bootstrap_servers, group_id)
     except Exception:
         log.exception("State migration failed — starting with empty state")
 
@@ -109,18 +111,20 @@ async def main() -> None:
         run_bytewax_fallback()
         return
 
-    stage, application_id = result
-    log.info("Running %s via fretworx (application_id=%s)", args.module, application_id)
+    stage, group_id = result
+    client_id = KAFKA_CLIENT_ID or group_id
+    log.info("Running %s via fretworx (group_id=%s, client_id=%s)", args.module, group_id, client_id)
 
     fretworx = FretworxModule()
-    fretworx.application_id = application_id
     fretworx.bootstrap_servers = KAFKA_BOOTSTRAP_SERVERS
+    fretworx.client_id = client_id
+    fretworx.group_id = group_id
     fretworx.stage = stage
 
     async with fretworx:
         if args.state_dir:
             await auto_migrate_if_needed(
-                args.state_dir, KAFKA_BOOTSTRAP_SERVERS, application_id, fretworx.state_store,
+                args.state_dir, KAFKA_BOOTSTRAP_SERVERS, group_id, fretworx.state_store,
             )
         await fretworx.runner.run()
 

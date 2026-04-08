@@ -66,7 +66,8 @@ def make_record(key="k", value=None, topic="test-config", offset=0, partition=0)
 def make_module(extractor, consumer=None, producer=None, state_store=None):
     """Create a FretworxModule with monkey-patched fake resources."""
     mod = FretworxModule()
-    mod.application_id = "test"
+    mod.client_id = "test"
+    mod.group_id = "test"
     mod.bootstrap_servers = "localhost:9092"
     mod.stage = extractor
     mod.consumer = consumer or FakeKafkaConsumer()
