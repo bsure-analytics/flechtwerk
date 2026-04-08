@@ -29,14 +29,14 @@ class Extractor(ABC):
     - Set `group_id` to the Kafka consumer group ID
     - Set `input_topics` to the Kafka config topic(s)
     - Override `poll()` to yield Messages from an external API
-    - Optionally override `enrich()`, `pre_poll()`, `key_fn()`
+    - Optionally override `enrich()`, `pre_poll()`, `extract_key()`
     - Optionally override `__aenter__`/`__aexit__` for resource management
     """
 
     group_id: str
     input_topics: list[str]
 
-    def key_fn(self, config: Config) -> str:
+    def extract_key(self, config: Config) -> str:
         """Extract the partitioning key from a config. Default: config["api_key"]."""
         return config[API_KEY]
 
@@ -159,8 +159,10 @@ class ExtractorRunner:
         async for item in self.extractor.poll(config, state):
             if isinstance(item, State):
                 new_state = item
-            else:
+            elif isinstance(item, Message):
                 messages.append(item)
+            else:
+                raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
 
         await self.send_batch(messages)
         if new_state is not None:

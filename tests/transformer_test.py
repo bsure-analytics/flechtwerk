@@ -164,32 +164,32 @@ def test_functional_transformer():
     asyncio.run(run())
 
 
-def test_functional_transformer_with_key_fn():
-    """Functional Transformer with custom key_fn."""
+def test_functional_transformer_with_extract_key():
+    """Functional Transformer with custom extract_key."""
     async def my_transform(msg, state):
         yield Message(key=msg.key, topic="out", value=msg.value)
 
-    def my_key_fn(msg):
+    def my_extract_key(msg):
         return msg.value.get("id", msg.key)
 
     t = Transformer(
         input_topics=["in"],
-        key_fn=my_key_fn,
+        extract_key=my_extract_key,
         transform=my_transform,
     )
 
     msg = make_incoming(value={"id": "custom-key"})
-    assert t.key_fn(msg) == "custom-key"
+    assert t.extract_key(msg) == "custom-key"
 
 
-def test_functional_transformer_default_key_fn():
-    """Functional Transformer without key_fn uses msg.key."""
+def test_functional_transformer_default_extract_key():
+    """Functional Transformer without extract_key uses msg.key."""
     async def my_transform(msg, _):
         yield Message(key=msg.key, topic="out", value={})
 
     t = Transformer(input_topics=["in"], transform=my_transform)
     msg = make_incoming(key="my-key")
-    assert t.key_fn(msg) == "my-key"
+    assert t.extract_key(msg) == "my-key"
 
 
 def test_transformer_no_transform_raises():
@@ -370,18 +370,18 @@ def test_transformer_runner_stateless_does_not_persist_state():
 
 
 def test_transformer_runner_functional_stateful():
-    """Functional stateful transformer with custom key_fn via runner."""
+    """Functional stateful transformer with custom extract_key via runner."""
     async def my_transform(msg, state):
         count = state.get("count", 0) + 1
         yield Message(key=msg.key, topic="out", value={"count": count})
         yield State(count=count)
 
-    def my_key_fn(msg):
+    def my_extract_key(msg):
         return msg.value.get("form_id", msg.key)
 
     t = Transformer(
         input_topics=["in"],
-        key_fn=my_key_fn,
+        extract_key=my_extract_key,
         transform=my_transform,
     )
 

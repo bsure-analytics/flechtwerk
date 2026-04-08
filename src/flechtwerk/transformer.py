@@ -11,12 +11,12 @@ from reactor_di import lookup
 
 from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
 from .state import StateStore
-from .types import Event, IncomingMessage, Message, State
+from .types import IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
-TransformFn = Callable[[IncomingMessage[Event], State], AsyncIterator[Message | State]]
-KeyFn = Callable[[IncomingMessage[Event]], str]
+TransformFn = Callable[[IncomingMessage, State], AsyncIterator[Message | State]]
+ExtractKeyFn = Callable[[IncomingMessage], str]
 
 
 class Transformer:
@@ -52,7 +52,7 @@ class Transformer:
         group_id: str | None = None,
         input_topics: list[str] | None = None,
         transform: TransformFn | None = None,
-        key_fn: KeyFn | None = None,
+        extract_key: ExtractKeyFn | None = None,
     ):
         if group_id is not None:
             self.group_id = group_id
@@ -60,10 +60,10 @@ class Transformer:
             self.input_topics = input_topics
         if transform is not None:
             self.transform = transform
-        if key_fn is not None:
-            self.key_fn = key_fn
+        if extract_key is not None:
+            self.extract_key = extract_key
 
-    def key_fn(self, msg: IncomingMessage[Event]) -> str:
+    def extract_key(self, msg: IncomingMessage) -> str:
         """Extract partition key for stateful processing. Default: message key."""
         return msg.key
 
@@ -73,7 +73,7 @@ class Transformer:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    async def transform(self, msg: IncomingMessage[Event], state: State) -> AsyncIterator[Message | State]:
+    async def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
         """Transform an incoming message into zero or more output Messages.
 
         Yield a State to persist it. The runner collects the last yielded State
@@ -117,25 +117,19 @@ class TransformerRunner:
     async def process_one(self, raw_msg) -> None:
         """Process a single incoming message with exactly-once semantics."""
         msg = parse_message(raw_msg)
-        event_msg = IncomingMessage(
-            key=msg.key,
-            offset=msg.offset,
-            partition=msg.partition,
-            timestamp=msg.timestamp,
-            topic=msg.topic,
-            value=Event(msg.value),
-        )
 
-        key = self.transformer.key_fn(event_msg)
+        key = self.transformer.extract_key(msg)
         state = State(await self.state_store.get(key) or {})
 
         output: list[Message] = []
         new_state = None
-        async for item in self.transformer.transform(event_msg, state):
+        async for item in self.transformer.transform(msg, state):
             if isinstance(item, State):
                 new_state = item
-            else:
+            elif isinstance(item, Message):
                 output.append(item)
+            else:
+                raise TypeError(f"transform() yielded {type(item).__name__}, expected Message or State")
 
         # Exactly-once: produce output, persist state, and commit offset atomically
         tp = aiokafka.TopicPartition(msg.topic, msg.partition)

@@ -10,7 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import aiokafka
 
-from .types import IncomingMessage, State
+from .types import Event, IncomingMessage, State
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def millis_to_datetime(millis: int | None) -> datetime | None:
     return datetime.fromtimestamp(millis / 1000, tz=timezone.utc)
 
 
-def parse_message(msg: Any) -> IncomingMessage[dict[str, Any]]:
+def parse_message(msg: Any) -> IncomingMessage:
     """Parse an aiokafka ConsumerRecord into an IncomingMessage."""
     key = (msg.key.decode("utf-8") if isinstance(msg.key, bytes) else msg.key) or ""
     raw_value = (msg.value.decode("utf-8") if isinstance(msg.value, bytes) else msg.value) or ""
@@ -92,7 +92,7 @@ def parse_message(msg: Any) -> IncomingMessage[dict[str, Any]]:
         partition=msg.partition,
         timestamp=millis_to_datetime(msg.timestamp),
         topic=msg.topic,
-        value=value,
+        value=Event(value),
     )
 
 
