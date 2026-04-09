@@ -65,7 +65,7 @@ class FretworxModule:
             auto_offset_reset="earliest",
             client_id=self.client_id,
             enable_auto_commit=False,
-            group_id=self.group_id,
+            group_id=self.group_id if isinstance(self.stage, Transformer) else None,
         )
 
     @cached_property

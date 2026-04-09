@@ -119,8 +119,8 @@ def test_extractor_runner_polls_configs():
         assert topic == "test-output"
         assert json.loads(payload["value"])["data"] == "polled"
 
-        # State should be persisted
-        assert await state_store.get("tenant/channel") == {"cursor": 1}
+        # State should be persisted under the api_key (extract_key default)
+        assert await state_store.get("key123") == {"cursor": 1}
 
     asyncio.run(run())
 
@@ -175,6 +175,7 @@ def test_extractor_state_isolation_on_error():
 
         mod = make_module(FailingExtractor(), state_store=state_store)
         runner = mod.runner
+        runner.state_keys["k"] = "k"
 
         with pytest.raises(RuntimeError, match="Simulated API failure"):
             await runner.poll_one("k", {"api_key": "k"})
@@ -254,6 +255,7 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
 
         mod = make_module(SimpleExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
+        runner.state_keys["k"] = "k"
 
         with pytest.raises(ConnectionError):
             await runner.poll_one("k", Config({"api_key": "k"}))
@@ -323,6 +325,7 @@ def test_extractor_poll_yields_no_state():
 
         mod = make_module(EmptyExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
+        runner.state_keys["k"] = "k"
         await runner.poll_one("k", Config({"api_key": "k"}))
 
         assert len(producer.sent) == 0

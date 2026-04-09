@@ -98,9 +98,14 @@ async def migrate_bytewax_to_fretworx(
     state_store: StateStore,
     state_dir: Path,
     group_id: str,
-    producer: Any,
+    producer: Any | None = None,
 ) -> None:
-    """Migrate Bytewax SQLite state to the changelog-backed state store and commit Kafka offsets."""
+    """Migrate Bytewax SQLite state to the changelog-backed state store and optionally commit Kafka offsets.
+
+    When producer is provided (transformer path), Kafka consumer offsets are
+    committed via send_offsets_to_transaction. When omitted (extractor path),
+    offset commits are skipped — extractors re-read config topics from earliest.
+    """
     sqlite_files = sorted(state_dir.glob("part-*.sqlite3"))
 
     if not sqlite_files:
@@ -130,8 +135,8 @@ async def migrate_bytewax_to_fretworx(
     else:
         log.info("No application state found in SQLite databases")
 
-    # Commit Kafka consumer offsets via the transactional producer
-    if all_offsets:
+    # Commit Kafka consumer offsets via the transactional producer (transformers only)
+    if all_offsets and producer is not None:
         tp_offsets = {
             aiokafka.TopicPartition(m.group(2), int(m.group(1))): offset
             for key, offset in all_offsets.items()
@@ -143,5 +148,7 @@ async def migrate_bytewax_to_fretworx(
                 log.info("Committed offset %d for %s/%d in group %s", offset, tp.topic, tp.partition, group_id)
         else:
             log.warning("No valid partition offsets found — skipping Kafka offset commit")
+    elif all_offsets and producer is None:
+        log.info("Skipping Kafka offset commit (extractor — config topics re-read from earliest)")
     else:
         log.warning("No Kafka offsets found in SQLite databases — transformer may reprocess from earliest")

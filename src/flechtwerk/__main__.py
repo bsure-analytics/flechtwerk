@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 # Comma-separated Kafka broker addresses
 KAFKA_BOOTSTRAP_SERVERS: Final = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-# Kafka client ID — identifies this instance (defaults to group ID for single-instance local dev)
+# Kafka client ID — identifies this instance (defaults to stage ID for single-instance local dev)
 KAFKA_CLIENT_ID: Final = os.getenv("KAFKA_CLIENT_ID")
 # Log level (DEBUG, INFO, WARNING, ERROR)
 LOGLEVEL: Final = os.getenv("LOGLEVEL", "INFO")
@@ -62,42 +62,57 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv[1:])
 
 
+def module_path_to_stage_id(module_path: str) -> str:
+    """Derive a stage identifier from a module path.
+
+    ds.sumup.extractor → sumup-extractor
+    ds.sm_registrations_nt.extractor → sm-registrations-nt-extractor
+    """
+    return module_path.removeprefix("ds.").replace("_", "-").replace(".", "-")
+
+
 def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | None:
     """Import the module and look for a fretworx stage instance.
 
-    Returns (stage, group_id) or None if not a fretworx module.
+    Returns (stage, stage_id) or None if not a fretworx module.
+    Transformers declare group_id explicitly (needed for consumer groups
+    and transactional offset commits). Extractors derive their stage
+    identifier from the module path — they don't use consumer groups.
     """
     module = importlib.import_module(module_path)
     stage = getattr(module, "stage", None)
     if not isinstance(stage, (Extractor, Transformer)):
         return None
-    if not hasattr(stage, "group_id"):
-        raise ValueError(f"{module_path}: stage must set group_id")
-    group_id = stage.group_id
-    return stage, group_id
+    if isinstance(stage, Transformer):
+        if not hasattr(stage, "group_id"):
+            raise ValueError(f"{module_path}: Transformer stage must set group_id")
+        return stage, stage.group_id
+    return stage, module_path_to_stage_id(module_path)
 
 
 async def auto_migrate_if_needed(
         state_dir: Path,
-        group_id: str,
+        stage_id: str,
+        stage: Extractor | Transformer,
         state_store: StateStore,
         producer: KafkaProducer,
 ) -> None:
-    """Auto-migrate Bytewax SQLite state to the changelog-backed state store."""
+    """Auto-migrate Bytewax SQLite state to the changelog-backed state store.
+
+    Transformers use a Kafka transaction to atomically commit offsets.
+    Extractors skip offset commits (config topics are re-read from earliest
+    on every startup) and migrate state without a transaction.
+    """
     sentinel = state_dir / ".migration-complete"
     if sentinel.exists():
         return
 
-    async with producer.transaction():
-        await migrate_bytewax_to_fretworx(state_store, state_dir, group_id, producer)
+    if isinstance(stage, Transformer):
+        async with producer.transaction():
+            await migrate_bytewax_to_fretworx(state_store, state_dir, stage_id, producer)
+    else:
+        await migrate_bytewax_to_fretworx(state_store, state_dir, stage_id)
     sentinel.touch()
-
-
-# Note: auto_migrate_if_needed requires a transactional producer because
-# send_offsets_to_transaction is used for offset commits. All current
-# Bytewax stages that need migration use Transformer (which is transactional).
-# If a non-transactional Extractor ever needs migration, this will need
-# a different offset commit strategy.
 
 
 def run_bytewax_fallback() -> None:
@@ -119,20 +134,20 @@ async def main() -> None:
         run_bytewax_fallback()
         return
 
-    stage, group_id = result
-    client_id = KAFKA_CLIENT_ID or group_id
-    log.info("Running %s via fretworx (group_id=%s, client_id=%s)", args.module, group_id, client_id)
+    stage, stage_id = result
+    client_id = KAFKA_CLIENT_ID or stage_id
+    log.info("Running %s via fretworx (stage_id=%s, client_id=%s)", args.module, stage_id, client_id)
 
     fretworx = FretworxModule()
     fretworx.bootstrap_servers = KAFKA_BOOTSTRAP_SERVERS
     fretworx.client_id = client_id
-    fretworx.group_id = group_id
+    fretworx.group_id = stage_id
     fretworx.stage = stage
 
     async with fretworx:
         if args.state_dir:
             await auto_migrate_if_needed(
-                args.state_dir, group_id, fretworx.state_store, fretworx.producer,
+                args.state_dir, stage_id, stage, fretworx.state_store, fretworx.producer,
             )
         await fretworx.runner.run()
 

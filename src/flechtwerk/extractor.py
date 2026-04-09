@@ -11,7 +11,7 @@ from reactor_di import lookup
 
 from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
 from .state import StateStore
-from .types import Config, Message, State
+from .types import Config, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
@@ -26,19 +26,21 @@ class Extractor(ABC):
     """Base class for poll-driven extractors.
 
     Subclass contract:
-    - Set `group_id` to the Kafka consumer group ID
     - Set `input_topics` to the Kafka config topic(s)
     - Override `poll()` to yield Messages from an external API
     - Optionally override `enrich()`, `pre_poll()`, `extract_key()`
     - Optionally override `__aenter__`/`__aexit__` for resource management
+
+    Extractors do not use Kafka consumer groups — config topics are re-read
+    from earliest on every startup. The stage identifier (used for changelog
+    topic naming and client ID) is derived from the module path at runtime.
     """
 
-    group_id: str
     input_topics: list[str]
 
-    def extract_key(self, config: Config) -> str:
-        """Extract the partitioning key from a config. Default: config["api_key"]."""
-        return config[API_KEY]
+    def extract_key(self, msg: IncomingMessage) -> str:
+        """Extract the state key from a config message. Default: msg.value["api_key"]."""
+        return msg.value[API_KEY]
 
     async def enrich(self, config: Config) -> Config:
         """One-time enrichment when a config first arrives or updates.
@@ -86,6 +88,7 @@ class ExtractorRunner:
 
     def __init__(self):
         self.configs: dict[str, Config] = {}
+        self.state_keys: dict[str, str] = {}
 
     async def run(self) -> None:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
@@ -124,8 +127,7 @@ class ExtractorRunner:
                 break
             for tp, msgs in records.items():
                 for raw_msg in msgs:
-                    msg = parse_message(raw_msg)
-                    await self.apply_config(msg.key, Config(msg.value))
+                    await self.apply_config(parse_message(raw_msg))
         log.info("Loaded %d initial config(s)", len(self.configs))
 
     async def check_config_updates(self) -> None:
@@ -133,25 +135,29 @@ class ExtractorRunner:
         records = await self.consumer.getmany(timeout_ms=0)
         for tp, msgs in records.items():
             for raw_msg in msgs:
-                msg = parse_message(raw_msg)
-                await self.apply_config(msg.key, Config(msg.value))
+                await self.apply_config(parse_message(raw_msg))
 
-    async def apply_config(self, key: str, config: Config) -> None:
+    async def apply_config(self, msg: IncomingMessage) -> None:
         """Enrich and store a config update."""
+        key = msg.key
+        config = Config(msg.value)
         if not config:
             if key in self.configs:
                 del self.configs[key]
+                del self.state_keys[key]
                 log.info("Removed config for key %s", key)
             return
 
         config = await self.extractor.enrich(config)
         present = key in self.configs
         self.configs[key] = config
+        self.state_keys[key] = self.extractor.extract_key(msg)
         log.info("%s config for key %s", "Updated" if present else "Added", key)
 
     async def poll_one(self, key: str, config: Config) -> None:
         """Poll a single config: run poll, persist state on success."""
-        state = State(await self.state_store.get(key) or {})
+        state_key = self.state_keys[key]
+        state = State(await self.state_store.get(state_key) or {})
         config = await self.extractor.pre_poll(config)
 
         messages: list[Message] = []
@@ -166,7 +172,7 @@ class ExtractorRunner:
 
         await self.send_batch(messages)
         if new_state is not None:
-            await self.state_store.put(key, new_state)
+            await self.state_store.put(state_key, new_state)
 
     async def send_batch(self, messages: list[Message]) -> None:
         """Send messages to Kafka."""
