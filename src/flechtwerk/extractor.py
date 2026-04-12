@@ -120,14 +120,25 @@ class ExtractorRunner:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def load_initial_configs(self) -> None:
-        """Read all existing configs from the topic on startup."""
+        """Read all existing configs from the topic on startup.
+
+        Compacts messages by key, treating empty values as tombstones
+        that remove the key entirely — matching Kafka log compaction.
+        """
+        latest: dict[str, IncomingMessage] = {}
         while True:
             records = await self.consumer.getmany(timeout_ms=2000)
             if not records:
                 break
             for tp, msgs in records.items():
                 for raw_msg in msgs:
-                    await self.apply_config(parse_message(raw_msg))
+                    msg = parse_message(raw_msg)
+                    if msg.value:
+                        latest[msg.key] = msg
+                    else:
+                        latest.pop(msg.key, None)
+        for msg in latest.values():
+            await self.apply_config(msg)
         log.info("Loaded %d initial config(s)", len(self.configs))
 
     async def check_config_updates(self) -> None:
