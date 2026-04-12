@@ -76,9 +76,9 @@ class Transformer:
     async def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
         """Transform an incoming message into zero or more output Messages.
 
-        Yield a State to persist it. The runner collects the last yielded State
-        and writes it to the state store after the generator is exhausted. If no
-        State is yielded, nothing is persisted (stateless behavior).
+        Yield a State to signal the desired state. The runner persists it only
+        if it differs from the current state. If no State is yielded, nothing
+        is persisted (stateless behavior).
         """
         raise NotImplementedError("Provide a transform function or override in a subclass")
 
@@ -122,7 +122,7 @@ class TransformerRunner:
         state = State(await self.state_store.get(key) or {})
 
         output: list[Message] = []
-        new_state = None
+        new_state = state
         async for item in self.transformer.transform(msg, state):
             if isinstance(item, State):
                 new_state = item
@@ -133,7 +133,8 @@ class TransformerRunner:
 
         # Exactly-once: produce output, persist state, and commit offset atomically
         tp = aiokafka.TopicPartition(msg.topic, msg.partition)
-        await self.send_transactional(output, new_state, key, {tp: msg.offset + 1})
+        changed_state = new_state if new_state != state else None
+        await self.send_transactional(output, changed_state, key, {tp: msg.offset + 1})
 
     async def send_transactional(
         self,

@@ -67,10 +67,9 @@ class Extractor(ABC):
     async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
         """Poll an external API and yield Messages.
 
-        Yield a State to persist it. The runner collects the last yielded State
-        and writes it to the state store after the generator is exhausted. If no
-        State is yielded, nothing is persisted. On crash, the last-persisted
-        state is retained.
+        Yield a State to signal the desired state. The runner persists it only
+        if it differs from the current state. If no State is yielded, nothing
+        is persisted. On crash, the last-persisted state is retained.
         """
         raise NotImplementedError("Override poll() in a subclass")
 
@@ -172,7 +171,7 @@ class ExtractorRunner:
         config = await self.extractor.pre_poll(config)
 
         messages: list[Message] = []
-        new_state = None
+        new_state = state
         async for item in self.extractor.poll(config, state):
             if isinstance(item, State):
                 new_state = item
@@ -182,7 +181,7 @@ class ExtractorRunner:
                 raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
 
         await self.send_batch(messages)
-        if new_state is not None:
+        if new_state != state:
             await self.state_store.put(state_key, new_state)
 
     async def send_batch(self, messages: list[Message]) -> None:
