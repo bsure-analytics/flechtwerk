@@ -7,9 +7,10 @@ from abc import ABC, abstractmethod
 from os import getenv
 from typing import AsyncIterator, Final
 
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
 
-from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
+from .kafka import encode_json, datetime_to_millis, parse_message
 from .state import StateStore
 from .types import Config, IncomingMessage, Message, State
 
@@ -80,9 +81,9 @@ class ExtractorRunner:
     Attributes are set by the DI container (reactor-di) or directly in tests.
     """
 
-    consumer: KafkaConsumer
+    consumer: AIOKafkaConsumer
     extractor: lookup[Extractor, "stage"]
-    producer: KafkaProducer
+    producer: AIOKafkaProducer
     state_store: StateStore
 
     def __init__(self):

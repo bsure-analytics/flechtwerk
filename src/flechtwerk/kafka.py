@@ -1,4 +1,4 @@
-"""Kafka Protocols, utilities, and changelog restore."""
+"""Kafka utilities and changelog restore."""
 from __future__ import annotations
 
 import json
@@ -6,42 +6,13 @@ import logging
 import pickle
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import aiokafka
 
 from .types import Event, IncomingMessage, State
 
 log = logging.getLogger(__name__)
-
-
-# --- Protocols ---
-
-
-@runtime_checkable
-class KafkaConsumer(Protocol):
-    """Protocol matching the subset of aiokafka.AIOKafkaConsumer we use."""
-
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
-    async def getmany(self, timeout_ms: int = 0) -> dict: ...
-    async def commit(self, offsets: dict | None = None) -> None: ...
-    def subscribe(self, topics: list[str]) -> None: ...
-    async def seek_to_beginning(self) -> None: ...
-    async def position(self, tp: Any) -> int: ...
-    def assignment(self) -> set: ...
-
-
-@runtime_checkable
-class KafkaProducer(Protocol):
-    """Protocol matching the subset of aiokafka.AIOKafkaProducer we use."""
-
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
-    async def send(self, topic: str, *, key: Any = None, value: Any = None, timestamp_ms: int | None = None) -> Any: ...
-    async def flush(self) -> None: ...
-    def transaction(self) -> Any: ...
-    async def send_offsets_to_transaction(self, offsets: dict, group_id: str) -> None: ...
 
 
 # --- Utilities ---

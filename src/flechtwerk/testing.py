@@ -20,7 +20,7 @@ class FakeRecord:
 
 
 class FakeKafkaConsumer:
-    """Test double matching the KafkaConsumer Protocol."""
+    """Test double implementing the subset of aiokafka.AIOKafkaConsumer used by runners."""
 
     def __init__(self, records: list[FakeRecord] | None = None):
         self.records = list(records or [])
@@ -62,7 +62,7 @@ class FakeKafkaConsumer:
 
 
 class FakeKafkaProducer:
-    """Test double matching the KafkaProducer Protocol."""
+    """Test double implementing the subset of aiokafka.AIOKafkaProducer used by runners."""
 
     def __init__(self):
         self.sent: list[tuple[str, dict]] = []

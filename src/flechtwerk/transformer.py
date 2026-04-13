@@ -6,10 +6,11 @@ from collections.abc import Callable
 from typing import AsyncIterator
 
 import aiokafka
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
 from reactor_di import lookup
 
-from .kafka import KafkaConsumer, KafkaProducer, encode_json, datetime_to_millis, parse_message
+from .kafka import encode_json, datetime_to_millis, parse_message
 from .state import StateStore
 from .types import IncomingMessage, Message, State
 
@@ -91,9 +92,9 @@ class TransformerRunner:
     send_transactional() participate in the same Kafka transaction.
     """
 
-    consumer: KafkaConsumer
+    consumer: AIOKafkaConsumer
     group_id: str
-    producer: KafkaProducer
+    producer: AIOKafkaProducer
     state_store: StateStore
     transformer: lookup[Transformer, "stage"]
 

@@ -9,9 +9,10 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
+from aiokafka import AIOKafkaProducer
 from reactor_di import lookup
 
-from .kafka import KafkaProducer, restore_changelog
+from .kafka import restore_changelog
 from .types import State
 
 log = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ class ChangelogStateStore(StateStore):
     """
 
     inner: lookup[StateStore, "inner_store"]
-    producer: KafkaProducer
+    producer: AIOKafkaProducer
     topic: lookup[str, "changelog_topic"]
 
     async def get(self, key: str) -> State | None:

@@ -20,8 +20,9 @@ import sys
 from pathlib import Path
 from typing import Final
 
+from aiokafka import AIOKafkaProducer
+
 from .extractor import Extractor
-from .kafka import KafkaProducer
 from .migrate_state import migrate_bytewax_to_fretworx
 from .module import FretworxModule
 from .state import StateStore
@@ -95,7 +96,7 @@ async def auto_migrate_if_needed(
         stage_id: str,
         stage: Extractor | Transformer,
         state_store: StateStore,
-        producer: KafkaProducer,
+        producer: AIOKafkaProducer,
 ) -> None:
     """Auto-migrate Bytewax SQLite state to the changelog-backed state store.
 
