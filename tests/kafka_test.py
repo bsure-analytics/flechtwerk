@@ -172,6 +172,20 @@ def test_parse_message_never_raises_on_arbitrary_value_bytes(data):
     assert isinstance(msg.value, Event)
 
 
+def test_parse_message_non_dict_json_falls_back_to_empty_event(caplog):
+    """Valid JSON that decodes to a non-dict (e.g. a scalar or array) → Event({})."""
+    raw = SimpleNamespace(
+        key=b"k", value=b"42", offset=7, partition=0, timestamp=None, topic="t",
+    )
+    with caplog.at_level(logging.WARNING, logger="fretworx.kafka"):
+        msg = parse_message(raw)
+    assert msg.value == Event({})
+    assert any(
+        "Non-dict JSON payload" in rec.message and "int" in rec.message
+        for rec in caplog.records
+    )
+
+
 def test_parse_message_invalid_json_falls_back_to_empty_event(caplog):
     raw = SimpleNamespace(
         key=b"some-key",
