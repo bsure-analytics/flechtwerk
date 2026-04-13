@@ -49,21 +49,38 @@ def millis_to_datetime(millis: int | None) -> datetime | None:
 
 
 def parse_message(msg: Any) -> IncomingMessage:
-    """Parse an aiokafka ConsumerRecord into an IncomingMessage."""
-    key = (msg.key.decode("utf-8") if isinstance(msg.key, bytes) else msg.key) or ""
-    raw_value = (msg.value.decode("utf-8") if isinstance(msg.value, bytes) else msg.value) or ""
+    """Parse an aiokafka ConsumerRecord into an IncomingMessage.
+
+    Malformed payloads fall back to ``Event({})`` rather than raising — a
+    single bad message must not crash the stage into an infinite
+    CrashLoopBackOff on its own offset. Handles:
+      - non-UTF-8 bytes in value
+      - invalid JSON
+      - valid JSON that decodes to a non-dict (e.g. scalar or array)
+    """
+    key = (msg.key.decode("utf-8", errors="replace") if isinstance(msg.key, bytes) else msg.key) or ""
     try:
-        value = json.loads(raw_value) if raw_value else {}
-    except json.JSONDecodeError:
-        log.warning("Invalid JSON in message at %s/%d, using {}", msg.topic, msg.offset)
-        value = {}
+        raw_value = msg.value.decode("utf-8") if isinstance(msg.value, bytes) else msg.value
+        parsed = json.loads(raw_value) if raw_value else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        log.warning(
+            "Malformed message at %s/%d (%s), using {}",
+            msg.topic, msg.offset, type(e).__name__,
+        )
+        parsed = {}
+    if not isinstance(parsed, dict):
+        log.warning(
+            "Non-dict JSON payload at %s/%d (%s), using {}",
+            msg.topic, msg.offset, type(parsed).__name__,
+        )
+        parsed = {}
     return IncomingMessage(
         key=key,
         offset=msg.offset,
         partition=msg.partition,
         timestamp=millis_to_datetime(msg.timestamp),
         topic=msg.topic,
-        value=Event(value),
+        value=Event(parsed),
     )
 
 

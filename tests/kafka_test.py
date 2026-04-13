@@ -1,5 +1,6 @@
 """Tests for fretworx Kafka utilities."""
 import asyncio
+import json
 import logging
 import pickle
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiokafka
 import pytest
+from hypothesis import given, strategies as st
 
 from fretworx.kafka import (
     datetime_to_millis,
@@ -69,6 +71,107 @@ def test_millis_round_trip():
 # --- parse_message ---
 
 
+# JSON-safe leaves (no NaN/Infinity; floats finite).
+_json_scalars = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**53), max_value=2**53),
+    st.floats(allow_nan=False, allow_infinity=False, width=32),
+    st.text(),
+)
+# Non-string JSON values (since encode_json treats str specially — raw UTF-8 passthrough).
+_json_non_strings = st.recursive(
+    st.one_of(
+        st.none(), st.booleans(),
+        st.integers(min_value=-(2**53), max_value=2**53),
+        st.floats(allow_nan=False, allow_infinity=False, width=32),
+    ),
+    lambda children: st.one_of(
+        st.lists(children, max_size=5),
+        st.dictionaries(st.text(), children, max_size=5),
+    ),
+    max_leaves=20,
+).filter(lambda v: not isinstance(v, str))
+# Dicts only — parse_message normalizes non-dict JSON payloads to {} by design.
+_json_dicts = st.dictionaries(
+    st.text(),
+    st.recursive(_json_scalars, lambda c: st.one_of(
+        st.lists(c, max_size=5),
+        st.dictionaries(st.text(), c, max_size=5),
+    ), max_leaves=10),
+    max_size=5,
+)
+
+
+@given(_json_non_strings)
+def test_encode_json_round_trips_non_string_values(value):
+    """Non-string values round-trip through encode_json → json.loads."""
+    assert json.loads(encode_json(value).decode("utf-8")) == value
+
+
+@given(_json_non_strings)
+def test_encode_json_dict_keys_are_sorted(value):
+    """Dict keys at every nesting level must appear in sorted order."""
+    encoded = encode_json(value).decode("utf-8")
+    parsed = json.loads(encoded, object_pairs_hook=list)
+
+    def _assert_sorted(obj):
+        if isinstance(obj, list) and obj and isinstance(obj[0], tuple):
+            keys = [k for k, _ in obj]
+            assert keys == sorted(keys)
+            for _, v in obj:
+                _assert_sorted(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _assert_sorted(item)
+
+    _assert_sorted(parsed)
+
+
+@given(st.text())
+def test_encode_json_string_is_utf8_passthrough(s):
+    """Plain strings are written as raw UTF-8 bytes (not JSON-quoted)."""
+    assert encode_json(s) == s.encode("utf-8")
+
+
+@given(
+    key=st.one_of(st.none(), st.binary(), st.text()),
+    value=_json_dicts,
+    offset=st.integers(min_value=0, max_value=2**63 - 1),
+    partition=st.integers(min_value=0, max_value=999),
+    timestamp=st.one_of(
+        st.none(),
+        st.integers(min_value=0, max_value=2**40),
+    ),
+)
+def test_parse_message_round_trips_dict_payloads(key, value, offset, partition, timestamp):
+    """encode_json → parse_message round-trips for dict payloads.
+
+    Non-dict payloads are normalized to {} by parse_message, so the
+    round-trip contract only holds for dicts.
+    """
+    encoded_value = encode_json(value)
+    raw = SimpleNamespace(
+        key=key, value=encoded_value, offset=offset, partition=partition,
+        timestamp=timestamp, topic="some-topic",
+    )
+    msg = parse_message(raw)
+    assert msg.value == value
+    assert msg.offset == offset
+    assert msg.partition == partition
+    assert isinstance(msg.key, str)
+
+
+@given(st.binary(max_size=200))
+def test_parse_message_never_raises_on_arbitrary_value_bytes(data):
+    """Arbitrary bytes in the value position either decode or fall back to Event({})."""
+    raw = SimpleNamespace(
+        key=b"k", value=data, offset=0, partition=0, timestamp=None, topic="t",
+    )
+    msg = parse_message(raw)
+    assert isinstance(msg.value, Event)
+
+
 def test_parse_message_invalid_json_falls_back_to_empty_event(caplog):
     raw = SimpleNamespace(
         key=b"some-key",
@@ -83,7 +186,7 @@ def test_parse_message_invalid_json_falls_back_to_empty_event(caplog):
     assert msg.key == "some-key"
     assert msg.value == Event({})
     assert msg.offset == 42
-    assert any("Invalid JSON" in rec.message for rec in caplog.records)
+    assert any("Malformed" in rec.message and "JSONDecodeError" in rec.message for rec in caplog.records)
 
 
 # --- restore_changelog ---
