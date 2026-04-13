@@ -90,7 +90,14 @@ async def restore_changelog(
     Returns:
         Number of entries restored.
     """
-    # Force metadata fetch for this topic (start() only fetches for subscribed topics)
+    # Prime the consumer's internal cluster metadata for this topic so
+    # partitions_for_topic() returns data. No fully public API achieves this:
+    # consumer.topics() / fetch_all_metadata() returns a *separate* ClusterMetadata
+    # object that doesn't update the consumer's own cache, and assign() requires
+    # the partition set we're about to fetch. `_client.set_topics()` is a public
+    # method on AIOKafkaClient (the `_client` attribute is the only underscore).
+    # The integration tests under test/fretworx/integration/ lock down this
+    # coupling against aiokafka upgrades.
     await consumer._client.set_topics([topic])
     partitions = consumer.partitions_for_topic(topic)
     if not partitions:
