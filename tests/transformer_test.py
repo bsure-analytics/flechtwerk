@@ -419,6 +419,64 @@ def test_transformer_runner_mutation_without_yield_is_not_persisted():
     asyncio.run(run())
 
 
+def test_transformer_runner_yielding_empty_state_deletes_existing_entry():
+    """Yielding an empty/falsy State deletes the entry from the state store."""
+    async def tombstoning_transform(msg, state):
+        yield State()
+
+    t = Transformer(input_topics=["in"], transform=tombstoning_transform)
+
+    async def run():
+        state_store = InMemoryStateStore()
+        await state_store.put("k1", {"cursor": 5})
+
+        record = make_record(key="k1", topic="in")
+        consumer = FakeKafkaConsumer([record])
+        producer = FakeKafkaProducer()
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
+
+        assert await state_store.get("k1") is None
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
+    """Yielding empty State with no baseline is a no-op (no delete call)."""
+    async def tombstoning_transform(msg, state):
+        yield State()
+
+    t = Transformer(input_topics=["in"], transform=tombstoning_transform)
+
+    async def run():
+        deleted: list[str] = []
+
+        class SpyingStore(InMemoryStateStore):
+            async def delete(self, key):
+                deleted.append(key)
+                await super().delete(key)
+
+        state_store = SpyingStore()
+        record = make_record(key="k1", topic="in")
+        consumer = FakeKafkaConsumer([record])
+        producer = FakeKafkaProducer()
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
+
+        assert deleted == []  # baseline {} == yielded {}, no change
+        assert await state_store.get("k1") is None
+
+    asyncio.run(run())
+
+
 def test_transformer_runner_functional_stateful():
     """Functional stateful transformer with custom extract_key via runner."""
     async def my_transform(msg, state):

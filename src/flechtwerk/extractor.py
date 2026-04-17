@@ -71,7 +71,9 @@ class Extractor(ABC):
 
         Yield a State to signal the desired state. The runner persists it only
         if it differs from the current state. If no State is yielded, nothing
-        is persisted. On crash, the last-persisted state is retained.
+        is persisted. Yielding an empty/falsy State deletes the entry from the
+        state store (and writes a Kafka tombstone to the changelog). On crash,
+        the last-persisted state is retained.
         """
         raise NotImplementedError("Override poll() in a subclass")
 
@@ -185,7 +187,10 @@ class ExtractorRunner:
 
         await self.send_batch(messages)
         if new_state is not None and new_state != baseline:
-            await self.state_store.put(state_key, new_state)
+            if new_state:
+                await self.state_store.put(state_key, new_state)
+            else:
+                await self.state_store.delete(state_key)
 
     async def send_batch(self, messages: list[Message]) -> None:
         """Send messages to Kafka."""

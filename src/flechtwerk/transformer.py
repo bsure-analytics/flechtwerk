@@ -80,7 +80,9 @@ class Transformer:
 
         Yield a State to signal the desired state. The runner persists it only
         if it differs from the current state. If no State is yielded, nothing
-        is persisted (stateless behavior).
+        is persisted (stateless behavior). Yielding an empty/falsy State deletes
+        the entry from the state store (and writes a Kafka tombstone to the
+        changelog) atomically with the output messages.
         """
         raise NotImplementedError("Provide a transform function or override in a subclass")
 
@@ -148,8 +150,10 @@ class TransformerRunner:
     ) -> None:
         """Send messages, persist state, and commit offsets in a single Kafka transaction.
 
-        The state_store.put() call sends to the changelog topic via the same
-        transactional producer, so state is committed atomically with output.
+        The state_store.put()/delete() call sends to the changelog topic via the
+        same transactional producer, so state is committed atomically with
+        output. A falsy new_state deletes the entry (and writes a Kafka
+        tombstone); a truthy new_state is put; None leaves state untouched.
         """
         async with self.producer.transaction():
             for msg in messages:
@@ -160,7 +164,10 @@ class TransformerRunner:
                     timestamp_ms=datetime_to_millis(msg.timestamp),
                 )
             if new_state is not None:
-                await self.state_store.put(state_key, new_state)
+                if new_state:
+                    await self.state_store.put(state_key, new_state)
+                else:
+                    await self.state_store.delete(state_key)
             await self.producer.send_offsets_to_transaction(offsets, self.group_id)
 
         log.debug("Transaction committed: %d messages", len(messages))

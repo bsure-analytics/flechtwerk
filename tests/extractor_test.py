@@ -357,6 +357,56 @@ def test_extractor_poll_in_place_state_mutation_is_persisted():
     asyncio.run(run())
 
 
+def test_extractor_poll_yielding_empty_state_deletes_existing_entry():
+    """Yielding an empty/falsy State deletes the entry from the state store."""
+    class TombstoningExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            yield State()
+
+    async def run():
+        state_store = InMemoryStateStore()
+        await state_store.put("k", {"cursor": 5})
+
+        mod = make_module(TombstoningExtractor(), state_store=state_store)
+        runner = mod.runner
+        runner.state_keys["k"] = "k"
+        await runner.poll_one("k", Config({"api_key": "k"}))
+
+        assert await state_store.get("k") is None
+
+    asyncio.run(run())
+
+
+def test_extractor_poll_yielding_empty_state_no_op_when_already_absent():
+    """Yielding empty State when no baseline state exists is a no-op (no delete call)."""
+    class TombstoningExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            yield State()
+
+    async def run():
+        deleted: list[str] = []
+
+        class SpyingStore(InMemoryStateStore):
+            async def delete(self, key):
+                deleted.append(key)
+                await super().delete(key)
+
+        state_store = SpyingStore()
+        mod = make_module(TombstoningExtractor(), state_store=state_store)
+        runner = mod.runner
+        runner.state_keys["k"] = "k"
+        await runner.poll_one("k", Config({"api_key": "k"}))
+
+        assert deleted == []  # baseline {} == yielded {}, no change
+        assert await state_store.get("k") is None
+
+    asyncio.run(run())
+
+
 def test_extractor_poll_mutation_without_yield_is_not_persisted():
     """Mutating `state` without yielding must not be persisted (contract)."""
     class MutateWithoutYieldExtractor(Extractor):
