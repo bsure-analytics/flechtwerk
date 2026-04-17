@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from copy import deepcopy
 from typing import AsyncIterator
 
 import aiokafka
@@ -121,9 +122,10 @@ class TransformerRunner:
 
         key = self.transformer.extract_key(msg)
         state = State(await self.state_store.get(key) or {})
+        baseline = deepcopy(state)
 
         output: list[Message] = []
-        new_state = state
+        new_state: State | None = None
         async for item in self.transformer.transform(msg, state):
             if isinstance(item, State):
                 new_state = item
@@ -134,7 +136,7 @@ class TransformerRunner:
 
         # Exactly-once: produce output, persist state, and commit offset atomically
         tp = aiokafka.TopicPartition(msg.topic, msg.partition)
-        changed_state = new_state if new_state != state else None
+        changed_state = new_state if new_state is not None and new_state != baseline else None
         await self.send_transactional(output, changed_state, key, {tp: msg.offset + 1})
 
     async def send_transactional(

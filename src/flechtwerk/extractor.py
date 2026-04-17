@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from os import getenv
 from typing import AsyncIterator, Final
 
@@ -169,10 +170,11 @@ class ExtractorRunner:
         """Poll a single config: run poll, persist state on success."""
         state_key = self.state_keys[key]
         state = State(await self.state_store.get(state_key) or {})
+        baseline = deepcopy(state)
         config = await self.extractor.pre_poll(config)
 
         messages: list[Message] = []
-        new_state = state
+        new_state: State | None = None
         async for item in self.extractor.poll(config, state):
             if isinstance(item, State):
                 new_state = item
@@ -182,7 +184,7 @@ class ExtractorRunner:
                 raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
 
         await self.send_batch(messages)
-        if new_state != state:
+        if new_state is not None and new_state != baseline:
             await self.state_store.put(state_key, new_state)
 
     async def send_batch(self, messages: list[Message]) -> None:

@@ -332,3 +332,50 @@ def test_extractor_poll_yields_no_state():
         assert await state_store.get("k") is None
 
     asyncio.run(run())
+
+
+def test_extractor_poll_in_place_state_mutation_is_persisted():
+    """A poll that mutates `state` in place and yields it must still be persisted."""
+    class InPlaceMutatingExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            state["cursor"] = state.get("cursor", 0) + 1
+            yield state
+
+    async def run():
+        state_store = InMemoryStateStore()
+        producer = FakeKafkaProducer()
+
+        mod = make_module(InPlaceMutatingExtractor(), producer=producer, state_store=state_store)
+        runner = mod.runner
+        runner.state_keys["k"] = "k"
+        await runner.poll_one("k", Config({"api_key": "k"}))
+
+        assert (await state_store.get("k"))["cursor"] == 1
+
+    asyncio.run(run())
+
+
+def test_extractor_poll_mutation_without_yield_is_not_persisted():
+    """Mutating `state` without yielding must not be persisted (contract)."""
+    class MutateWithoutYieldExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            state["cursor"] = 42
+            return
+            yield  # pragma: no cover
+
+    async def run():
+        state_store = InMemoryStateStore()
+        producer = FakeKafkaProducer()
+
+        mod = make_module(MutateWithoutYieldExtractor(), producer=producer, state_store=state_store)
+        runner = mod.runner
+        runner.state_keys["k"] = "k"
+        await runner.poll_one("k", Config({"api_key": "k"}))
+
+        assert await state_store.get("k") is None
+
+    asyncio.run(run())

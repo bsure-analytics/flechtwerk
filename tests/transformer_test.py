@@ -369,6 +369,56 @@ def test_transformer_runner_stateless_does_not_persist_state():
     asyncio.run(run())
 
 
+def test_transformer_runner_in_place_state_mutation_is_persisted():
+    """A transform that mutates `state` in place and yields it must still be persisted."""
+    async def in_place_transform(msg, state):
+        state["cursor"] = state.get("cursor", 0) + 1
+        yield state
+
+    t = Transformer(input_topics=["in"], transform=in_place_transform)
+
+    async def run():
+        state_store = InMemoryStateStore()
+        record = make_record(key="k1", topic="in")
+        consumer = FakeKafkaConsumer([record])
+        producer = FakeKafkaProducer()
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
+
+        assert (await state_store.get("k1"))["cursor"] == 1
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_mutation_without_yield_is_not_persisted():
+    """Mutating `state` without yielding must not be persisted (contract)."""
+    async def mutate_without_yield(msg, state):
+        state["cursor"] = 42
+        yield Message(key=msg.key, topic="out", value={})
+
+    t = Transformer(input_topics=["in"], transform=mutate_without_yield)
+
+    async def run():
+        state_store = InMemoryStateStore()
+        record = make_record(key="k1", topic="in")
+        consumer = FakeKafkaConsumer([record])
+        producer = FakeKafkaProducer()
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        for tp, msgs in records.items():
+            for raw_msg in msgs:
+                await runner.process_one(raw_msg)
+
+        assert await state_store.get("k1") is None
+
+    asyncio.run(run())
+
+
 def test_transformer_runner_functional_stateful():
     """Functional stateful transformer with custom extract_key via runner."""
     async def my_transform(msg, state):
