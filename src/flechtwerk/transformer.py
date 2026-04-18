@@ -31,7 +31,7 @@ class Transformer:
             transform=my_transform_fn,
         )
 
-    Or subclassed for lifecycle management (HTTP clients, dedup instances)::
+    Or subclassed for lifecycle management (HTTP clients, dedup instances):
 
         class MyTransformer(Transformer):
             async def __aenter__(self):

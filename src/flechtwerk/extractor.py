@@ -30,11 +30,11 @@ class Extractor(ABC):
     Subclass contract:
     - Set `input_topics` to the Kafka config topic(s)
     - Override `poll()` to yield Messages from an external API
-    - Optionally override `enrich()`, `pre_poll()`, `extract_key()`
+    - Optionally override `enrich()`, `extract_key()`
     - Optionally override `__aenter__`/`__aexit__` for resource management
 
     Extractors do not use Kafka consumer groups — config topics are re-read
-    from earliest on every startup. The stage identifier (used for changelog
+    from earliest on every startup. The group ID (used for changelog
     topic naming and client ID) is derived from the module path at runtime.
     """
 
@@ -49,13 +49,6 @@ class Extractor(ABC):
 
         Called once per config message, NOT on every poll tick.
         Override for e.g. SumUp merchant code lookup.
-        """
-        return config
-
-    async def pre_poll(self, config: Config) -> Config:
-        """Per-cycle enrichment before each poll invocation.
-
-        Called on every poll tick. Override for e.g. TillHub token refresh.
         """
         return config
 
@@ -173,7 +166,6 @@ class ExtractorRunner:
         state_key = self.state_keys[key]
         state = State(await self.state_store.get(state_key) or {})
         baseline = deepcopy(state)
-        config = await self.extractor.pre_poll(config)
 
         messages: list[Message] = []
         new_state: State | None = None
