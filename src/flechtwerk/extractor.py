@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from os import getenv
 from typing import AsyncIterator, Final
@@ -23,15 +23,35 @@ POLL_INTERVAL_SECONDS: Final = int(getenv("POLL_INTERVAL_SECONDS", "60"))
 API_KEY = "api_key"
 SUSPENDED = "suspended"
 
+PollFn = Callable[[Config, State], AsyncIterator[Message | State]]
+EnrichFn = Callable[[Config], Awaitable[Config]]
+ExtractKeyFn = Callable[[IncomingMessage], str]
 
-class Extractor(ABC):
-    """Base class for poll-driven extractors.
 
-    Subclass contract:
-    - Set `input_topics` to the Kafka config topic(s)
-    - Override `poll()` to yield Messages from an external API
-    - Optionally override `enrich()`, `extract_key()`
-    - Optionally override `__aenter__`/`__aexit__` for resource management
+class Extractor:
+    """Poll-driven data extractor (stateful or stateless).
+
+    Can be used directly with a poll function::
+
+        extractor = Extractor(
+            input_topics=["my-config"],
+            poll=my_poll_fn,
+        )
+
+    Or subclassed for lifecycle management (HTTP clients, MQTT sessions):
+
+        class MyExtractor(Extractor):
+            input_topics = ["my-config"]
+
+            async def __aenter__(self):
+                self.http = httpx.AsyncClient()
+                return self
+
+            async def __aexit__(self, *exc_info):
+                await self.http.aclose()
+
+            async def poll(self, config, state):
+                ...
 
     Extractors do not use Kafka consumer groups — config topics are re-read
     from earliest on every startup. The group ID (used for changelog
@@ -39,6 +59,23 @@ class Extractor(ABC):
     """
 
     input_topics: list[str]
+
+    def __init__(
+        self,
+        *,
+        input_topics: list[str] | None = None,
+        poll: PollFn | None = None,
+        enrich: EnrichFn | None = None,
+        extract_key: ExtractKeyFn | None = None,
+    ):
+        if input_topics is not None:
+            self.input_topics = input_topics
+        if poll is not None:
+            self.poll = poll
+        if enrich is not None:
+            self.enrich = enrich
+        if extract_key is not None:
+            self.extract_key = extract_key
 
     def extract_key(self, msg: IncomingMessage) -> str:
         """Extract the state key from a config message. Default: msg.value["api_key"]."""
@@ -58,7 +95,6 @@ class Extractor(ABC):
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    @abstractmethod
     async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
         """Poll an external API and yield Messages.
 
@@ -68,7 +104,7 @@ class Extractor(ABC):
         state store (and writes a Kafka tombstone to the changelog). On crash,
         the last-persisted state is retained.
         """
-        raise NotImplementedError("Override poll() in a subclass")
+        raise NotImplementedError("Provide a poll function or override in a subclass")
 
 
 class ExtractorRunner:

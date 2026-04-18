@@ -429,3 +429,108 @@ def test_extractor_poll_mutation_without_yield_is_not_persisted():
         assert await state_store.get("k") is None
 
     asyncio.run(run())
+
+
+# --- Functional Extractor tests ---
+
+
+def test_functional_extractor():
+    """Functional Extractor with a poll function (no subclass)."""
+    async def my_poll(config, state) -> AsyncIterator[Message | State]:
+        yield Message(key=config["api_key"], topic="out", value={"polled": True})
+
+    ext = Extractor(input_topics=["cfg"], poll=my_poll)
+
+    async def run():
+        config = Config({"api_key": "k"})
+        items = [item async for item in ext.poll(config, State())]
+        assert len(items) == 1
+        assert items[0].value == {"polled": True}
+
+    asyncio.run(run())
+
+
+def test_functional_extractor_with_enrich_and_extract_key():
+    """Functional Extractor with custom enrich and extract_key."""
+    async def my_poll(config, state) -> AsyncIterator[Message | State]:
+        yield Message(key=config["api_key"], topic="out", value={"tag": config.get("tag")})
+
+    async def my_enrich(config):
+        config = Config(config)
+        config["tag"] = "enriched"
+        return config
+
+    def my_extract_key(msg):
+        return msg.value.get("id", msg.value.get("api_key"))
+
+    ext = Extractor(
+        input_topics=["cfg"],
+        poll=my_poll,
+        enrich=my_enrich,
+        extract_key=my_extract_key,
+    )
+
+    async def run():
+        enriched = await ext.enrich(Config({"api_key": "k"}))
+        assert enriched["tag"] == "enriched"
+
+        msg = make_record(key="ignored", value={"api_key": "a", "id": "custom"})
+        from fretworx.kafka import parse_message
+        assert ext.extract_key(parse_message(msg)) == "custom"
+
+    asyncio.run(run())
+
+
+def test_functional_extractor_default_extract_key():
+    """Functional Extractor without extract_key falls back to msg.value['api_key']."""
+    async def my_poll(config, state) -> AsyncIterator[Message | State]:
+        return
+        yield  # pragma: no cover
+
+    ext = Extractor(input_topics=["cfg"], poll=my_poll)
+
+    from fretworx.kafka import parse_message
+    msg = parse_message(make_record(key="k", value={"api_key": "a"}))
+    assert ext.extract_key(msg) == "a"
+
+
+def test_extractor_no_poll_raises():
+    """Extractor without poll function raises when called."""
+    async def run():
+        ext = Extractor(input_topics=["cfg"])
+        with pytest.raises(NotImplementedError):
+            await ext.poll(Config({"api_key": "k"}), State())
+
+    asyncio.run(run())
+
+
+def test_subclass_defaults_not_overridden_by_init():
+    """Subclass class attributes are not overridden by __init__ defaults."""
+    ext = SimpleExtractor()
+    assert ext.input_topics == ["test-config"]
+
+
+def test_functional_extractor_end_to_end_with_runner():
+    """Functional Extractor works through the runner with config-topic processing."""
+    async def my_poll(config, state) -> AsyncIterator[Message | State]:
+        cursor = state.get("cursor", 0)
+        yield Message(key=config["api_key"], topic="out", value={"cursor": cursor})
+        yield State(cursor=cursor + 1)
+
+    async def run():
+        record = make_record(key="t/c", value={"api_key": "k1"})
+        consumer = FakeKafkaConsumer([record])
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+
+        ext = Extractor(input_topics=["test-config"], poll=my_poll)
+        mod = make_module(ext, consumer, producer, state_store)
+        runner = mod.runner
+
+        await runner.load_initial_configs()
+        await runner.poll_one("t/c", runner.configs["t/c"])
+
+        assert len(producer.sent) == 1
+        assert await state_store.get("k1") == {"cursor": 1}
+
+    asyncio.run(run())
