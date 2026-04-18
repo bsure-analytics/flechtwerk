@@ -99,7 +99,7 @@ class TransformerRunner:
     group_id: str
     producer: AIOKafkaProducer
     state_store: StateStore
-    transformer: lookup[Transformer, "stage"]
+    transformer: lookup[Transformer, "stage"]  # noqa: PyUnresolvedReferences
 
     async def run(self) -> None:
         """Main event loop. Consumes messages and processes them sequentially.
@@ -114,7 +114,8 @@ class TransformerRunner:
                 if not records:
                     continue
                 topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
-                for tp in sorted(records, key=lambda tp: topic_order.get(getattr(tp, "topic", tp[0]), 0)):
+                ordered_tps = sorted(records, key=lambda p: topic_order.get(p.topic, 0))
+                for tp in ordered_tps:
                     for raw_msg in records[tp]:
                         await self.process_one(raw_msg)
 

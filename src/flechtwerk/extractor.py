@@ -114,7 +114,7 @@ class ExtractorRunner:
     """
 
     consumer: AIOKafkaConsumer
-    extractor: lookup[Extractor, "stage"]
+    extractor: lookup[Extractor, "stage"]  # noqa: PyUnresolvedReferences
     producer: AIOKafkaProducer
     state_store: StateStore
 

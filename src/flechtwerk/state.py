@@ -119,9 +119,9 @@ class ChangelogStateStore(StateStore):
     participate in the runner's open transaction automatically.
     """
 
-    inner: lookup[StateStore, "inner_store"]
+    inner: lookup[StateStore, "inner_store"]  # noqa: PyUnresolvedReferences
     producer: AIOKafkaProducer
-    topic: lookup[str, "changelog_topic"]
+    topic: lookup[str, "changelog_topic"]  # noqa: PyUnresolvedReferences
 
     async def get(self, key: str) -> State | None:
         return await self.inner.get(key)

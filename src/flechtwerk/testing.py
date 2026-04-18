@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from aiokafka import TopicPartition
+
 from .types import Message
 
 
@@ -36,12 +38,11 @@ class FakeKafkaConsumer:
     async def getmany(self, timeout_ms: int = 0) -> dict:
         if not self.records:
             return {}
-        # Group records by (topic, partition) like aiokafka does
+        # Group records by TopicPartition like aiokafka does
         from collections import defaultdict
-        groups: dict[Any, list] = defaultdict(list)
+        groups: dict[TopicPartition, list] = defaultdict(list)
         for record in self.records:
-            tp = (record.topic, record.partition)
-            groups[tp].append(record)
+            groups[TopicPartition(record.topic, record.partition)].append(record)
         self.records = []
         return dict(groups)
 
