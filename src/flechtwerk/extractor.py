@@ -5,6 +5,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from os import getenv
 from typing import AsyncIterator, Final
 
@@ -26,6 +27,13 @@ SUSPENDED = "suspended"
 PollFn = Callable[[Config, State], AsyncIterator[Message | State]]
 EnrichFn = Callable[[Config], Awaitable[Config]]
 ExtractKeyFn = Callable[[IncomingMessage], str]
+
+
+@dataclass
+class ConfigEntry:
+    """Paired Config and state key — always created, updated, and deleted together."""
+    config: Config
+    state_key: str
 
 
 class Extractor:
@@ -78,7 +86,7 @@ class Extractor:
             self.extract_key = extract_key
 
     def extract_key(self, msg: IncomingMessage) -> str:
-        """Extract the state key from a config message. Default: msg.value["api_key"]."""
+        """Extract the state key from the incoming message. Default: msg.value["api_key"]."""
         return msg.value[API_KEY]
 
     async def enrich(self, config: Config) -> Config:
@@ -119,8 +127,7 @@ class ExtractorRunner:
     state_store: StateStore
 
     def __init__(self):
-        self.configs: dict[str, Config] = {}
-        self.state_keys: dict[str, str] = {}
+        self.configs: dict[str, ConfigEntry] = {}
 
     async def run(self) -> None:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
@@ -135,13 +142,13 @@ class ExtractorRunner:
             while True:
                 await self.check_config_updates()
                 active = {
-                    k: v for k, v in self.configs.items()
-                    if not v.get(SUSPENDED)
+                    k: e for k, e in self.configs.items()
+                    if not e.config.get(SUSPENDED)
                 }
                 if active:
                     log.debug("Polling %d active config(s)", len(active))
                     results = await asyncio.gather(
-                        *(self.poll_one(k, v) for k, v in active.items()),
+                        *(self.poll_one(e) for e in active.values()),
                         return_exceptions=True,
                     )
                     for key, result in zip(active.keys(), results):
@@ -187,25 +194,25 @@ class ExtractorRunner:
         if not config:
             if key in self.configs:
                 del self.configs[key]
-                del self.state_keys[key]
                 log.info("Removed config for key %s", key)
             return
 
         config = await self.extractor.enrich(config)
         present = key in self.configs
-        self.configs[key] = config
-        self.state_keys[key] = self.extractor.extract_key(msg)
+        self.configs[key] = ConfigEntry(
+            config=config,
+            state_key=self.extractor.extract_key(msg),
+        )
         log.info("%s config for key %s", "Updated" if present else "Added", key)
 
-    async def poll_one(self, key: str, config: Config) -> None:
+    async def poll_one(self, entry: ConfigEntry) -> None:
         """Poll a single config: run poll, persist state on success."""
-        state_key = self.state_keys[key]
-        state = State(await self.state_store.get(state_key) or {})
+        state = State(await self.state_store.get(entry.state_key) or {})
         baseline = deepcopy(state)
 
         messages: list[Message] = []
         new_state: State | None = None
-        async for item in self.extractor.poll(config, state):
+        async for item in self.extractor.poll(entry.config, state):
             if isinstance(item, State):
                 new_state = item
             elif isinstance(item, Message):
@@ -216,9 +223,9 @@ class ExtractorRunner:
         await self.send_batch(messages)
         if new_state is not None and new_state != baseline:
             if new_state:
-                await self.state_store.put(state_key, new_state)
+                await self.state_store.put(entry.state_key, new_state)
             else:
-                await self.state_store.delete(state_key)
+                await self.state_store.delete(entry.state_key)
 
     async def send_batch(self, messages: list[Message]) -> None:
         """Send messages to Kafka."""

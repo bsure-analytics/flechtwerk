@@ -5,7 +5,7 @@ from typing import AsyncIterator
 
 import pytest
 
-from fretworx.extractor import Extractor, ExtractorRunner
+from fretworx.extractor import ConfigEntry, Extractor, ExtractorRunner
 from fretworx.module import FretworxModule
 from fretworx.state import InMemoryStateStore
 from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, FakeRecord
@@ -110,10 +110,10 @@ def test_extractor_runner_polls_configs():
         # Run load_initial_configs manually
         await runner.load_initial_configs()
         assert len(runner.configs) == 1
-        assert runner.configs["tenant/channel"]["api_key"] == "key123"
+        assert runner.configs["tenant/channel"].config["api_key"] == "key123"
 
         # Run one poll cycle
-        await runner.poll_one("tenant/channel", runner.configs["tenant/channel"])
+        await runner.poll_one(runner.configs["tenant/channel"])
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
         assert topic == "test-output"
@@ -138,9 +138,9 @@ def test_extractor_enrichment():
         await runner.load_initial_configs()
 
         # Config should have been enriched
-        assert runner.configs["k"]["enriched"] is True
+        assert runner.configs["k"].config["enriched"] is True
 
-        await runner.poll_one("k", runner.configs["k"])
+        await runner.poll_one(runner.configs["k"])
         topic, payload = producer.sent[0]
         assert json.loads(payload["value"])["enriched"] is True
 
@@ -175,10 +175,10 @@ def test_extractor_state_isolation_on_error():
 
         mod = make_module(FailingExtractor(), state_store=state_store)
         runner = mod.runner
-        runner.state_keys["k"] = "k"
+        entry = ConfigEntry(config=Config({"api_key": "k"}), state_key="k")
 
         with pytest.raises(RuntimeError, match="Simulated API failure"):
-            await runner.poll_one("k", {"api_key": "k"})
+            await runner.poll_one(entry)
 
         # Original state should be preserved
         assert await state_store.get("k") == {"original": True}
@@ -213,7 +213,7 @@ def test_extractor_runner_wraps_config_in_config_type():
         runner = mod.runner
         await runner.load_initial_configs()
 
-        assert isinstance(runner.configs["k"], Config)
+        assert isinstance(runner.configs["k"].config, Config)
 
     asyncio.run(run())
 
@@ -234,7 +234,7 @@ def test_extractor_runner_suspended_configs_not_polled():
         assert len(runner.configs) == 2
 
         # Poll only active configs
-        await runner.poll_one("active", runner.configs["active"])
+        await runner.poll_one(runner.configs["active"])
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
         assert payload["key"] == b"a"
@@ -255,10 +255,10 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
 
         mod = make_module(SimpleExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        runner.state_keys["k"] = "k"
+        entry = ConfigEntry(config=Config({"api_key": "k"}), state_key="k")
 
         with pytest.raises(ConnectionError):
-            await runner.poll_one("k", Config({"api_key": "k"}))
+            await runner.poll_one(entry)
 
         # State should NOT be updated (send failed before put)
         assert await state_store.get("k") == {"cursor": 5}
@@ -298,14 +298,14 @@ def test_extractor_runner_config_update_during_operation():
         runner = mod.runner
         await runner.load_initial_configs()
 
-        assert runner.configs["k"]["api_key"] == "v1"
+        assert runner.configs["k"].config["api_key"] == "v1"
 
         consumer.records = [
             make_record(key="k", value={"api_key": "v2"}, offset=1, topic="cfg"),
         ]
         await runner.check_config_updates()
 
-        assert runner.configs["k"]["api_key"] == "v2"
+        assert runner.configs["k"].config["api_key"] == "v2"
 
     asyncio.run(run())
 
@@ -325,8 +325,7 @@ def test_extractor_poll_yields_no_state():
 
         mod = make_module(EmptyExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        runner.state_keys["k"] = "k"
-        await runner.poll_one("k", Config({"api_key": "k"}))
+        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
 
         assert len(producer.sent) == 0
         assert await state_store.get("k") is None
@@ -349,8 +348,7 @@ def test_extractor_poll_in_place_state_mutation_is_persisted():
 
         mod = make_module(InPlaceMutatingExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        runner.state_keys["k"] = "k"
-        await runner.poll_one("k", Config({"api_key": "k"}))
+        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
 
         assert (await state_store.get("k"))["cursor"] == 1
 
@@ -371,8 +369,7 @@ def test_extractor_poll_yielding_empty_state_deletes_existing_entry():
 
         mod = make_module(TombstoningExtractor(), state_store=state_store)
         runner = mod.runner
-        runner.state_keys["k"] = "k"
-        await runner.poll_one("k", Config({"api_key": "k"}))
+        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
 
         assert await state_store.get("k") is None
 
@@ -398,8 +395,7 @@ def test_extractor_poll_yielding_empty_state_no_op_when_already_absent():
         state_store = SpyingStore()
         mod = make_module(TombstoningExtractor(), state_store=state_store)
         runner = mod.runner
-        runner.state_keys["k"] = "k"
-        await runner.poll_one("k", Config({"api_key": "k"}))
+        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
 
         assert deleted == []  # baseline {} == yielded {}, no change
         assert await state_store.get("k") is None
@@ -423,8 +419,7 @@ def test_extractor_poll_mutation_without_yield_is_not_persisted():
 
         mod = make_module(MutateWithoutYieldExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        runner.state_keys["k"] = "k"
-        await runner.poll_one("k", Config({"api_key": "k"}))
+        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
 
         assert await state_store.get("k") is None
 
@@ -528,7 +523,7 @@ def test_functional_extractor_end_to_end_with_runner():
         runner = mod.runner
 
         await runner.load_initial_configs()
-        await runner.poll_one("t/c", runner.configs["t/c"])
+        await runner.poll_one(runner.configs["t/c"])
 
         assert len(producer.sent) == 1
         assert await state_store.get("k1") == {"cursor": 1}

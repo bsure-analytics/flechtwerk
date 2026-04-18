@@ -66,7 +66,7 @@ class Transformer:
             self.extract_key = extract_key
 
     def extract_key(self, msg: IncomingMessage) -> str:
-        """Extract partition key for stateful processing. Default: message key."""
+        """Extract the state key from the incoming message. Default: msg.key."""
         return msg.key
 
     async def __aenter__(self) -> Transformer:
