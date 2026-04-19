@@ -49,7 +49,10 @@ class RocksDBStateStore(StateStore):
     Every put() writes to the RocksDB WAL immediately — no periodic snapshots.
 
     The ``path`` attribute is set by the DI container (reactor-di) or directly
-    in tests. The database is opened lazily on first access.
+    in tests. The database is opened lazily on first access, so stages that
+    never touch state (stateless transformers with zero restored entries)
+    never create the RocksDB file at all — and close() is a no-op in that
+    case, preserving the "nothing happened" shutdown path.
     """
 
     path: Path
@@ -80,6 +83,14 @@ class RocksDBStateStore(StateStore):
             pass
 
     async def close(self) -> None:
+        # self.db is a cached_property — accessing it triggers the lazy
+        # open. For stages that never touch state (stateless transformers
+        # with 0 restored entries, no put()/get() during operation), the
+        # DB is never opened, and close() should be a no-op. Otherwise we
+        # would open the DB file on shutdown just to close it, producing a
+        # confusing "Opened … Closed" pair in the logs.
+        if "db" not in self.__dict__:
+            return
         self.db.close()
         shutil.rmtree(self.path, ignore_errors=True)
         log.info("Closed and removed RocksDB state store at %s", self.path)
