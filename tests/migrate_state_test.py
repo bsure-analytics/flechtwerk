@@ -3,6 +3,10 @@ import asyncio
 import pickle
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+import aiokafka
+import pytest
 
 from fretworx.migrate_state import migrate_bytewax_to_fretworx
 from fretworx.state import InMemoryStateStore
@@ -68,6 +72,75 @@ def test_migrate_remap_rekeys_matching_entries(tmp_path):
         assert await store.get("api_key_B") is None
         # Pass-through: custom-keyed state survives unchanged.
         assert await store.get("*** == {"seen": True}
+
+    asyncio.run(run())
+
+
+def test_migrate_commits_offsets_when_topics_match_input_topics(tmp_path):
+    async def run():
+        sqlite_path = tmp_path / "part-0.sqlite3"
+        write_bytewax_sqlite(sqlite_path, [
+            ("step_id", "0-sumup-details", pickle.dumps(100)),
+            ("step_id", "1-sumup-details", pickle.dumps(200)),
+        ])
+
+        producer = AsyncMock()
+
+        store = InMemoryStateStore()
+        await migrate_bytewax_to_fretworx(
+            store, tmp_path, group_id="g", producer=producer,
+            input_topics=["sumup-details"],
+        )
+
+        producer.send_offsets_to_transaction.assert_awaited_once()
+        committed, group_id = producer.send_offsets_to_transaction.await_args.args
+        assert group_id == "g"
+        assert committed == {
+            aiokafka.TopicPartition("sumup-details", 0): 100,
+            aiokafka.TopicPartition("sumup-details", 1): 200,
+        }
+
+    asyncio.run(run())
+
+
+def test_migrate_raises_when_offset_topic_not_in_input_topics(tmp_path):
+    async def run():
+        sqlite_path = tmp_path / "part-0.sqlite3"
+        write_bytewax_sqlite(sqlite_path, [
+            ("step_id", "0-fret-sumup-details", pickle.dumps(100)),
+        ])
+
+        producer = AsyncMock()
+
+        store = InMemoryStateStore()
+        with pytest.raises(ValueError, match="fret-sumup-details"):
+            await migrate_bytewax_to_fretworx(
+                store, tmp_path, group_id="g", producer=producer,
+                input_topics=["sumup-details"],
+            )
+
+        producer.send_offsets_to_transaction.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_migrate_without_input_topics_commits_offsets_verbatim(tmp_path):
+    async def run():
+        sqlite_path = tmp_path / "part-0.sqlite3"
+        write_bytewax_sqlite(sqlite_path, [
+            ("step_id", "0-any-topic", pickle.dumps(100)),
+        ])
+
+        producer = AsyncMock()
+
+        store = InMemoryStateStore()
+        await migrate_bytewax_to_fretworx(
+            store, tmp_path, group_id="g", producer=producer,
+        )
+
+        producer.send_offsets_to_transaction.assert_awaited_once()
+        committed, _ = producer.send_offsets_to_transaction.await_args.args
+        assert committed == {aiokafka.TopicPartition("any-topic", 0): 100}
 
     asyncio.run(run())
 

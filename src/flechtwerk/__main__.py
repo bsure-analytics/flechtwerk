@@ -178,7 +178,10 @@ async def auto_migrate_if_needed(
 
     if isinstance(stage, Transformer):
         async with producer.transaction():
-            await migrate_bytewax_to_fretworx(state_store, state_dir, group_id, producer)
+            await migrate_bytewax_to_fretworx(
+                state_store, state_dir, group_id, producer,
+                input_topics=stage.input_topics,
+            )
     else:
         api_key_to_msg_key = await build_api_key_to_msg_key(bootstrap_servers, stage.input_topics)
         log.info("Loaded %d api_key → msg.key mapping(s) for Bytewax state remap",

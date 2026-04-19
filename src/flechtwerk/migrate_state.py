@@ -20,7 +20,7 @@ import logging
 import pickle
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +104,7 @@ async def migrate_bytewax_to_fretworx(
     producer: Any | None = None,
     *,
     key_remap: KeyRemap | None = None,
+    input_topics: Collection[str] | None = None,
 ) -> None:
     """Migrate Bytewax SQLite state to the changelog-backed state store and optionally commit Kafka offsets.
 
@@ -115,6 +116,15 @@ async def migrate_bytewax_to_fretworx(
     which it should be written to the Fretworx changelog. Returning None
     drops the entry. Passing through the original key (the default) is
     achieved by returning it unchanged.
+
+    input_topics, if provided, is the set of topic names the caller is
+    subscribed to. Offsets that reference a topic outside this set cause
+    the migration to raise. Committing offsets for a nonexistent topic
+    would make send_offsets_to_transaction retry on
+    UnknownTopicOrPartitionError forever, so failing loudly here is the
+    only safe option — callers must resolve the mismatch before retrying
+    (typically by deleting the part-*.sqlite3 files to skip the offset
+    migration and resume from earliest).
     """
     sqlite_files = sorted(state_dir.glob("part-*.sqlite3"))
 
@@ -158,11 +168,27 @@ async def migrate_bytewax_to_fretworx(
 
     # Commit Kafka consumer offsets via the transactional producer (transformers only)
     if all_offsets and producer is not None:
-        tp_offsets = {
-            aiokafka.TopicPartition(m.group(2), int(m.group(1))): offset
-            for key, offset in all_offsets.items()
-            if (m := BYTEWAX_PARTITION_KEY.match(key))
-        }
+        tp_offsets: dict[aiokafka.TopicPartition, int] = {}
+        unknown_topics: set[str] = set()
+        for key, offset in all_offsets.items():
+            m = BYTEWAX_PARTITION_KEY.match(key)
+            if not m:
+                continue
+            partition, topic = int(m.group(1)), m.group(2)
+            if input_topics is not None and topic not in input_topics:
+                unknown_topics.add(topic)
+                continue
+            tp_offsets[aiokafka.TopicPartition(topic, partition)] = offset
+        if unknown_topics:
+            raise ValueError(
+                f"Bytewax SQLite in {state_dir} contains offsets for topics "
+                f"not in input_topics: {sorted(unknown_topics)}. "
+                f"Expected one of: {sorted(input_topics or [])}. "
+                f"Topic names have diverged between source and destination "
+                f"clusters. Rename the destination topics to match, or "
+                f"delete the part-*.sqlite3 files in {state_dir} to skip "
+                f"the Bytewax offset migration and resume from earliest."
+            )
         if tp_offsets:
             await producer.send_offsets_to_transaction(tp_offsets, group_id)
             for tp, offset in sorted(tp_offsets.items(), key=lambda x: (x[0].topic, x[0].partition)):
