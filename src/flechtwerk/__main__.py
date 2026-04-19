@@ -14,13 +14,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import json
 import logging
 import os
 import sys
 from pathlib import Path
 from typing import Final
 
-from aiokafka import AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
 from .extractor import Extractor
 from .migrate_state import migrate_bytewax_to_fretworx
@@ -36,6 +37,8 @@ KAFKA_BOOTSTRAP_SERVERS: Final = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost
 KAFKA_CLIENT_ID: Final = os.getenv("KAFKA_CLIENT_ID")
 # Log level (DEBUG, INFO, WARNING, ERROR)
 LOGLEVEL: Final = os.getenv("LOGLEVEL", "INFO")
+
+API_KEY = "api_key"
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -94,18 +97,70 @@ def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | Non
     return stage, group_id
 
 
+async def build_api_key_to_msg_key(
+    bootstrap_servers: str,
+    input_topics: list[str],
+) -> dict[str, str]:
+    """Read the extractor's config topics and return {api_key: msg.key}.
+
+    Used by auto_migrate_if_needed() to re-key Bytewax-era state that was
+    keyed by msg.value["api_key"] under the old Extractor.extract_key default
+    into the new msg.key-keyed layout. Configs without an api_key field
+    (Ariadne, Xovis, …) are simply absent from the map, so any Bytewax state
+    with those custom keys falls through the remap unchanged.
+    """
+    consumer = AIOKafkaConsumer(
+        bootstrap_servers=bootstrap_servers,
+        group_id=None,
+        auto_offset_reset="earliest",
+        enable_auto_commit=False,
+    )
+    await consumer.start()
+    try:
+        await consumer._client.set_topics(input_topics)  # noqa: SLF001
+        mapping: dict[str, str] = {}
+        consumer.subscribe(input_topics)
+        while True:
+            records = await consumer.getmany(timeout_ms=2000)
+            if not records:
+                break
+            for _tp, msgs in records.items():
+                for msg in msgs:
+                    if not msg.value:
+                        continue  # tombstone
+                    try:
+                        value = json.loads(msg.value)
+                    except json.JSONDecodeError:
+                        continue
+                    api_key = value.get(API_KEY)
+                    if not api_key:
+                        continue
+                    key = msg.key.decode("utf-8") if isinstance(msg.key, bytes) else msg.key
+                    mapping[api_key] = key
+        return mapping
+    finally:
+        await consumer.stop()
+
+
 async def auto_migrate_if_needed(
         state_dir: Path,
         group_id: str,
         stage: Extractor | Transformer,
         state_store: StateStore,
         producer: AIOKafkaProducer,
+        bootstrap_servers: str,
 ) -> None:
     """Auto-migrate Bytewax SQLite state to the changelog-backed state store.
 
     Transformers use a Kafka transaction to atomically commit offsets.
     Extractors skip offset commits (config topics are re-read from earliest
-    on every startup) and migrate state without a transaction.
+    on every startup) and migrate state without a transaction. For
+    extractors, state keys are also re-keyed from api_key (the old
+    Extractor.extract_key default) to msg.key (the new default) using the
+    config topic's api_key → msg.key mapping. Entries whose Bytewax key
+    isn't a known api_key pass through unchanged, which covers datasources
+    that set their own extract_key (Ariadne, Xovis) or whose state keys
+    were already msg.key-shaped.
     """
     sentinel = state_dir / ".migration-complete"
     if sentinel.exists():
@@ -115,7 +170,19 @@ async def auto_migrate_if_needed(
         async with producer.transaction():
             await migrate_bytewax_to_fretworx(state_store, state_dir, group_id, producer)
     else:
-        await migrate_bytewax_to_fretworx(state_store, state_dir, group_id)
+        api_key_to_msg_key = await build_api_key_to_msg_key(bootstrap_servers, stage.input_topics)
+        log.info("Loaded %d api_key → msg.key mapping(s) for Bytewax state remap",
+                 len(api_key_to_msg_key))
+
+        def remap(bytewax_key: str, _state: object) -> str:
+            # If the Bytewax key is a known api_key, re-key to the matching
+            # msg.key. Otherwise pass it through — the state is already keyed
+            # by a custom extract_key (e.g. Ariadne's tenant/channel/location).
+            return api_key_to_msg_key.get(bytewax_key, bytewax_key)
+
+        await migrate_bytewax_to_fretworx(
+            state_store, state_dir, group_id, key_remap=remap,
+        )
     sentinel.touch()
 
 
@@ -150,7 +217,10 @@ async def main() -> None:
 
     async with fretworx:
         if args.state_dir:
-            await auto_migrate_if_needed(args.state_dir, group_id, stage, fretworx.state_store, fretworx.producer)
+            await auto_migrate_if_needed(
+                args.state_dir, group_id, stage,
+                fretworx.state_store, fretworx.producer, KAFKA_BOOTSTRAP_SERVERS,
+            )
         await fretworx.runner.run()
 
 

@@ -20,12 +20,15 @@ import logging
 import pickle
 import re
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import aiokafka
 
 from .state import StateStore
+
+KeyRemap = Callable[[str, Any], str | None]
 
 log = logging.getLogger(__name__)
 
@@ -99,12 +102,19 @@ async def migrate_bytewax_to_fretworx(
     state_dir: Path,
     group_id: str,
     producer: Any | None = None,
+    *,
+    key_remap: KeyRemap | None = None,
 ) -> None:
     """Migrate Bytewax SQLite state to the changelog-backed state store and optionally commit Kafka offsets.
 
     When producer is provided (transformer path), Kafka consumer offsets are
     committed via send_offsets_to_transaction. When omitted (extractor path),
     offset commits are skipped — extractors re-read config topics from earliest.
+
+    key_remap, if provided, maps each Bytewax-era state key to the key under
+    which it should be written to the Fretworx changelog. Returning None
+    drops the entry. Passing through the original key (the default) is
+    achieved by returning it unchanged.
     """
     sqlite_files = sorted(state_dir.glob("part-*.sqlite3"))
 
@@ -125,13 +135,24 @@ async def migrate_bytewax_to_fretworx(
 
     # Write state through the changelog-backed store (durably persisted to Kafka)
     if all_states:
-        for key, state in all_states.items():
-            if isinstance(state, dict):
-                await state_store.put(key, state)
-                log.info("Migrated state for key: %s", key)
+        written = 0
+        dropped = 0
+        for bytewax_key, state in all_states.items():
+            if not isinstance(state, dict):
+                log.warning("Skipping non-dict state for key %s: %s", bytewax_key, type(state))
+                continue
+            target_key = key_remap(bytewax_key, state) if key_remap else bytewax_key
+            if target_key is None:
+                log.info("Dropping state for Bytewax key %s (remap returned None)", bytewax_key)
+                dropped += 1
+                continue
+            await state_store.put(target_key, state)
+            if target_key == bytewax_key:
+                log.info("Migrated state for key: %s", target_key)
             else:
-                log.warning("Skipping non-dict state for key %s: %s", key, type(state))
-        log.info("State migration complete: %d state(s) written", len(all_states))
+                log.info("Migrated state, re-keyed %s -> %s", bytewax_key, target_key)
+            written += 1
+        log.info("State migration complete: %d written, %d dropped", written, dropped)
     else:
         log.info("No application state found in SQLite databases")
 
