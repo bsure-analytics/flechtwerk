@@ -108,6 +108,13 @@ async def build_api_key_to_msg_key(
     into the new msg.key-keyed layout. Configs without an api_key field
     (Ariadne, Xovis, …) are simply absent from the map, so any Bytewax state
     with those custom keys falls through the remap unchanged.
+
+    Records are compacted by msg.key first (Kafka-log-compaction semantics)
+    before the api_key → msg.key mapping is built. This excludes rotated-out
+    api_keys from the mapping, so the Bytewax state entry for each current
+    api_key is the only one that gets re-keyed onto its msg.key — historical
+    api_keys fall through to the pass-through branch of the remap and don't
+    overwrite the current state.
     """
     consumer = AIOKafkaConsumer(
         bootstrap_servers=bootstrap_servers,
@@ -118,28 +125,31 @@ async def build_api_key_to_msg_key(
     await consumer.start()
     try:
         await consumer._client.set_topics(input_topics)  # noqa: SLF001
-        mapping: dict[str, str] = {}
         consumer.subscribe(input_topics)
+        latest_value: dict[str, bytes | None] = {}
         while True:
             records = await consumer.getmany(timeout_ms=2000)
             if not records:
                 break
             for _tp, msgs in records.items():
                 for msg in msgs:
-                    if not msg.value:
-                        continue  # tombstone
-                    try:
-                        value = json.loads(msg.value)
-                    except json.JSONDecodeError:
-                        continue
-                    api_key = value.get(API_KEY)
-                    if not api_key:
-                        continue
                     key = msg.key.decode("utf-8") if isinstance(msg.key, bytes) else msg.key
-                    mapping[api_key] = key
-        return mapping
+                    latest_value[key] = msg.value
     finally:
         await consumer.stop()
+
+    mapping: dict[str, str] = {}
+    for msg_key, raw in latest_value.items():
+        if not raw:
+            continue  # tombstone — config removed
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        api_key = value.get(API_KEY)
+        if api_key:
+            mapping[api_key] = msg_key
+    return mapping
 
 
 async def auto_migrate_if_needed(
