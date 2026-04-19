@@ -75,21 +75,23 @@ def module_path_to_group_id(module_path: str) -> str:
 def resolve_stage(module_path: str) -> tuple[Extractor | Transformer, str] | None:
     """Import the module and look for a fretworx stage instance.
 
-    Returns (stage, group_id) or None if not a fretworx module.
-    Transformers declare group_id explicitly (needed for consumer groups
-    and transactional offset commits). Extractors derive their group_id
-    from the module path — they don't use consumer groups but still need
-    an identifier for changelog topic naming and client ID defaults.
+    Returns (stage, group_id) or None if not a fretworx module. For both
+    extractors and transformers, group_id precedence is:
+        stage.group_id (if set) > $KAFKA_GROUP_ID > module-path derivation.
+    Transformers use group_id as the actual consumer group (transactional
+    offset commits depend on it); extractors use it only for changelog
+    topic naming and client ID defaults.
     """
     module = importlib.import_module(module_path)
     stage = getattr(module, "stage", None)
     if not isinstance(stage, (Extractor, Transformer)):
         return None
-    if isinstance(stage, Transformer):
-        if not hasattr(stage, "group_id"):
-            raise ValueError(f"{module_path}: Transformer stage must set group_id")
-        return stage, stage.group_id
-    return stage, module_path_to_group_id(module_path)
+    group_id = (
+        getattr(stage, "group_id", None)
+        or os.getenv("KAFKA_GROUP_ID")
+        or module_path_to_group_id(module_path)
+    )
+    return stage, group_id
 
 
 async def auto_migrate_if_needed(

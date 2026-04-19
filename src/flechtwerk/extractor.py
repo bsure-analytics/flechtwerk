@@ -61,20 +61,29 @@ class Extractor:
                 ...
 
     Extractors do not use Kafka consumer groups — config topics are re-read
-    from earliest on every startup. The group ID (used for changelog
-    topic naming and client ID) is derived from the module path at runtime.
+    from earliest on every startup. The `group_id` attribute (used for
+    changelog topic naming and client ID defaults) follows this precedence:
+    `stage.group_id` if set on the instance/class → `$KAFKA_GROUP_ID` env
+    var → module-path-derived fallback (e.g. `ds.sumup.extractor` →
+    `sumup-extractor`). This matches `Transformer`'s behavior and lets
+    deployments override via env var without touching code.
     """
 
+    # Optional override. None falls through to $KAFKA_GROUP_ID / module path.
+    group_id: str | None = None
     input_topics: list[str]
 
     def __init__(
         self,
         *,
+        group_id: str | None = None,
         input_topics: list[str] | None = None,
         poll: PollFn | None = None,
         enrich: EnrichFn | None = None,
         extract_key: ExtractKeyFn | None = None,
     ):
+        if group_id is not None:
+            self.group_id = group_id
         if input_topics is not None:
             self.input_topics = input_topics
         if poll is not None:
