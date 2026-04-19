@@ -50,6 +50,7 @@ class FretworxModule:
     group_id: str
     extractor_runner: ExtractorRunner
     inner_store: make[StateStore, RocksDBStateStore]
+    poll_interval_seconds: int
     stage: Extractor | Transformer
     state_store: make[StateStore, ChangelogStateStore]
     transformer_runner: TransformerRunner

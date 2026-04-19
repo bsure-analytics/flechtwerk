@@ -43,21 +43,21 @@ class Transformer:
 
             async def transform(self, msg, state):
                 ...
+
+    The Kafka consumer group ID (driving consumer group membership,
+    transactional offset commits, and changelog topic naming) is set on
+    `FretworxModule` by the caller; stages don't carry it.
     """
 
-    group_id: str
     input_topics: list[str]
 
     def __init__(
         self,
         *,
-        group_id: str | None = None,
         input_topics: list[str] | None = None,
         transform: TransformFn | None = None,
         extract_key: ExtractKeyFn | None = None,
     ):
-        if group_id is not None:
-            self.group_id = group_id
         if input_topics is not None:
             self.input_topics = input_topics
         if transform is not None:

@@ -6,8 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
-from os import getenv
-from typing import AsyncIterator, Final
+from typing import AsyncIterator
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
@@ -17,9 +16,6 @@ from .state import StateStore
 from .types import Config, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
-
-# Seconds between poll cycles
-POLL_INTERVAL_SECONDS: Final = int(getenv("POLL_INTERVAL_SECONDS", "60"))
 
 SUSPENDED = "suspended"
 
@@ -61,29 +57,21 @@ class Extractor:
                 ...
 
     Extractors do not use Kafka consumer groups — config topics are re-read
-    from earliest on every startup. The `group_id` attribute (used for
-    changelog topic naming and client ID defaults) follows this precedence:
-    `stage.group_id` if set on the instance/class → `$KAFKA_GROUP_ID` env
-    var → module-path-derived fallback (e.g. `ds.sumup.extractor` →
-    `sumup-extractor`). This matches `Transformer`'s behavior and lets
-    deployments override via env var without touching code.
+    from earliest on every startup. The `group_id` used for changelog topic
+    naming and client ID defaults is set on `FretworxModule` by the caller;
+    stages don't carry it.
     """
 
-    # Optional override. None falls through to $KAFKA_GROUP_ID / module path.
-    group_id: str | None = None
     input_topics: list[str]
 
     def __init__(
         self,
         *,
-        group_id: str | None = None,
         input_topics: list[str] | None = None,
         poll: PollFn | None = None,
         enrich: EnrichFn | None = None,
         extract_key: ExtractKeyFn | None = None,
     ):
-        if group_id is not None:
-            self.group_id = group_id
         if input_topics is not None:
             self.input_topics = input_topics
         if poll is not None:
@@ -138,6 +126,7 @@ class ExtractorRunner:
 
     consumer: AIOKafkaConsumer
     extractor: lookup[Extractor, "stage"]  # noqa: PyUnresolvedReferences
+    poll_interval_seconds: int
     producer: AIOKafkaProducer
     state_store: StateStore
 
@@ -171,7 +160,7 @@ class ExtractorRunner:
                             log.error("Poll failed for key %s", key, exc_info=result)
                             raise result
 
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                await asyncio.sleep(self.poll_interval_seconds)
 
     async def load_initial_configs(self) -> None:
         """Read all existing configs from the topic on startup.
