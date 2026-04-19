@@ -119,8 +119,8 @@ def test_extractor_runner_polls_configs():
         assert topic == "test-output"
         assert json.loads(payload["value"])["data"] == "polled"
 
-        # State should be persisted under the api_key (extract_key default)
-        assert await state_store.get("key123") == {"cursor": 1}
+        # State should be persisted under msg.key (extract_key default)
+        assert await state_store.get("tenant/channel") == {"cursor": 1}
 
     asyncio.run(run())
 
@@ -477,7 +477,7 @@ def test_functional_extractor_with_enrich_and_extract_key():
 
 
 def test_functional_extractor_default_extract_key():
-    """Functional Extractor without extract_key falls back to msg.value['api_key']."""
+    """Functional Extractor without extract_key falls back to msg.key."""
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
         return
         yield  # pragma: no cover
@@ -485,8 +485,8 @@ def test_functional_extractor_default_extract_key():
     ext = Extractor(input_topics=["cfg"], poll=my_poll)
 
     from fretworx.kafka import parse_message
-    msg = parse_message(make_record(key="k", value={"api_key": "a"}))
-    assert ext.extract_key(msg) == "a"
+    msg = parse_message(make_record(key="tenant/channel", value={"api_key": "a"}))
+    assert ext.extract_key(msg) == "tenant/channel"
 
 
 def test_extractor_no_poll_raises():
@@ -526,6 +526,6 @@ def test_functional_extractor_end_to_end_with_runner():
         await runner.poll_one(runner.configs["t/c"])
 
         assert len(producer.sent) == 1
-        assert await state_store.get("k1") == {"cursor": 1}
+        assert await state_store.get("t/c") == {"cursor": 1}
 
     asyncio.run(run())

@@ -21,7 +21,6 @@ log = logging.getLogger(__name__)
 # Seconds between poll cycles
 POLL_INTERVAL_SECONDS: Final = int(getenv("POLL_INTERVAL_SECONDS", "60"))
 
-API_KEY = "api_key"
 SUSPENDED = "suspended"
 
 PollFn = Callable[[Config, State], AsyncIterator[Message | State]]
@@ -86,8 +85,15 @@ class Extractor:
             self.extract_key = extract_key
 
     def extract_key(self, msg: IncomingMessage) -> str:
-        """Extract the state key from the incoming message. Default: msg.value["api_key"]."""
-        return msg.value[API_KEY]
+        """Extract the state key from the incoming message. Default: msg.key.
+
+        The default is the Kafka message key, which by convention carries the
+        operator-facing identity (e.g. `{tenancy_id}/{channel_id}`). This is
+        stable across credential rotations — rotating an API key via a new
+        config message preserves the state entry. Override only if the
+        operator-facing identity doesn't match the desired state namespace.
+        """
+        return msg.key
 
     async def enrich(self, config: Config) -> Config:
         """One-time enrichment when a config first arrives or updates.
