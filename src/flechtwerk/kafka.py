@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import aiokafka
+from aiokafka import ConsumerRecord
 
 from .types import Event, IncomingMessage, State
 
@@ -48,7 +49,7 @@ def millis_to_datetime(millis: int | None) -> datetime | None:
     return datetime.fromtimestamp(millis / 1000, tz=timezone.utc)
 
 
-def parse_message(msg: Any) -> IncomingMessage:
+def parse_message(msg: ConsumerRecord[Any, Any]) -> IncomingMessage:
     """Parse an aiokafka ConsumerRecord into an IncomingMessage.
 
     Malformed payloads fall back to ``Event({})`` rather than raising — a

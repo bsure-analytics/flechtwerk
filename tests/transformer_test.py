@@ -7,7 +7,7 @@ import pytest
 
 from fretworx.module import FretworxModule
 from fretworx.state import InMemoryStateStore
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, FakeRecord
+from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, make_record
 from fretworx.transformer import Transformer, TransformerRunner
 from fretworx.types import Event, Message, State
 
@@ -54,16 +54,16 @@ class StatefulCounterTransformer(Transformer):
         yield State(count=count)
 
 
-def make_record(key="k", value=None, topic="input-topic", offset=0, partition=0):
+def json_record(key="k", value=None, topic="input-topic", offset=0, partition=0):
     if value is None:
         value = {}
-    return FakeRecord(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
+    return make_record(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
 
 
 def make_incoming(key="k", value=None, topic="input-topic"):
-    """Build an IncomingMessage-like object via parse_message on a FakeRecord."""
+    """Build an IncomingMessage-like object via parse_message on a ConsumerRecord."""
     from fretworx.kafka import parse_message
-    return parse_message(make_record(key=key, value=value, topic=topic))
+    return parse_message(json_record(key=key, value=value, topic=topic))
 
 
 def make_module(transformer, consumer=None, producer=None, state_store=None):
@@ -214,7 +214,7 @@ def test_subclass_defaults_not_overridden_by_init():
 
 def test_transformer_runner_processes_messages():
     async def run():
-        record = make_record(key="k1", value={"data": "hello"})
+        record = json_record(key="k1", value={"data": "hello"})
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
@@ -238,8 +238,8 @@ def test_transformer_runner_processes_messages():
 def test_transformer_runner_stateful():
     async def run():
         recs = [
-            make_record(key="form1", value={}, offset=0),
-            make_record(key="form1", value={}, offset=1),
+            json_record(key="form1", value={}, offset=0),
+            json_record(key="form1", value={}, offset=1),
         ]
         consumer = FakeKafkaConsumer(recs)
         producer = FakeKafkaProducer()
@@ -272,7 +272,7 @@ def test_transformer_runner_wraps_value_in_event():
     t = Transformer(input_topics=["in"], transform=spy_transform)
 
     async def run():
-        record = make_record(value={"data": 1}, topic="in")
+        record = json_record(value={"data": 1}, topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
@@ -302,7 +302,7 @@ def test_transformer_runner_event_is_protective_copy():
     t = Transformer(input_topics=["in"], transform=mutating_transform)
 
     async def run():
-        record = make_record(value=original, topic="in")
+        record = json_record(value=original, topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, InMemoryStateStore())
@@ -329,7 +329,7 @@ def test_transformer_runner_stateless_gets_empty_state():
     t = Transformer(input_topics=["in"], transform=spy_transform)
 
     async def run():
-        record = make_record(topic="in")
+        record = json_record(topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, InMemoryStateStore())
@@ -354,7 +354,7 @@ def test_transformer_runner_stateless_does_not_persist_state():
 
     async def run():
         state_store = InMemoryStateStore()
-        record = make_record(key="k1", topic="in")
+        record = json_record(key="k1", topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, state_store)
@@ -379,7 +379,7 @@ def test_transformer_runner_in_place_state_mutation_is_persisted():
 
     async def run():
         state_store = InMemoryStateStore()
-        record = make_record(key="k1", topic="in")
+        record = json_record(key="k1", topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, state_store)
@@ -404,7 +404,7 @@ def test_transformer_runner_mutation_without_yield_is_not_persisted():
 
     async def run():
         state_store = InMemoryStateStore()
-        record = make_record(key="k1", topic="in")
+        record = json_record(key="k1", topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, state_store)
@@ -430,7 +430,7 @@ def test_transformer_runner_yielding_empty_state_deletes_existing_entry():
         state_store = InMemoryStateStore()
         await state_store.put("k1", {"cursor": 5})
 
-        record = make_record(key="k1", topic="in")
+        record = json_record(key="k1", topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, state_store)
@@ -461,7 +461,7 @@ def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
                 await super().delete(key)
 
         state_store = SpyingStore()
-        record = make_record(key="k1", topic="in")
+        record = json_record(key="k1", topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, state_store)
@@ -495,9 +495,9 @@ def test_transformer_runner_functional_stateful():
 
     async def run():
         recs = [
-            make_record(value={"form_id": "f1"}, topic="in", offset=0),
-            make_record(value={"form_id": "f1"}, topic="in", offset=1),
-            make_record(value={"form_id": "f2"}, topic="in", offset=2),
+            json_record(value={"form_id": "f1"}, topic="in", offset=0),
+            json_record(value={"form_id": "f1"}, topic="in", offset=1),
+            json_record(value={"form_id": "f2"}, topic="in", offset=2),
         ]
         consumer = FakeKafkaConsumer(recs)
         producer = FakeKafkaProducer()
@@ -554,7 +554,7 @@ def test_transformer_runner_error_propagates_from_run():
             yield  # pragma: no cover
 
     async def run():
-        record = make_record(topic="in")
+        record = json_record(topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
@@ -577,7 +577,7 @@ def test_transformer_runner_filter_yields_nothing():
     t = Transformer(input_topics=["in"], transform=skip_all)
 
     async def run():
-        record = make_record(topic="in")
+        record = json_record(topic="in")
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         mod = make_module(t, consumer, producer, InMemoryStateStore())

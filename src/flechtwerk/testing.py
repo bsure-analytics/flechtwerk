@@ -1,30 +1,47 @@
 """Test doubles for fretworx framework testing."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
-from aiokafka import TopicPartition
+from aiokafka import ConsumerRecord, TopicPartition
 
 from .types import Message
 
 
-@dataclass
-class FakeRecord:
-    """Mimics an aiokafka ConsumerRecord for testing."""
+def make_record(
+    *,
+    key: bytes | str | None = None,
+    value: bytes | str | None = None,
+    topic: str = "test-topic",
+    partition: int = 0,
+    offset: int = 0,
+    timestamp: int = 0,
+) -> ConsumerRecord[Any, Any]:
+    """Build a real ``aiokafka.ConsumerRecord`` with sensible defaults for tests.
 
-    key: str
-    value: str
-    offset: int = 0
-    partition: int = 0
-    timestamp: int | None = None
-    topic: str = "test-topic"
+    Only the six fields ``parse_message`` actually reads are exposed — the
+    remaining aiokafka-internal fields (``timestamp_type``, ``checksum``, the
+    ``serialized_*_size`` fields, ``headers``) get placeholder values.
+    """
+    return ConsumerRecord(
+        topic=topic,
+        partition=partition,
+        offset=offset,
+        timestamp=timestamp,
+        timestamp_type=0,
+        key=key,
+        value=value,
+        checksum=None,
+        serialized_key_size=-1,
+        serialized_value_size=-1,
+        headers=(),
+    )
 
 
 class FakeKafkaConsumer:
     """Test double implementing the subset of aiokafka.AIOKafkaConsumer used by runners."""
 
-    def __init__(self, records: list[FakeRecord] | None = None):
+    def __init__(self, records: list[ConsumerRecord[Any, Any]] | None = None):
         self.records = list(records or [])
         self.committed = False
         self.started = False

@@ -8,7 +8,7 @@ import pytest
 from fretworx.extractor import ConfigEntry, Extractor, ExtractorRunner
 from fretworx.module import FretworxModule
 from fretworx.state import InMemoryStateStore
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, FakeRecord
+from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, make_record
 from fretworx.types import Config, Message, State
 
 
@@ -57,10 +57,10 @@ class ContextManagerExtractor(Extractor):
         yield Message(key="k", topic="t", value={"entered": self.entered})
 
 
-def make_record(key="k", value=None, topic="test-config", offset=0, partition=0):
+def json_record(key="k", value=None, topic="test-config", offset=0, partition=0):
     if value is None:
         value = {}
-    return FakeRecord(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
+    return make_record(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
 
 
 def make_module(extractor, consumer=None, producer=None, state_store=None):
@@ -97,7 +97,7 @@ def test_simple_extractor_poll():
 def test_extractor_runner_polls_configs():
     """Test that the runner processes configs and polls them."""
     async def run():
-        record = make_record(
+        record = json_record(
             key="tenant/channel",
             value={"api_key": "key123"},
         )
@@ -129,7 +129,7 @@ def test_extractor_runner_polls_configs():
 def test_extractor_enrichment():
     """Test that enrich() is called when configs arrive."""
     async def run():
-        record = make_record(key="k", value={"api_key": "key1"})
+        record = json_record(key="k", value={"api_key": "key1"})
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
@@ -191,8 +191,8 @@ def test_empty_config_removes_key():
     """Test that an empty config value removes the config."""
     async def run():
         consumer = FakeKafkaConsumer([
-            make_record(key="k1", value={"api_key": "a"}, offset=0),
-            make_record(key="k1", value={}, offset=1),
+            json_record(key="k1", value={"api_key": "a"}, offset=0),
+            json_record(key="k1", value={}, offset=1),
         ])
 
         mod = make_module(SimpleExtractor(), consumer)
@@ -207,7 +207,7 @@ def test_empty_config_removes_key():
 def test_extractor_runner_wraps_config_in_config_type():
     """Runner wraps raw msg.value in Config() when applying configs."""
     async def run():
-        record = make_record(key="k", value={"api_key": "test"}, topic="cfg")
+        record = json_record(key="k", value={"api_key": "test"}, topic="cfg")
         consumer = FakeKafkaConsumer([record])
 
         mod = make_module(SimpleExtractor(), consumer)
@@ -223,8 +223,8 @@ def test_extractor_runner_suspended_configs_not_polled():
     """Configs with suspended=True are skipped during polling."""
     async def run():
         consumer = FakeKafkaConsumer([
-            make_record(key="active", value={"api_key": "a"}, offset=0, topic="cfg"),
-            make_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1, topic="cfg"),
+            json_record(key="active", value={"api_key": "a"}, offset=0, topic="cfg"),
+            json_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1, topic="cfg"),
         ])
         producer = FakeKafkaProducer()
 
@@ -277,7 +277,7 @@ def test_extractor_runner_error_propagates_from_run():
             yield  # pragma: no cover
 
     async def run():
-        record = make_record(key="k", value={"api_key": "a"}, topic="cfg")
+        record = json_record(key="k", value={"api_key": "a"}, topic="cfg")
         consumer = FakeKafkaConsumer([record])
 
         mod = make_module(AlwaysFailExtractor(), consumer)
@@ -292,7 +292,7 @@ def test_extractor_runner_error_propagates_from_run():
 def test_extractor_runner_config_update_during_operation():
     """Config updates are applied between poll cycles."""
     async def run():
-        initial = make_record(key="k", value={"api_key": "v1"}, topic="cfg")
+        initial = json_record(key="k", value={"api_key": "v1"}, topic="cfg")
         consumer = FakeKafkaConsumer([initial])
 
         mod = make_module(SimpleExtractor(), consumer)
@@ -302,7 +302,7 @@ def test_extractor_runner_config_update_during_operation():
         assert runner.configs["k"].config["api_key"] == "v1"
 
         consumer.records = [
-            make_record(key="k", value={"api_key": "v2"}, offset=1, topic="cfg"),
+            json_record(key="k", value={"api_key": "v2"}, offset=1, topic="cfg"),
         ]
         await runner.check_config_updates()
 
@@ -470,7 +470,7 @@ def test_functional_extractor_with_enrich_and_extract_key():
         enriched = await ext.enrich(Config({"api_key": "k"}))
         assert enriched["tag"] == "enriched"
 
-        msg = make_record(key="ignored", value={"api_key": "a", "id": "custom"})
+        msg = json_record(key="ignored", value={"api_key": "a", "id": "custom"})
         from fretworx.kafka import parse_message
         assert ext.extract_key(parse_message(msg)) == "custom"
 
@@ -486,7 +486,7 @@ def test_functional_extractor_default_extract_key():
     ext = Extractor(input_topics=["cfg"], poll=my_poll)
 
     from fretworx.kafka import parse_message
-    msg = parse_message(make_record(key="tenant/channel", value={"api_key": "a"}))
+    msg = parse_message(json_record(key="tenant/channel", value={"api_key": "a"}))
     assert ext.extract_key(msg) == "tenant/channel"
 
 
@@ -514,7 +514,7 @@ def test_functional_extractor_end_to_end_with_runner():
         yield State(cursor=cursor + 1)
 
     async def run():
-        record = make_record(key="t/c", value={"api_key": "k1"})
+        record = json_record(key="t/c", value={"api_key": "k1"})
         consumer = FakeKafkaConsumer([record])
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
