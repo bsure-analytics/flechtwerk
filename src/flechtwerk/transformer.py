@@ -1,6 +1,4 @@
 """Transformer base class and runner for event-driven stream processing."""
-from __future__ import annotations
-
 import logging
 from collections.abc import Callable
 from copy import deepcopy

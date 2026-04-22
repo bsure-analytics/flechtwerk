@@ -5,8 +5,6 @@ metadata-priming call actually populating partition info against a live broker,
 real Kafka compaction semantics, and round-tripping pickled state entries
 through the wire format.
 """
-from __future__ import annotations
-
 import pickle
 
 import pytest

@@ -10,8 +10,6 @@ and the ChangelogStateStore. For transformers, this closes the transactional
 gap — state changelog writes participate in the same Kafka transaction as
 output messages and offset commits.
 """
-from __future__ import annotations
-
 import logging
 import tempfile
 from functools import cached_property

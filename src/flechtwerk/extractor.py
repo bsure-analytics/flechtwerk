@@ -1,6 +1,4 @@
 """Extractor base class and runner for poll-driven data extraction."""
-from __future__ import annotations
-
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable

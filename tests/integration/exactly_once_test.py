@@ -5,8 +5,6 @@ fundamentally cannot validate. A successful transaction materializes output +
 state-changelog + offset commit together; an aborted transaction materializes
 none of them.
 """
-from __future__ import annotations
-
 import pickle
 
 import pytest

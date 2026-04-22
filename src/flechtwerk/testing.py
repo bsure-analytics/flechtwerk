@@ -1,6 +1,4 @@
 """Test doubles for fretworx framework testing."""
-from __future__ import annotations
-
 from typing import Any
 
 from aiokafka import ConsumerRecord, TopicPartition
