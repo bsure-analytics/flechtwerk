@@ -106,8 +106,7 @@ async def test_successful_transaction_commits_output_state_and_offsets(
             messages=[Message(
                 topic=output_topic, key="out-key", value={"derived": "yes"}, timestamp=None,
             )],
-            new_state=State({"cursor": "done"}),
-            state_key="k",
+            state_changes={"k": State({"cursor": "done"})},
             offsets={tp: 1},
         )
     finally:

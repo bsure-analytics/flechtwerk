@@ -223,9 +223,7 @@ def test_transformer_runner_processes_messages():
         runner = mod.runner
 
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
@@ -249,9 +247,7 @@ def test_transformer_runner_stateful():
         runner = mod.runner
 
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert len(producer.sent) == 2
         assert json.loads(producer.sent[0][1]["value"])["count"] == 1
@@ -280,9 +276,7 @@ def test_transformer_runner_wraps_value_in_event():
         mod = make_module(t, consumer, producer, state_store)
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert received_types == ["Event"]
 
@@ -308,9 +302,7 @@ def test_transformer_runner_event_is_protective_copy():
         mod = make_module(t, consumer, producer, InMemoryStateStore())
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         # Transform mutated its copy, but original is untouched
         assert "mutated" not in original
@@ -335,9 +327,7 @@ def test_transformer_runner_stateless_gets_empty_state():
         mod = make_module(t, consumer, producer, InMemoryStateStore())
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert received_states == [{}]
         assert isinstance(received_states[0], State)
@@ -360,9 +350,7 @@ def test_transformer_runner_stateless_does_not_persist_state():
         mod = make_module(t, consumer, producer, state_store)
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert await state_store.get("k1") is None
 
@@ -385,9 +373,7 @@ def test_transformer_runner_in_place_state_mutation_is_persisted():
         mod = make_module(t, consumer, producer, state_store)
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert (await state_store.get("k1"))["cursor"] == 1
 
@@ -410,9 +396,7 @@ def test_transformer_runner_mutation_without_yield_is_not_persisted():
         mod = make_module(t, consumer, producer, state_store)
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert await state_store.get("k1") is None
 
@@ -436,9 +420,7 @@ def test_transformer_runner_yielding_empty_state_deletes_existing_entry():
         mod = make_module(t, consumer, producer, state_store)
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert await state_store.get("k1") is None
 
@@ -467,9 +449,7 @@ def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
         mod = make_module(t, consumer, producer, state_store)
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert deleted == []  # baseline {} == yielded {}, no change
         assert await state_store.get("k1") is None
@@ -506,9 +486,7 @@ def test_transformer_runner_functional_stateful():
         mod = make_module(t, consumer, producer, state_store)
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert json.loads(producer.sent[0][1]["value"])["count"] == 1
         assert json.loads(producer.sent[1][1]["value"])["count"] == 2
@@ -583,10 +561,127 @@ def test_transformer_runner_filter_yields_nothing():
         mod = make_module(t, consumer, producer, InMemoryStateStore())
         runner = mod.runner
         records = await runner.consumer.getmany(timeout_ms=1000)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await runner.process_one(raw_msg)
+        await runner.process_batch(records)
 
         assert len(producer.sent) == 0
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_same_key_in_batch_sees_overlay():
+    """Two records with the same state key in one batch — second sees first's yielded state."""
+    seen_states: list[dict] = []
+
+    async def counter(msg, state):
+        seen_states.append(dict(state))
+        count = state.get("count", 0) + 1
+        yield Message(key=msg.key, topic="out", value={"count": count})
+        yield State(count=count)
+
+    t = Transformer(input_topics=["in"], transform=counter)
+
+    async def run():
+        recs = [
+            json_record(key="k", topic="in", offset=0),
+            json_record(key="k", topic="in", offset=1),
+        ]
+        consumer = FakeKafkaConsumer(recs)
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        assert seen_states == [{}, {"count": 1}]
+        assert await state_store.get("k") == {"count": 2}
+        assert json.loads(producer.sent[0][1]["value"])["count"] == 1
+        assert json.loads(producer.sent[1][1]["value"])["count"] == 2
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_one_transaction_per_batch():
+    """A batch of N records opens exactly one Kafka transaction."""
+    async def passthrough(msg, _):
+        yield Message(key=msg.key, topic="out", value=msg.value)
+
+    t = Transformer(input_topics=["in"], transform=passthrough)
+
+    async def run():
+        recs = [json_record(key=f"k{i}", topic="in", offset=i) for i in range(5)]
+        consumer = FakeKafkaConsumer(recs)
+        producer = FakeKafkaProducer()
+        mod = make_module(t, consumer, producer, InMemoryStateStore())
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        assert producer.transaction_count == 1
+        assert len(producer.sent) == 5
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_in_place_mutation_without_yield_does_not_leak_in_batch():
+    """In-place mutation without a yield must not leak to the next same-key record."""
+    seen_states: list[dict] = []
+
+    async def mutating_no_yield(msg, state):
+        seen_states.append(dict(state))
+        state["leaked"] = True
+        yield Message(key=msg.key, topic="out", value={})
+
+    t = Transformer(input_topics=["in"], transform=mutating_no_yield)
+
+    async def run():
+        recs = [
+            json_record(key="k", topic="in", offset=0),
+            json_record(key="k", topic="in", offset=1),
+        ]
+        consumer = FakeKafkaConsumer(recs)
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+        mod = make_module(t, consumer, producer, state_store)
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        assert seen_states == [{}, {}]
+        assert await state_store.get("k") is None
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_offsets_are_max_per_partition():
+    """A multi-record batch commits the highest offset+1 per partition."""
+    captured_offsets: list[dict] = []
+
+    async def passthrough(msg, _):
+        yield Message(key=msg.key, topic="out", value=msg.value)
+
+    t = Transformer(input_topics=["in"], transform=passthrough)
+
+    class CapturingProducer(FakeKafkaProducer):
+        async def send_offsets_to_transaction(self, offsets, group_id):
+            captured_offsets.append(dict(offsets))
+
+    async def run():
+        recs = [
+            json_record(key="k", topic="in", offset=10, partition=0),
+            json_record(key="k", topic="in", offset=11, partition=0),
+            json_record(key="k", topic="in", offset=12, partition=0),
+        ]
+        consumer = FakeKafkaConsumer(recs)
+        producer = CapturingProducer()
+        mod = make_module(t, consumer, producer, InMemoryStateStore())
+        runner = mod.runner
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        assert len(captured_offsets) == 1
+        from aiokafka import TopicPartition
+        assert captured_offsets[0] == {TopicPartition("in", 0): 13}
 
     asyncio.run(run())

@@ -84,6 +84,7 @@ class FakeKafkaProducer:
         self.sent: list[tuple[str, dict]] = []
         self.flushed = False
         self.transaction_active = False
+        self.transaction_count = 0
 
     async def start(self) -> None:
         pass
@@ -98,6 +99,7 @@ class FakeKafkaProducer:
         self.flushed = True
 
     def transaction(self):
+        self.transaction_count += 1
         return FakeTransaction(self)
 
     async def send_offsets_to_transaction(self, offsets: dict, group_id: str) -> None:

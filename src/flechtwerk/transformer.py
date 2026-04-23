@@ -88,6 +88,13 @@ class Transformer:
 class TransformerRunner:
     """Runs a Transformer as a Kafka consumer-producer loop with exactly-once semantics.
 
+    One Kafka transaction per ``getmany()`` batch — output messages, state
+    changelog writes, and the consumer offset commit are all atomic.
+    A small in-memory state overlay scoped to the batch ensures that
+    records sharing a state key see each other's yielded mutations within
+    the batch; only the final state per key is written to the changelog
+    at commit time.
+
     Attributes are set by the DI container (reactor-di) or directly in tests.
     The producer is shared with the ChangelogStateStore — state writes inside
     send_transactional() participate in the same Kafka transaction.
@@ -100,7 +107,7 @@ class TransformerRunner:
     transformer: lookup[Transformer, "stage"]  # noqa: PyUnresolvedReferences
 
     async def run(self) -> None:
-        """Main event loop. Consumes messages and processes them sequentially.
+        """Main event loop. Consumes batches and processes each transactionally.
 
         Resource lifecycle (consumer/producer start/stop) is managed by
         FretworxModule, not the runner.
@@ -111,48 +118,76 @@ class TransformerRunner:
                 records = await self.consumer.getmany(timeout_ms=1000)
                 if not records:
                     continue
-                topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
-                ordered_tps = sorted(records, key=lambda p: topic_order.get(p.topic, 0))
-                for tp in ordered_tps:
-                    for raw_msg in records[tp]:
-                        await self.process_one(raw_msg)
+                await self.process_batch(records)
 
-    async def process_one(self, raw_msg) -> None:
-        """Process a single incoming message with exactly-once semantics."""
-        msg = parse_message(raw_msg)
+    async def process_batch(self, records: dict) -> None:
+        """Process all records in a getmany batch under a single transaction.
 
-        key = self.transformer.extract_key(msg)
-        state = State(await self.state_store.get(key) or {})
-        baseline = deepcopy(state)
+        Records sharing a state key see each other's yielded state via an
+        in-memory overlay scoped to this call. Records are walked in
+        ``input_topics`` order (e.g. config before requests).
+        """
+        topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
+        ordered_tps = sorted(records, key=lambda p: topic_order.get(p.topic, 0))
 
         output: list[Message] = []
-        new_state: State | None = None
-        async for item in self.transformer.transform(msg, state):
-            if isinstance(item, State):
-                new_state = item
-            elif isinstance(item, Message):
-                output.append(item)
-            else:
-                raise TypeError(f"transform() yielded {type(item).__name__}, expected Message or State")
+        baseline: dict[str, State] = {}
+        overlay: dict[str, State] = {}
+        yielded_keys: set[str] = set()
+        offsets: dict = {}
 
-        # Exactly-once: produce output, persist state, and commit offset atomically
-        tp = aiokafka.TopicPartition(msg.topic, msg.partition)
-        changed_state = new_state if new_state is not None and new_state != baseline else None
-        await self.send_transactional(output, changed_state, key, {tp: msg.offset + 1})
+        for tp in ordered_tps:
+            for raw_msg in records[tp]:
+                msg = parse_message(raw_msg)
+                key = self.transformer.extract_key(msg)
+
+                if key not in overlay:
+                    stored = State(await self.state_store.get(key) or {})
+                    baseline[key] = deepcopy(stored)
+                    overlay[key] = stored
+
+                # Defensive copy: in-place mutation without a yield must not
+                # leak into either the overlay or a later same-key record.
+                state_for_call = deepcopy(overlay[key])
+
+                new_state: State | None = None
+                async for item in self.transformer.transform(msg, state_for_call):
+                    if isinstance(item, State):
+                        new_state = item
+                    elif isinstance(item, Message):
+                        output.append(item)
+                    else:
+                        raise TypeError(
+                            f"transform() yielded {type(item).__name__}, expected Message or State"
+                        )
+
+                if new_state is not None:
+                    overlay[key] = new_state
+                    yielded_keys.add(key)
+
+                tp_obj = aiokafka.TopicPartition(msg.topic, msg.partition)
+                offsets[tp_obj] = max(offsets.get(tp_obj, 0), msg.offset + 1)
+
+        state_changes = {
+            key: overlay[key]
+            for key in yielded_keys
+            if overlay[key] != baseline[key]
+        }
+
+        await self.send_transactional(output, state_changes, offsets)
 
     async def send_transactional(
         self,
         messages: list[Message],
-        new_state: State | None,
-        state_key: str,
+        state_changes: dict[str, State],
         offsets: dict,
     ) -> None:
         """Send messages, persist state, and commit offsets in a single Kafka transaction.
 
-        The state_store.put()/delete() call sends to the changelog topic via the
-        same transactional producer, so state is committed atomically with
-        output. A falsy new_state deletes the entry (and writes a Kafka
-        tombstone); a truthy new_state is put; None leaves state untouched.
+        ``state_changes`` is the per-key final state for keys whose value
+        differs from baseline (already filtered by the caller). A truthy
+        value is ``put``; a falsy value is ``delete`` (writing a Kafka
+        tombstone via the same transactional producer).
         """
         async with self.producer.transaction():
             for msg in messages:
@@ -162,11 +197,12 @@ class TransformerRunner:
                     value=encode_json(msg.value),
                     timestamp_ms=datetime_to_millis(msg.timestamp),
                 )
-            if new_state is not None:
+            for key, new_state in state_changes.items():
                 if new_state:
-                    await self.state_store.put(state_key, new_state)
+                    await self.state_store.put(key, new_state)
                 else:
-                    await self.state_store.delete(state_key)
+                    await self.state_store.delete(key)
             await self.producer.send_offsets_to_transaction(offsets, self.group_id)
 
-        log.debug("Transaction committed: %d messages", len(messages))
+        log.debug("Transaction committed: %d messages, %d state changes",
+                  len(messages), len(state_changes))
