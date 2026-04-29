@@ -1,4 +1,5 @@
-"""State store port and adapters (RocksDB, in-memory, changelog-backed)."""
+"""State store port and adapters (RocksDB, changelog-backed) + JSON serialization."""
+import json
 import logging
 import pickle
 import shutil
@@ -10,10 +11,38 @@ from typing import Any
 from aiokafka import AIOKafkaProducer
 from reactor_di import lookup
 
-from .kafka import restore_changelog
+from .attribute.registry import lookup_encoder
+from .kafka import encode_json, restore_changelog
 from .types import State
 
 log = logging.getLogger(__name__)
+
+
+# --- Serialization ---
+
+
+def serialize(state: State) -> bytes:
+    """JSON-only. Reuses `encode_json` so changelog bytes share the same
+    settings as event-topic bytes (sort_keys, compact, ensure_ascii=False,
+    allow_nan=False)."""
+    return encode_json(state)
+
+
+def deserialize(b: bytes) -> State:
+    """Try JSON first; fall back to pickle for legacy bytes from before the
+    JSON migration. The pickle path walks raw values through the recursive
+    `dict` encoder so any native datetime/set/tuple inside the legacy state
+    lands in JSON-native form before being returned."""
+    try:
+        return State(json.loads(b))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # TODO(legacy-pickle-state): remove this branch once all changelog
+        # topics in every environment have rolled over to JSON.
+        legacy = pickle.loads(b)  # noqa: S301
+        return State(lookup_encoder(dict)(legacy.raw))
+
+
+# --- Stores ---
 
 
 class StateStore(ABC):
@@ -21,6 +50,12 @@ class StateStore(ABC):
 
     Contract: get() returns a protective copy. Callers may mutate the
     returned dict without affecting the store's internal state.
+
+    The abstract storage primitive is `put_bytes` — wire bytes go straight
+    to the inner store. The concrete `put` builds on it by serializing the
+    `State` first. This keeps changelog restore zero-copy: bytes flow from
+    Kafka through `put_bytes` into the store without being deserialized
+    until the running stage calls `get` for that specific key.
     """
 
     @abstractmethod
@@ -28,8 +63,11 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
-    async def put(self, key: str, state: State) -> None:
+    async def put_bytes(self, key: str, raw: bytes) -> None:
         ...
+
+    async def put(self, key: str, state: State) -> None:
+        await self.put_bytes(key, serialize(state))
 
     @abstractmethod
     async def delete(self, key: str) -> None:
@@ -42,9 +80,9 @@ class StateStore(ABC):
 class RocksDBStateStore(StateStore):
     """RocksDB-backed state store.
 
-    State values are pickle-serialized for round-trip safety (handles sets,
-    datetimes, and arbitrary Python types natively).
-    Every put() writes to the RocksDB WAL immediately — no periodic snapshots.
+    State values are JSON-serialized via `serialize` (which goes through the
+    codec registry). Every put() writes to the RocksDB WAL immediately — no
+    periodic snapshots.
 
     The ``path`` attribute is set by the DI container (reactor-di) or directly
     in tests. The database is opened lazily on first access, so stages that
@@ -69,10 +107,13 @@ class RocksDBStateStore(StateStore):
             raw = self.db[key]
         except KeyError:
             return None
-        return pickle.loads(raw)  # noqa: S301
+        return deserialize(raw)  # noqa: PyTypeChecker
 
-    async def put(self, key: str, state: State) -> None:
-        self.db[key] = pickle.dumps(state)
+    async def put_bytes(self, key: str, raw: bytes) -> None:
+        # Bytes go straight to RocksDB — both `put` (via the default
+        # serialize→put_bytes path) and `restore_changelog` (passing raw
+        # wire bytes) land here.
+        self.db[key] = raw
 
     async def delete(self, key: str) -> None:
         try:
@@ -94,28 +135,6 @@ class RocksDBStateStore(StateStore):
         log.info("Closed and removed RocksDB state store at %s", self.path)
 
 
-class InMemoryStateStore(StateStore):
-    """In-memory state store for testing."""
-
-    def __init__(self):
-        self.store: dict[str, bytes] = {}
-
-    async def get(self, key: str) -> State | None:
-        raw = self.store.get(key)
-        if raw is None:
-            return None
-        return pickle.loads(raw)  # noqa: S301
-
-    async def put(self, key: str, state: State) -> None:
-        self.store[key] = pickle.dumps(state)
-
-    async def delete(self, key: str) -> None:
-        self.store.pop(key, None)
-
-    async def close(self) -> None:
-        pass
-
-
 class ChangelogStateStore(StateStore):
     """State store backed by a compacted Kafka changelog topic.
 
@@ -135,12 +154,12 @@ class ChangelogStateStore(StateStore):
     async def get(self, key: str) -> State | None:
         return await self.inner.get(key)
 
-    async def put(self, key: str, state: State) -> None:
-        await self.inner.put(key, state)
+    async def put_bytes(self, key: str, raw: bytes) -> None:
+        await self.inner.put_bytes(key, raw)
         await self.producer.send(
             self.topic,
             key=key.encode("utf-8"),
-            value=pickle.dumps(state),
+            value=raw,
         )
 
     async def delete(self, key: str) -> None:
@@ -160,7 +179,7 @@ class ChangelogStateStore(StateStore):
         Args:
             consumer: An already-started AIOKafkaConsumer (group_id=None).
         """
-        await restore_changelog(consumer, self.topic, self.inner.put, self.inner.delete)
+        await restore_changelog(consumer, self.topic, self.inner.put_bytes, self.inner.delete)
 
 
 async def ensure_changelog_topic(admin: Any, topic: str) -> None:

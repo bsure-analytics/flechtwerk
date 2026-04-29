@@ -5,13 +5,13 @@ fundamentally cannot validate. A successful transaction materializes output +
 state-changelog + offset commit together; an aborted transaction materializes
 none of them.
 """
-import pickle
 
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
-from fretworx.state import ChangelogStateStore, InMemoryStateStore
+from fretworx.state import ChangelogStateStore
+from testing import InMemoryStateStore
 from fretworx.transformer import TransformerRunner
 from fretworx.types import Message, State
 
@@ -122,7 +122,7 @@ async def test_successful_transaction_commits_output_state_and_offsets(
     changelog_records = await _read_all(kafka_bootstrap, unique_changelog_topic)
     assert len(changelog_records) == 1
     assert changelog_records[0].key == b"k"
-    assert pickle.loads(changelog_records[0].value) == {"cursor": "done"}
+    assert changelog_records[0].value == b'{"cursor":"done"}'
 
     # 3. Consumer group offset was committed to offset 1
     admin = AIOKafkaAdminClient(bootstrap_servers=kafka_bootstrap)

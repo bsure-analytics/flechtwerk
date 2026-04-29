@@ -1,22 +1,20 @@
 """Core types for the fretworx framework."""
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+
+from fretworx.attribute import Dict
 
 
-class Config(dict[str, Any]):
+class Config(Dict):
     """Configuration object read from a Kafka config topic."""
-    pass
 
 
-class Event(dict[str, Any]):
+class Event(Dict):
     """Event object read from or written to a Kafka data topic."""
-    pass
 
 
-class State(dict[str, Any]):
+class State(Dict):
     """Mutable per-key state managed by the framework."""
-    pass
 
 
 @dataclass(frozen=True, slots=True)

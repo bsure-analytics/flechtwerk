@@ -18,7 +18,8 @@ from fretworx.kafka import (
     parse_message,
     restore_changelog,
 )
-from fretworx.types import Event
+from fretworx.state import serialize
+from fretworx.types import Event, State
 
 
 def test_encode_json_string_passthrough():
@@ -156,7 +157,7 @@ def test_parse_message_round_trips_dict_payloads(key, value, offset, partition, 
         timestamp=timestamp, topic="some-topic",
     )
     msg = parse_message(raw)
-    assert msg.value == value
+    assert msg.value.raw == value
     assert msg.offset == offset
     assert msg.partition == partition
     assert isinstance(msg.key, str)
@@ -272,18 +273,18 @@ def test_restore_changelog_assigns_all_partitions_and_seeks_to_beginning():
     asyncio.run(run())
 
 
-def test_restore_changelog_calls_put_for_truthy_value():
+def test_restore_changelog_calls_put_bytes_for_truthy_value():
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
-        record = _make_record(key=b"k1", value=pickle.dumps({"cursor": 123}))
+        record = _make_record(key=b"k1", value=serialize(State({"cursor": 123})))
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
-        put = AsyncMock()
+        put_bytes = AsyncMock()
         delete = AsyncMock()
 
-        count = await restore_changelog(consumer, "cl", put, delete)
+        count = await restore_changelog(consumer, "cl", put_bytes, delete)
 
         assert count == 1
-        put.assert_awaited_once_with("k1", {"cursor": 123})
+        put_bytes.assert_awaited_once_with("k1", serialize(State({"cursor": 123})))
         delete.assert_not_called()
     asyncio.run(run())
 
@@ -294,30 +295,30 @@ def test_restore_changelog_calls_delete_on_kafka_tombstone():
         tp = aiokafka.TopicPartition("cl", 0)
         record = _make_record(key=b"gone", value=b"")
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
-        put = AsyncMock()
+        put_bytes = AsyncMock()
         delete = AsyncMock()
 
-        count = await restore_changelog(consumer, "cl", put, delete)
+        count = await restore_changelog(consumer, "cl", put_bytes, delete)
 
         assert count == 1
-        put.assert_not_called()
+        put_bytes.assert_not_called()
         delete.assert_awaited_once_with("gone")
     asyncio.run(run())
 
 
-def test_restore_changelog_calls_delete_on_pickled_empty_dict():
-    """Non-empty bytes that unpickle to a falsy dict — state-store tombstone convention."""
+def test_restore_changelog_calls_delete_on_empty_state():
+    """`{}` JSON = state-store tombstone — caught at the bytes layer without deserialize."""
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
-        record = _make_record(key=b"empty", value=pickle.dumps({}))
+        record = _make_record(key=b"empty", value=serialize(State({})))
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
-        put = AsyncMock()
+        put_bytes = AsyncMock()
         delete = AsyncMock()
 
-        count = await restore_changelog(consumer, "cl", put, delete)
+        count = await restore_changelog(consumer, "cl", put_bytes, delete)
 
         assert count == 1
-        put.assert_not_called()
+        put_bytes.assert_not_called()
         delete.assert_awaited_once_with("empty")
     asyncio.run(run())
 
@@ -325,28 +326,30 @@ def test_restore_changelog_calls_delete_on_pickled_empty_dict():
 def test_restore_changelog_handles_none_key():
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
-        record = _make_record(key=None, value=pickle.dumps({"v": 1}))
+        record = _make_record(key=None, value=serialize(State({"v": 1})))
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
-        put = AsyncMock()
+        put_bytes = AsyncMock()
 
-        count = await restore_changelog(consumer, "cl", put, AsyncMock())
+        count = await restore_changelog(consumer, "cl", put_bytes, AsyncMock())
 
         assert count == 1
-        put.assert_awaited_once_with("", {"v": 1})
+        put_bytes.assert_awaited_once_with("", serialize(State({"v": 1})))
     asyncio.run(run())
 
 
-def test_restore_changelog_counts_across_multiple_batches_and_partitions():
+def test_restore_changelog_passes_each_record_through_put_bytes():
+    """Wire bytes are passed through verbatim — per-key dedup is the storage layer's
+    responsibility (RocksDB overwrites on the same key)."""
     async def run():
         tp0 = aiokafka.TopicPartition("cl", 0)
         tp1 = aiokafka.TopicPartition("cl", 1)
         batch1 = {
             tp0: [
-                _make_record(key=b"a", value=pickle.dumps({"n": 1}), partition=0, offset=0),
-                _make_record(key=b"b", value=pickle.dumps({"n": 2}), partition=0, offset=1),
+                _make_record(key=b"a", value=serialize(State({"n": 1})), partition=0, offset=0),
+                _make_record(key=b"b", value=serialize(State({"n": 2})), partition=0, offset=1),
             ],
             tp1: [
-                _make_record(key=b"c", value=pickle.dumps({"n": 3}), partition=1, offset=0),
+                _make_record(key=b"c", value=serialize(State({"n": 3})), partition=1, offset=0),
             ],
         }
         batch2 = {
@@ -355,12 +358,34 @@ def test_restore_changelog_counts_across_multiple_batches_and_partitions():
             ],
         }
         consumer = _make_restore_consumer(batches=[batch1, batch2], partitions=(0, 1))
-        put = AsyncMock()
+        put_bytes = AsyncMock()
         delete = AsyncMock()
 
-        count = await restore_changelog(consumer, "cl", put, delete)
+        count = await restore_changelog(consumer, "cl", put_bytes, delete)
 
+        # All four records processed: 3 puts + 1 tombstone delete.
         assert count == 4
-        assert put.await_count == 3
+        assert put_bytes.await_count == 3
         delete.assert_awaited_once_with("a")
+    asyncio.run(run())
+
+
+def test_restore_changelog_passes_legacy_pickle_bytes_through_unchanged():
+    """Legacy pickle bytes flow through `put_bytes` like any other wire bytes —
+    deserialization is deferred to the first `get()` for that key, which uses
+    the pickle fallback. TODO(legacy-pickle-state): remove once all changelog
+    topics have rolled over to JSON."""
+    async def run():
+        tp = aiokafka.TopicPartition("cl", 0)
+        legacy_bytes = pickle.dumps(State({"cursor": 123}))
+        record = _make_record(key=b"k1", value=legacy_bytes)
+        consumer = _make_restore_consumer(batches=[{tp: [record]}])
+        put_bytes = AsyncMock()
+        delete = AsyncMock()
+
+        count = await restore_changelog(consumer, "cl", put_bytes, delete)
+
+        assert count == 1
+        put_bytes.assert_awaited_once_with("k1", legacy_bytes)
+        delete.assert_not_called()
     asyncio.run(run())

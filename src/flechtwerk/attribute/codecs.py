@@ -1,0 +1,111 @@
+"""Built-in codec registrations.
+
+Importing this module populates the registry with codecs for the JSON-native
+primitives, the JSON-friendly containers (with recursive walkers for `dict`
+and `list`), and the small set of non-JSON-native types we round-trip through
+JSON: `set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601 string.
+"""
+from collections.abc import Callable
+from datetime import datetime, timezone
+from typing import Any, TypeVar
+
+from .registry import CodecError, _encoders, decoder, encoder
+
+T = TypeVar("T")
+
+
+# --- helpers (used by registrations below) ---
+
+
+def _identity(x: T) -> T:
+    return x
+
+
+def _validate(t: type[T]) -> Callable[[Any], T]:
+    """Codec that asserts `isinstance(x, t)`, raising `TypeError` on mismatch."""
+
+    def check(x: Any) -> T:
+        if not isinstance(x, t):
+            raise TypeError(
+                f"expected {t.__name__}, got {type(x).__name__}: {x!r}"
+            )
+        return x
+
+    return check
+
+
+def _encode_leaf(v: Any) -> Any:
+    """Apply the registered encoder for `type(v)`. Recurses into bare dicts/lists.
+
+    Raises `CodecError` on unknown leaf types — silent passthrough would let
+    non-JSON-native values land in `Dict.raw` and crash later in `json.dumps`.
+    """
+    enc = _encoders.get(type(v))
+    if enc is not None:
+        return enc(v)
+    if isinstance(v, list):
+        return _encode_list(v)
+    if isinstance(v, dict):
+        return _encode_dict(v)
+    raise CodecError(
+        f"no encoder registered for {type(v).__name__}: {v!r}"
+    )
+
+
+# --- primitives: validate-on-pass-through ---
+
+
+for _t in (str, int, bool, float):
+    decoder(_t)(_validate(_t))
+    encoder(_t)(_validate(_t))
+
+# --- JSON's `null` ---
+# Registered separately because `_validate(NoneType)` would always pass anyway
+# (only `None` is NoneType), and the recursive walker needs a registered
+# encoder for the type so it doesn't raise on `None` values nested inside
+# dicts/lists.
+
+
+decoder(type(None))(_identity)
+encoder(type(None))(_identity)
+
+
+# --- containers: recursive walkers on encode, identity on decode ---
+
+
+decoder(dict)(_identity)
+decoder(list)(_identity)
+
+
+@encoder(dict)
+def _encode_dict(d: dict) -> dict:
+    return {k: _encode_leaf(v) for k, v in d.items()}
+
+
+@encoder(list)
+def _encode_list(items: list) -> list:
+    return [_encode_leaf(v) for v in items]
+
+
+# --- non-JSON-native types: real conversion ---
+
+
+decoder(set)(lambda items: set(items))
+encoder(set)(lambda s: sorted(s))  # deterministic wire form for diff stability
+
+decoder(tuple)(lambda t: tuple(t))
+encoder(tuple)(lambda t: list(t))
+
+
+@decoder(datetime)
+def datetime_from_iso(s: str) -> datetime:
+    return datetime.fromisoformat(s)
+
+
+@encoder(datetime)
+def datetime_to_iso(dt: datetime) -> str:
+    return (
+        dt.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )

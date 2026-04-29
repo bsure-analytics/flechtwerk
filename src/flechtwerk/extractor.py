@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from fretworx.attribute import Attribute, OptionalAttribute
 from reactor_di import lookup
 
 from .kafka import encode_json, datetime_to_millis, parse_message
@@ -15,7 +16,7 @@ from .types import Config, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
-SUSPENDED = "suspended"
+SUSPENDED = OptionalAttribute[bool]("suspended")
 
 PollFn = Callable[[Config, State], AsyncIterator[Message | State]]
 EnrichFn = Callable[[Config], Awaitable[Config]]

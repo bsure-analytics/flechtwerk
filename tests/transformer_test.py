@@ -1,15 +1,26 @@
 """Tests for fretworx Transformer and TransformerRunner."""
 import asyncio
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Final
 
 import pytest
-
+from fretworx.attribute import Attribute, RequiredAttribute
 from fretworx.module import FretworxModule
-from fretworx.state import InMemoryStateStore
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, make_record
+from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 from fretworx.transformer import Transformer, TransformerRunner
 from fretworx.types import Event, Message, State
+
+
+COUNT: Final = RequiredAttribute[int]("count")
+CURSOR: Final = RequiredAttribute[int]("cursor")
+DATA: Final = RequiredAttribute[str]("data")
+FORM_ID: Final = RequiredAttribute[str]("form_id")
+ID: Final = RequiredAttribute[int]("id")
+LEAKED: Final = RequiredAttribute[bool]("leaked")
+MUTATED: Final = RequiredAttribute[bool]("mutated")
+PRODUCTS: Final = RequiredAttribute[list]("products")
+TYPE: Final = RequiredAttribute[str]("type")
+X: Final = RequiredAttribute[int]("x")
 
 
 # --- Subclass-based transformers (for backward compat testing) ---
@@ -28,7 +39,7 @@ class FilterTransformer(Transformer):
 
     async def transform(self, msg, state) -> AsyncIterator[Message]:
         event = msg.value
-        if event.get("type") == "wanted":
+        if event.get(TYPE) == "wanted":
             yield Message(key=msg.key, topic="output", value=event)
 
 
@@ -37,21 +48,21 @@ class FanOutTransformer(Transformer):
 
     async def transform(self, msg, state) -> AsyncIterator[Message]:
         event = msg.value
-        for product in event.get("products", []):
-            yield Message(key=msg.key, topic="products", value=product)
+        for product in event.get(PRODUCTS, []):
+            yield Message(key=msg.key, topic="products", value=Event(product))
 
 
 class StatefulCounterTransformer(Transformer):
     input_topics = ["input-topic"]
 
     async def transform(self, msg, state) -> AsyncIterator[Message | State]:
-        count = state.get("count", 0) + 1
+        count = state.get(COUNT, 0) + 1
         yield Message(
             key=msg.key,
             topic="output",
-            value={"count": count},
+            value=Event({"count": count}),
         )
-        yield State(count=count)
+        yield State({"count": count})
 
 
 def json_record(key="k", value=None, topic="input-topic", offset=0, partition=0):
@@ -85,10 +96,10 @@ def make_module(transformer, consumer=None, producer=None, state_store=None):
 def test_passthrough_transform():
     async def run():
         t = PassthroughTransformer()
-        msg = make_incoming(value={"data": 1})
+        msg = make_incoming(value={"data": "1"})
         result = [m async for m in t.transform(msg, State())]
         assert len(result) == 1
-        assert result[0].value == {"data": 1}
+        assert result[0].value.raw == {"data": "1"}
 
     asyncio.run(run())
 
@@ -119,7 +130,7 @@ def test_fan_out_transform():
         msg = make_incoming(value={"products": [{"id": 1}, {"id": 2}, {"id": 3}]})
         result = [m async for m in t.transform(msg, State())]
         assert len(result) == 3
-        assert [m.value["id"] for m in result] == [1, 2, 3]
+        assert [m.value[ID] for m in result] == [1, 2, 3]
 
     asyncio.run(run())
 
@@ -133,14 +144,14 @@ def test_stateful_counter():
         items = [i async for i in t.transform(msg, state)]
         messages = [i for i in items if isinstance(i, Message)]
         states = [i for i in items if isinstance(i, State)]
-        assert messages[0].value["count"] == 1
-        assert states[0]["count"] == 1
+        assert messages[0].value[COUNT] == 1
+        assert states[0][COUNT] == 1
 
         items = [i async for i in t.transform(msg, states[0])]
         messages = [i for i in items if isinstance(i, Message)]
         states = [i for i in items if isinstance(i, State)]
-        assert messages[0].value["count"] == 2
-        assert states[0]["count"] == 2
+        assert messages[0].value[COUNT] == 2
+        assert states[0][COUNT] == 2
 
     asyncio.run(run())
 
@@ -159,7 +170,7 @@ def test_functional_transformer():
         msg = make_incoming(value={"x": 1})
         result = [m async for m in t.transform(msg, State())]
         assert len(result) == 1
-        assert result[0].value == {"x": 1}
+        assert result[0].value.raw == {"x": 1}
 
     asyncio.run(run())
 
@@ -170,7 +181,7 @@ def test_functional_transformer_with_extract_key():
         yield Message(key=msg.key, topic="out", value=msg.value)
 
     def my_extract_key(msg):
-        return msg.value.get("id", msg.key)
+        return msg.value.raw.get("id", msg.key)
 
     t = Transformer(
         input_topics=["in"],
@@ -185,7 +196,7 @@ def test_functional_transformer_with_extract_key():
 def test_functional_transformer_default_extract_key():
     """Functional Transformer without extract_key uses msg.key."""
     async def my_transform(msg, _):
-        yield Message(key=msg.key, topic="out", value={})
+        yield Message(key=msg.key, topic="out", value=Event())
 
     t = Transformer(input_topics=["in"], transform=my_transform)
     msg = make_incoming(key="my-key")
@@ -252,7 +263,8 @@ def test_transformer_runner_stateful():
         assert len(producer.sent) == 2
         assert json.loads(producer.sent[0][1]["value"])["count"] == 1
         assert json.loads(producer.sent[1][1]["value"])["count"] == 2
-        assert await state_store.get("form1") == {"count": 2}
+        stored = await state_store.get("form1")
+        assert stored.raw == {"count": 2}
 
     asyncio.run(run())
 
@@ -290,7 +302,7 @@ def test_transformer_runner_event_is_protective_copy():
 
     async def mutating_transform(msg, _):
         received_values.append(msg.value)
-        msg.value["mutated"] = True
+        msg.value[MUTATED] = True
         yield Message(key=msg.key, topic="out", value=msg.value)
 
     t = Transformer(input_topics=["in"], transform=mutating_transform)
@@ -316,7 +328,7 @@ def test_transformer_runner_stateless_gets_empty_state():
 
     async def spy_transform(msg, state):
         received_states.append(state)
-        yield Message(key=msg.key, topic="out", value={})
+        yield Message(key=msg.key, topic="out", value=Event())
 
     t = Transformer(input_topics=["in"], transform=spy_transform)
 
@@ -329,7 +341,7 @@ def test_transformer_runner_stateless_gets_empty_state():
         records = await runner.consumer.getmany(timeout_ms=1000)
         await runner.process_batch(records)
 
-        assert received_states == [{}]
+        assert received_states == [State()]
         assert isinstance(received_states[0], State)
 
     asyncio.run(run())
@@ -338,7 +350,7 @@ def test_transformer_runner_stateless_gets_empty_state():
 def test_transformer_runner_stateless_does_not_persist_state():
     """Transformer that never yields State does not persist to the store."""
     async def stateless_transform(msg, state):
-        yield Message(key=msg.key, topic="out", value={})
+        yield Message(key=msg.key, topic="out", value=Event())
 
     t = Transformer(input_topics=["in"], transform=stateless_transform)
 
@@ -360,7 +372,7 @@ def test_transformer_runner_stateless_does_not_persist_state():
 def test_transformer_runner_in_place_state_mutation_is_persisted():
     """A transform that mutates `state` in place and yields it must still be persisted."""
     async def in_place_transform(msg, state):
-        state["cursor"] = state.get("cursor", 0) + 1
+        state[CURSOR] = state.get(CURSOR, 0) + 1
         yield state
 
     t = Transformer(input_topics=["in"], transform=in_place_transform)
@@ -375,7 +387,7 @@ def test_transformer_runner_in_place_state_mutation_is_persisted():
         records = await runner.consumer.getmany(timeout_ms=1000)
         await runner.process_batch(records)
 
-        assert (await state_store.get("k1"))["cursor"] == 1
+        assert (await state_store.get("k1"))[CURSOR] == 1
 
     asyncio.run(run())
 
@@ -383,8 +395,8 @@ def test_transformer_runner_in_place_state_mutation_is_persisted():
 def test_transformer_runner_mutation_without_yield_is_not_persisted():
     """Mutating `state` without yielding must not be persisted (contract)."""
     async def mutate_without_yield(msg, state):
-        state["cursor"] = 42
-        yield Message(key=msg.key, topic="out", value={})
+        state[CURSOR] = 42
+        yield Message(key=msg.key, topic="out", value=Event())
 
     t = Transformer(input_topics=["in"], transform=mutate_without_yield)
 
@@ -460,12 +472,12 @@ def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
 def test_transformer_runner_functional_stateful():
     """Functional stateful transformer with custom extract_key via runner."""
     async def my_transform(msg, state):
-        count = state.get("count", 0) + 1
-        yield Message(key=msg.key, topic="out", value={"count": count})
-        yield State(count=count)
+        count = state.get(COUNT, 0) + 1
+        yield Message(key=msg.key, topic="out", value=Event({"count": count}))
+        yield State({"count": count})
 
     def my_extract_key(msg):
-        return msg.value.get("form_id", msg.key)
+        return msg.value.raw.get("form_id", msg.key)
 
     t = Transformer(
         input_topics=["in"],
@@ -491,8 +503,10 @@ def test_transformer_runner_functional_stateful():
         assert json.loads(producer.sent[0][1]["value"])["count"] == 1
         assert json.loads(producer.sent[1][1]["value"])["count"] == 2
         assert json.loads(producer.sent[2][1]["value"])["count"] == 1  # different key
-        assert await state_store.get("f1") == {"count": 2}
-        assert await state_store.get("f2") == {"count": 1}
+        f1 = await state_store.get("f1")
+        f2 = await state_store.get("f2")
+        assert f1.raw == {"count": 2}
+        assert f2.raw == {"count": 1}
 
     asyncio.run(run())
 
@@ -511,7 +525,7 @@ def test_transformer_context_manager():
             self.exited = True
 
         async def transform(self, msg, state) -> AsyncIterator[Message]:
-            yield Message(key="k", topic="t", value={})
+            yield Message(key="k", topic="t", value=Event())
 
     async def run():
         t = TrackedTransformer()
@@ -573,10 +587,10 @@ def test_transformer_runner_same_key_in_batch_sees_overlay():
     seen_states: list[dict] = []
 
     async def counter(msg, state):
-        seen_states.append(dict(state))
-        count = state.get("count", 0) + 1
-        yield Message(key=msg.key, topic="out", value={"count": count})
-        yield State(count=count)
+        seen_states.append(dict(state.raw))
+        count = state.get(COUNT, 0) + 1
+        yield Message(key=msg.key, topic="out", value=Event({"count": count}))
+        yield State({"count": count})
 
     t = Transformer(input_topics=["in"], transform=counter)
 
@@ -595,7 +609,8 @@ def test_transformer_runner_same_key_in_batch_sees_overlay():
         await runner.process_batch(records)
 
         assert seen_states == [{}, {"count": 1}]
-        assert await state_store.get("k") == {"count": 2}
+        stored = await state_store.get("k")
+        assert stored.raw == {"count": 2}
         assert json.loads(producer.sent[0][1]["value"])["count"] == 1
         assert json.loads(producer.sent[1][1]["value"])["count"] == 2
 
@@ -629,9 +644,9 @@ def test_transformer_runner_in_place_mutation_without_yield_does_not_leak_in_bat
     seen_states: list[dict] = []
 
     async def mutating_no_yield(msg, state):
-        seen_states.append(dict(state))
-        state["leaked"] = True
-        yield Message(key=msg.key, topic="out", value={})
+        seen_states.append(dict(state.raw))
+        state[LEAKED] = True
+        yield Message(key=msg.key, topic="out", value=Event())
 
     t = Transformer(input_topics=["in"], transform=mutating_no_yield)
 

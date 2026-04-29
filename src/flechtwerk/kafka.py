@@ -1,7 +1,6 @@
 """Kafka utilities and changelog restore."""
 import json
 import logging
-import pickle
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -9,7 +8,9 @@ from typing import Any
 import aiokafka
 from aiokafka import ConsumerRecord
 
-from .types import Event, IncomingMessage, State
+from fretworx.attribute import Dict
+
+from .types import Event, IncomingMessage
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ def encode_json(value: Any) -> bytes:
     """
     if isinstance(value, str):
         return value.encode("utf-8")
+    if isinstance(value, Dict):
+        value = value.raw
     return json.dumps(
         value,
         allow_nan=False,
@@ -89,7 +92,7 @@ def parse_message(msg: ConsumerRecord[Any, Any]) -> IncomingMessage:
 async def restore_changelog(
     consumer: aiokafka.AIOKafkaConsumer,
     topic: str,
-    put: Callable[[str, State], Awaitable[None]],
+    put_raw: Callable[[str, bytes], Awaitable[None]],
     delete: Callable[[str], Awaitable[None]],
 ) -> int:
     """Read an entire compacted changelog topic to rebuild state.
@@ -100,11 +103,17 @@ async def restore_changelog(
     Args:
         consumer: An already-started AIOKafkaConsumer (group_id=None).
         topic: Changelog topic name.
-        put: async callable(key, value) to store a state entry.
+        put_raw: async callable(key, raw_bytes) to store wire bytes for a key.
+            Per-key deduplication happens at the storage layer (RocksDB
+            overwrites earlier writes for the same key on disk), so memory
+            usage stays bounded by the inner store's cache, not by the topic
+            size. Deserialization is deferred to the first `get()` for the
+            key — keys that are never read by the running stage never pay
+            the deserialize cost.
         delete: async callable(key) to remove a state entry.
 
     Returns:
-        Number of entries restored.
+        Number of records processed.
     """
     # Prime the consumer's internal cluster metadata for this topic so
     # partitions_for_topic() returns data. No fully public API achieves this:
@@ -131,15 +140,15 @@ async def restore_changelog(
             break
         for tp, msgs in records.items():
             for msg in msgs:
-                key = (msg.key.decode("utf-8") if isinstance(msg.key, bytes) else msg.key) or ""
-                if msg.value:
-                    value = pickle.loads(msg.value)  # noqa: S301
-                    if value:
-                        await put(key, value)
-                    else:
-                        await delete(key)
-                else:
+                key = msg.key.decode("utf-8") if msg.key else ""
+                raw = msg.value
+                # Tombstones: empty Kafka value, or a serialized falsy state
+                # (`{}` from the JSON path, `b""` from older code). Anything
+                # else is wire bytes — pass through to the inner store.
+                if not raw or raw == b"{}":
                     await delete(key)
+                else:
+                    await put_raw(key, raw)
                 count += 1
 
     log.info("Restored %d state entries from %s", count, topic)

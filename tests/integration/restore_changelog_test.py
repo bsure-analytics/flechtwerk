@@ -2,8 +2,8 @@
 
 Verifies behavior that unit tests with mocks cannot: the `_client.set_topics()`
 metadata-priming call actually populating partition info against a live broker,
-real Kafka compaction semantics, and round-tripping pickled state entries
-through the wire format.
+real Kafka compaction semantics, and round-tripping JSON-serialized state
+entries through the wire format.
 """
 import pickle
 
@@ -12,6 +12,8 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
 from fretworx.kafka import restore_changelog
+from fretworx.state import serialize
+from fretworx.types import State
 
 pytestmark = pytest.mark.integration
 
@@ -46,18 +48,21 @@ async def _produce(bootstrap: str, topic: str, records: list[tuple[bytes, bytes 
 async def test_restore_reconstructs_state_from_changelog(
     kafka_bootstrap: str, unique_changelog_topic: str,
 ) -> None:
-    """put-only records → restore recreates the full state map."""
+    """put-only records → restore writes wire bytes for each record."""
     await _create_compacted_topic(kafka_bootstrap, unique_changelog_topic)
+    bytes1 = serialize(State({"cursor": "2024-01-01"}))
+    bytes2 = serialize(State({"cursor": "2024-02-01"}))
+    bytes3 = serialize(State({"cursor": "2024-03-01"}))
     await _produce(kafka_bootstrap, unique_changelog_topic, [
-        (b"key1", pickle.dumps({"cursor": "2024-01-01"})),
-        (b"key2", pickle.dumps({"cursor": "2024-02-01"})),
-        (b"key3", pickle.dumps({"cursor": "2024-03-01"})),
+        (b"key1", bytes1),
+        (b"key2", bytes2),
+        (b"key3", bytes3),
     ])
 
-    restored: dict[str, dict] = {}
+    restored: dict[str, bytes] = {}
 
-    async def put(k, v):
-        restored[k] = v
+    async def put_bytes(k, raw):
+        restored[k] = raw
 
     async def delete(k):
         restored.pop(k, None)
@@ -65,16 +70,12 @@ async def test_restore_reconstructs_state_from_changelog(
     consumer = AIOKafkaConsumer(bootstrap_servers=kafka_bootstrap, group_id=None)
     await consumer.start()
     try:
-        count = await restore_changelog(consumer, unique_changelog_topic, put, delete)
+        count = await restore_changelog(consumer, unique_changelog_topic, put_bytes, delete)
     finally:
         await consumer.stop()
 
     assert count == 3
-    assert restored == {
-        "key1": {"cursor": "2024-01-01"},
-        "key2": {"cursor": "2024-02-01"},
-        "key3": {"cursor": "2024-03-01"},
-    }
+    assert restored == {"key1": bytes1, "key2": bytes2, "key3": bytes3}
 
 
 async def test_restore_applies_kafka_tombstones(
@@ -82,16 +83,17 @@ async def test_restore_applies_kafka_tombstones(
 ) -> None:
     """A value=None record (Kafka tombstone) removes the key from restored state."""
     await _create_compacted_topic(kafka_bootstrap, unique_changelog_topic)
+    alive_bytes = serialize(State({"n": 1}))
     await _produce(kafka_bootstrap, unique_changelog_topic, [
-        (b"alive", pickle.dumps({"n": 1})),
-        (b"gone", pickle.dumps({"n": 2})),
+        (b"alive", alive_bytes),
+        (b"gone", serialize(State({"n": 2}))),
         (b"gone", None),  # Kafka compaction tombstone
     ])
 
-    restored: dict[str, dict] = {}
+    restored: dict[str, bytes] = {}
 
-    async def put(k, v):
-        restored[k] = v
+    async def put_bytes(k, raw):
+        restored[k] = raw
 
     async def delete(k):
         restored.pop(k, None)
@@ -99,12 +101,42 @@ async def test_restore_applies_kafka_tombstones(
     consumer = AIOKafkaConsumer(bootstrap_servers=kafka_bootstrap, group_id=None)
     await consumer.start()
     try:
-        count = await restore_changelog(consumer, unique_changelog_topic, put, delete)
+        count = await restore_changelog(consumer, unique_changelog_topic, put_bytes, delete)
     finally:
         await consumer.stop()
 
-    assert count == 3
-    assert restored == {"alive": {"n": 1}}
+    assert count == 3  # all three records processed
+    assert restored == {"alive": alive_bytes}
+
+
+async def test_restore_passes_legacy_pickle_bytes_through_unchanged(
+    kafka_bootstrap: str, unique_changelog_topic: str,
+) -> None:
+    """Legacy pickle bytes are passed through `put_bytes` like any other wire bytes —
+    deserialization is deferred to the first `get()` for the key. TODO(legacy-pickle-state):
+    remove once all changelog topics have rolled over."""
+    await _create_compacted_topic(kafka_bootstrap, unique_changelog_topic)
+    legacy_bytes = pickle.dumps(State({"cursor": "from-the-past"}))
+    modern_bytes = serialize(State({"cursor": "current"}))
+    await _produce(kafka_bootstrap, unique_changelog_topic, [
+        (b"legacy", legacy_bytes),
+        (b"modern", modern_bytes),
+    ])
+
+    restored: dict[str, bytes] = {}
+
+    async def put_bytes(k, raw):
+        restored[k] = raw
+
+    consumer = AIOKafkaConsumer(bootstrap_servers=kafka_bootstrap, group_id=None)
+    await consumer.start()
+    try:
+        count = await restore_changelog(consumer, unique_changelog_topic, put_bytes, lambda k: None)
+    finally:
+        await consumer.stop()
+
+    assert count == 2
+    assert restored == {"legacy": legacy_bytes, "modern": modern_bytes}
 
 
 async def test_restore_returns_zero_for_empty_topic(

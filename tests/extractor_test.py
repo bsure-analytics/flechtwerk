@@ -1,43 +1,54 @@
 """Tests for fretworx Extractor and ExtractorRunner."""
 import asyncio
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Final
 
 import pytest
 
+from fretworx.attribute import Attribute, OptionalAttribute, RequiredAttribute
 from fretworx.extractor import ConfigEntry, Extractor, ExtractorRunner
 from fretworx.module import FretworxModule
-from fretworx.state import InMemoryStateStore
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, make_record
+from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 from fretworx.types import Config, Message, State
+
+
+API_KEY: Final = RequiredAttribute[str]("api_key")
+CURSOR: Final = RequiredAttribute[int]("cursor")
+DATA: Final = RequiredAttribute[str]("data")
+ENRICHED: Final = RequiredAttribute[bool]("enriched")
+ENTERED: Final = RequiredAttribute[bool]("entered")
+ID: Final = OptionalAttribute[str]("id")
+ORIGINAL: Final = RequiredAttribute[bool]("original")
+POLLED: Final = RequiredAttribute[bool]("polled")
+SUSPENDED: Final = RequiredAttribute[bool]("suspended")
+TAG: Final = OptionalAttribute[str]("tag")
 
 
 class SimpleExtractor(Extractor):
     input_topics = ["test-config"]
 
     async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
-        cursor = state.get("cursor", 0)
+        cursor = state.get(CURSOR, 0)
         yield Message(
-            key=config["api_key"],
+            key=config[API_KEY],
             topic="test-output",
             value={"cursor": cursor, "data": "polled"},
         )
-        yield State(cursor=cursor + 1)
+        yield State({"cursor": cursor + 1})
 
 
 class EnrichingExtractor(Extractor):
     input_topics = ["test-config"]
 
     async def enrich(self, config):
-        config = Config(config)
-        config["enriched"] = True
+        config[ENRICHED] = True
         return config
 
     async def poll(self, config, state) -> AsyncIterator[Message | State]:
         yield Message(
-            key=config["api_key"],
+            key=config[API_KEY],
             topic="out",
-            value={"enriched": config.get("enriched", False)},
+            value={"enriched": config.get(ENRICHED, False)},
         )
 
 
@@ -89,7 +100,7 @@ def test_simple_extractor_poll():
         assert len(messages) == 1
         assert messages[0].value == {"cursor": 0, "data": "polled"}
         assert len(states) == 1
-        assert states[0]["cursor"] == 1
+        assert states[0][CURSOR] == 1
 
     asyncio.run(run())
 
@@ -111,7 +122,7 @@ def test_extractor_runner_polls_configs():
         # Run load_initial_configs manually
         await runner.load_initial_configs()
         assert len(runner.configs) == 1
-        assert runner.configs["tenant/channel"].config["api_key"] == "key123"
+        assert runner.configs["tenant/channel"].config[API_KEY] == "key123"
 
         # Run one poll cycle
         await runner.poll_one(runner.configs["tenant/channel"])
@@ -121,7 +132,7 @@ def test_extractor_runner_polls_configs():
         assert json.loads(payload["value"])["data"] == "polled"
 
         # State should be persisted under msg.key (extract_key default)
-        assert await state_store.get("tenant/channel") == {"cursor": 1}
+        assert (await state_store.get("tenant/channel")).raw == {"cursor": 1}
 
     asyncio.run(run())
 
@@ -139,7 +150,7 @@ def test_extractor_enrichment():
         await runner.load_initial_configs()
 
         # Config should have been enriched
-        assert runner.configs["k"].config["enriched"] is True
+        assert runner.configs["k"].config[ENRICHED] is True
 
         await runner.poll_one(runner.configs["k"])
         topic, payload = producer.sent[0]
@@ -172,7 +183,7 @@ def test_extractor_state_isolation_on_error():
 
     async def run():
         state_store = InMemoryStateStore()
-        await state_store.put("k", {"original": True})
+        await state_store.put("k", State({"original": True}))
 
         mod = make_module(FailingExtractor(), state_store=state_store)
         runner = mod.runner
@@ -182,7 +193,7 @@ def test_extractor_state_isolation_on_error():
             await runner.poll_one(entry)
 
         # Original state should be preserved
-        assert await state_store.get("k") == {"original": True}
+        assert (await state_store.get("k")).raw == {"original": True}
 
     asyncio.run(run())
 
@@ -251,7 +262,7 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
 
     async def run():
         state_store = InMemoryStateStore()
-        await state_store.put("k", {"cursor": 5})
+        await state_store.put("k", State({"cursor": 5}))
         producer = FailingProducer()
 
         mod = make_module(SimpleExtractor(), producer=producer, state_store=state_store)
@@ -262,7 +273,7 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
             await runner.poll_one(entry)
 
         # State should NOT be updated (send failed before put)
-        assert await state_store.get("k") == {"cursor": 5}
+        assert (await state_store.get("k")).raw == {"cursor": 5}
 
     asyncio.run(run())
 
@@ -299,14 +310,14 @@ def test_extractor_runner_config_update_during_operation():
         runner = mod.runner
         await runner.load_initial_configs()
 
-        assert runner.configs["k"].config["api_key"] == "v1"
+        assert runner.configs["k"].config[API_KEY] == "v1"
 
         consumer.records = [
             json_record(key="k", value={"api_key": "v2"}, offset=1, topic="cfg"),
         ]
         await runner.check_config_updates()
 
-        assert runner.configs["k"].config["api_key"] == "v2"
+        assert runner.configs["k"].config[API_KEY] == "v2"
 
     asyncio.run(run())
 
@@ -340,7 +351,7 @@ def test_extractor_poll_in_place_state_mutation_is_persisted():
         input_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
-            state["cursor"] = state.get("cursor", 0) + 1
+            state[CURSOR] = state.get(CURSOR, 0) + 1
             yield state
 
     async def run():
@@ -351,7 +362,7 @@ def test_extractor_poll_in_place_state_mutation_is_persisted():
         runner = mod.runner
         await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
 
-        assert (await state_store.get("k"))["cursor"] == 1
+        assert (await state_store.get("k"))[CURSOR] == 1
 
     asyncio.run(run())
 
@@ -366,7 +377,7 @@ def test_extractor_poll_yielding_empty_state_deletes_existing_entry():
 
     async def run():
         state_store = InMemoryStateStore()
-        await state_store.put("k", {"cursor": 5})
+        await state_store.put("k", State({"cursor": 5}))
 
         mod = make_module(TombstoningExtractor(), state_store=state_store)
         runner = mod.runner
@@ -410,7 +421,7 @@ def test_extractor_poll_mutation_without_yield_is_not_persisted():
         input_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
-            state["cursor"] = 42
+            state[CURSOR] = 42
             return
             yield  # pragma: no cover
 
@@ -433,7 +444,7 @@ def test_extractor_poll_mutation_without_yield_is_not_persisted():
 def test_functional_extractor():
     """Functional Extractor with a poll function (no subclass)."""
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
-        yield Message(key=config["api_key"], topic="out", value={"polled": True})
+        yield Message(key=config[API_KEY], topic="out", value={"polled": True})
 
     ext = Extractor(input_topics=["cfg"], poll=my_poll)
 
@@ -449,15 +460,14 @@ def test_functional_extractor():
 def test_functional_extractor_with_enrich_and_extract_key():
     """Functional Extractor with custom enrich and extract_key."""
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
-        yield Message(key=config["api_key"], topic="out", value={"tag": config.get("tag")})
+        yield Message(key=config[API_KEY], topic="out", value={"tag": config.get(TAG)})
 
     async def my_enrich(config):
-        config = Config(config)
-        config["tag"] = "enriched"
+        config[TAG] = "enriched"
         return config
 
     def my_extract_key(msg):
-        return msg.value.get("id", msg.value.get("api_key"))
+        return msg.value.get(ID, msg.value.get(API_KEY))
 
     ext = Extractor(
         input_topics=["cfg"],
@@ -468,7 +478,7 @@ def test_functional_extractor_with_enrich_and_extract_key():
 
     async def run():
         enriched = await ext.enrich(Config({"api_key": "k"}))
-        assert enriched["tag"] == "enriched"
+        assert enriched[TAG] == "enriched"
 
         msg = json_record(key="ignored", value={"api_key": "a", "id": "custom"})
         from fretworx.kafka import parse_message
@@ -509,9 +519,9 @@ def test_subclass_defaults_not_overridden_by_init():
 def test_functional_extractor_end_to_end_with_runner():
     """Functional Extractor works through the runner with config-topic processing."""
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
-        cursor = state.get("cursor", 0)
-        yield Message(key=config["api_key"], topic="out", value={"cursor": cursor})
-        yield State(cursor=cursor + 1)
+        cursor = state.get(CURSOR, 0)
+        yield Message(key=config[API_KEY], topic="out", value={"cursor": cursor})
+        yield State({"cursor": cursor + 1})
 
     async def run():
         record = json_record(key="t/c", value={"api_key": "k1"})
@@ -527,6 +537,6 @@ def test_functional_extractor_end_to_end_with_runner():
         await runner.poll_one(runner.configs["t/c"])
 
         assert len(producer.sent) == 1
-        assert await state_store.get("t/c") == {"cursor": 1}
+        assert (await state_store.get("t/c")).raw == {"cursor": 1}
 
     asyncio.run(run())

@@ -3,7 +3,31 @@ from typing import Any
 
 from aiokafka import ConsumerRecord, TopicPartition
 
-from .types import Message
+from fretworx.state import StateStore, deserialize
+from fretworx.types import Message, State
+
+
+class InMemoryStateStore(StateStore):
+    """In-memory state store for testing — mirrors `RocksDBStateStore`'s
+    bytes-on-disk semantics so test assertions match production behavior."""
+
+    def __init__(self):
+        self.store: dict[str, bytes] = {}
+
+    async def get(self, key: str) -> State | None:
+        raw = self.store.get(key)
+        if raw is None:
+            return None
+        return deserialize(raw)
+
+    async def put_bytes(self, key: str, raw: bytes) -> None:
+        self.store[key] = raw
+
+    async def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+    async def close(self) -> None:
+        pass
 
 
 def make_record(
