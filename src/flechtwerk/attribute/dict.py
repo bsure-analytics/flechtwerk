@@ -20,7 +20,7 @@ inspection but not for re-indexing back into the `Dict`.
 """
 from collections.abc import Iterator
 from copy import deepcopy
-from typing import Any, Self, TypeVar, overload
+from typing import Any, Final, Self, TypeVar, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
 from .codecs import encode_any
@@ -168,19 +168,18 @@ encoder(Dict)(lambda d: d.raw.copy())
 decoder(Dict)(lambda raw: Dict(raw))
 
 
-def list_of() -> Codec[list[Dict]]:
-    """Codec for an `Attribute` whose value is a list of `Dict` instances.
+LIST_OF_DICTS: Final[Codec[list[Dict]]] = Codec(
+    decode=lambda lst: [Dict(d) for d in lst],
+    encode=lambda lst: [d.raw if isinstance(d, Dict) else d for d in lst],
+)
+"""Codec for an `Attribute` whose value is a list of `Dict` instances.
 
-    Use as `RequiredAttribute[list[Dict]](name, codec=list_of())`. The
-    `decode` wraps each list item in `Dict`; the `encode` unwraps each
-    `Dict` back to its raw dict (passing plain dicts through unchanged so
-    existing callers that haven't migrated still work). The registry has
-    no built-in codec for `list[Dict]` because the parametrization isn't
-    matched at runtime — this helper is the per-attribute override.
+Use as `RequiredAttribute[list[Dict]](name, LIST_OF_DICTS)`. The
+`decode` wraps each list item in `Dict`; the `encode` unwraps each
+`Dict` back to its raw dict (passing plain dicts through unchanged so
+existing callers that haven't migrated still work). The registry has
+no built-in codec for `list[Dict]` because the parametrization isn't
+matched at runtime — this constant is the per-attribute override.
 
-    For a list of `Dict`-subclass instances, write the `Codec` inline.
-    """
-    return Codec(
-        decode=lambda lst: [Dict(d) for d in lst],
-        encode=lambda lst: [d.raw if isinstance(d, Dict) else d for d in lst],
-    )
+For a list of `Dict`-subclass instances, write the `Codec` inline.
+"""

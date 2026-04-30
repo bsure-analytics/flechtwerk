@@ -43,7 +43,7 @@ class Attribute(Generic[V]):
     drives the static type of `event[ATTR]`).
     """
 
-    def __init__(self, name: str, *, codec: Codec[V] = Codec()) -> None:
+    def __init__(self, name: str, codec: Codec[V] = Codec()) -> None:
         if type(self) is Attribute:
             raise TypeError(
                 "Attribute is abstract; instantiate RequiredAttribute or OptionalAttribute"
@@ -123,7 +123,7 @@ class OptionalAttribute(Attribute[V]):
         """
         new: RequiredAttribute[V] = RequiredAttribute(
             self.name,
-            codec=Codec(decode=self.decode, encode=self.encode),
+            Codec(decode=self.decode, encode=self.encode),
         )
         _copy_value_type(self, new, RequiredAttribute)
         return new
@@ -141,7 +141,7 @@ class RequiredAttribute(Attribute[V]):
         """
         new: OptionalAttribute[V] = OptionalAttribute(
             self.name,
-            codec=Codec(decode=self.decode, encode=self.encode),
+            Codec(decode=self.decode, encode=self.encode),
         )
         _copy_value_type(self, new, OptionalAttribute)
         return new

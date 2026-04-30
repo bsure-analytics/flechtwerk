@@ -28,7 +28,7 @@ class Codec(Generic[V]):
     """A pair of `(decode, encode)` callables overriding the registry default.
 
     Either field may be `None` to keep that direction on the registry
-    default. Pass to `Attribute` as `codec=Codec(...)`.
+    default. Pass to `Attribute` as the `codec` argument.
     """
     decode: Decoder[V] | None = None
     encode: Encoder[V] | None = None
