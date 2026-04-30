@@ -6,22 +6,20 @@ and `list`), and the small set of non-JSON-native types we round-trip through
 JSON: `set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601 string.
 """
 from datetime import datetime, timezone
-from typing import Any, TypeVar
+from typing import Any
 
 from .attribute import Attribute
 from .registry import Decoder, decoder, encoder, lookup_encoder
-
-T = TypeVar("T")
 
 
 # --- helpers (used by registrations below) ---
 
 
-def _identity(x: T) -> T:
+def _identity[T](x: T) -> T:
     return x
 
 
-def _validate(t: type[T]) -> Decoder[T]:
+def _validate[T](t: type[T]) -> Decoder[T]:
     """Codec that asserts `isinstance(x, t)`, raising `TypeError` on mismatch."""
 
     def check(x: Any) -> T:
@@ -66,7 +64,6 @@ for _t in (str, int, bool, float):
 
 decoder(type(None))(_identity)
 encoder(type(None))(_identity)
-
 
 # --- containers: recursive walkers on encode, identity on decode ---
 
