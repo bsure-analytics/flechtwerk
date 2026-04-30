@@ -82,6 +82,12 @@ class Attribute(Generic[V]):
         origin = get_origin(v)
         return origin if isinstance(origin, type) else None
 
+    def __eq__(self, other: object) -> bool:
+        return type(other) is type(self) and other.name == self.name  # type: ignore[attr-defined]
+
+    def __hash__(self) -> int:
+        return hash((type(self), self.name))
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.name!r})"
 

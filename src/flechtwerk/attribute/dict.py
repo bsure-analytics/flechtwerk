@@ -18,11 +18,12 @@ optional fields use `.get()` / `.pop()`.
 Iteration yields the raw name strings of the wrapped dict — useful for
 inspection but not for re-indexing back into the `Dict`.
 """
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import Any, TypeVar, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
+from .codecs import encode_leaf
 from .registry import decoder, encoder, lookup_encoder
 
 V = TypeVar("V")
@@ -56,13 +57,21 @@ class Dict:
         instance.raw = {}
         return instance
 
-    def __init__(self, source: dict[str, Any] | Dict | None = None, /) -> None:
+    def __init__(self, source: Mapping[Attribute | str, Any] | Dict | None = None, /) -> None:
         if source is None:
             return  # raw already {} from __new__
         if isinstance(source, Dict):
             self.raw = source.raw.copy()
-        else:
-            self.raw = source.copy()
+            return
+        # Per item: Attribute keys rekey to `attr.name` and run the attribute's
+        # encoder; string keys pass through unchanged but their values are run
+        # through the type-registered encoder (recursive for dict/list). Either
+        # way, `.raw` ends up JSON-native.
+        self.raw = {
+            (k.name if isinstance(k, Attribute) else k):
+                (k.encode(v) if isinstance(k, Attribute) else encode_leaf(v))
+            for k, v in source.items()
+        }
 
     def __reduce__(self) -> tuple:
         # Clean modern pickle format: (cls, (raw,)) → reconstruct via cls(raw).

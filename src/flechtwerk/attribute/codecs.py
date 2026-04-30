@@ -5,7 +5,7 @@ primitives, the JSON-friendly containers (with recursive walkers for `dict`
 and `list`), and the small set of non-JSON-native types we round-trip through
 JSON: `set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601 string.
 """
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
@@ -34,8 +34,12 @@ def _validate(t: type[T]) -> Callable[[Any], T]:
     return check
 
 
-def _encode_leaf(v: Any) -> Any:
-    """Apply the registered encoder for `type(v)`. Recurses into bare dicts/lists.
+def encode_leaf(v: Any) -> Any:
+    """Apply the registered encoder for `type(v)`. Recurses into bare lists and
+    arbitrary `Mapping` instances (covers `dict`, `MappingProxyType`, etc.).
+
+    `list` is matched exactly rather than via `Sequence`/`Iterable` because
+    `str` and `bytes` are also sequences but must not be iterated as lists.
 
     Raises `CodecError` on unknown leaf types — silent passthrough would let
     non-JSON-native values land in `Dict.raw` and crash later in `json.dumps`.
@@ -45,7 +49,7 @@ def _encode_leaf(v: Any) -> Any:
         return enc(v)
     if isinstance(v, list):
         return _encode_list(v)
-    if isinstance(v, dict):
+    if isinstance(v, Mapping):
         return _encode_dict(v)
     raise CodecError(
         f"no encoder registered for {type(v).__name__}: {v!r}"
@@ -78,13 +82,13 @@ decoder(list)(_identity)
 
 
 @encoder(dict)
-def _encode_dict(d: dict) -> dict:
-    return {k: _encode_leaf(v) for k, v in d.items()}
+def _encode_dict(d: Mapping) -> dict:
+    return {k: encode_leaf(v) for k, v in d.items()}
 
 
 @encoder(list)
 def _encode_list(items: list) -> list:
-    return [_encode_leaf(v) for v in items]
+    return [encode_leaf(v) for v in items]
 
 
 # --- non-JSON-native types: real conversion ---
