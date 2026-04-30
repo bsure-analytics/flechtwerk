@@ -20,7 +20,7 @@ inspection but not for re-indexing back into the `Dict`.
 """
 from collections.abc import Iterator
 from copy import deepcopy
-from typing import Any, TypeVar, overload
+from typing import Any, Self, TypeVar, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
 from .codecs import encode_any
@@ -30,7 +30,7 @@ V = TypeVar("V")
 
 
 class MissingAttributeError(KeyError):
-    """Raised by `Dict.__getitem__` when a required attribute is missing or `None`."""
+    """To raise by `Dict.__getitem__` when a required attribute is missing or `None`."""
 
 
 class Dict:
@@ -49,13 +49,13 @@ class Dict:
         # framework's "treat `.raw` as immutable from outside" contract.
         # Decode rewraps the raw dict in the subclass.
         encoder(cls)(lambda d: d.raw.copy())
-        decoder(cls)(cls)
+        decoder(cls)(lambda raw: cls(raw))
 
     # TODO(legacy-pickle-compat): once all changelog topics in every environment
     # have been fully replaced with new-format entries (the str-key __setitem__
     # branch below is no longer reached), remove this `__new__` and move the
     # `self.raw = {}` initialization back into `__init__`.
-    def __new__(cls, *args: Any, **kwargs: Any) -> Dict:
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
         # Initialize `raw` in __new__ so it exists even when pickle skips __init__.
         instance = super().__new__(cls)
         instance.raw = {}
@@ -124,16 +124,17 @@ class Dict:
     def __eq__(self, other: object) -> bool:
         return type(other) is type(self) and self.raw == other.raw  # type: ignore[attr-defined]
 
-    __hash__ = None
+    # Defining `__eq__` implicitly sets `__hash__ = None`, marking the class
+    # unhashable — no need to spell it out.
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.raw!r})"
 
     def __copy__(self) -> Dict:
-        return type(self)(self.raw)
+        return type(self)(self.raw)  # type: ignore[arg-type]
 
     def __deepcopy__(self, memo: dict) -> Dict:
-        return type(self)(deepcopy(self.raw, memo))
+        return type(self)(deepcopy(self.raw, memo))  # type: ignore[arg-type]
 
     # --- Pythonic helpers (Optional only) ---
 
@@ -161,10 +162,10 @@ class Dict:
 
 # `__init_subclass__` only fires for subclasses, so register the base `Dict`
 # class manually with the same shallow-copy encoder. This lets `encode_any`
-# dispatch on a base-class instance (i.e. someone instantiated `Dict`
-# directly) the same way it handles subclasses.
+# dispatch on a base-class instance (i.e., someone instantiated `Dict` directly)
+# the same way it handles subclasses.
 encoder(Dict)(lambda d: d.raw.copy())
-decoder(Dict)(Dict)
+decoder(Dict)(lambda raw: Dict(raw))
 
 
 def list_of() -> Codec[list[Dict]]:

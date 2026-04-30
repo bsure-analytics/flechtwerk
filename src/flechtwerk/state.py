@@ -107,7 +107,8 @@ class RocksDBStateStore(StateStore):
             raw = self.db[key]
         except KeyError:
             return None
-        return deserialize(raw)  # noqa: PyTypeChecker
+        assert isinstance(raw, bytes)  # we only ever put bytes; rocksdict's stub widens to Any
+        return deserialize(raw)
 
     async def put_bytes(self, key: str, raw: bytes) -> None:
         # Bytes go straight to RocksDB — both `put` (via the default

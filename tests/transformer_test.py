@@ -4,12 +4,12 @@ import json
 from typing import AsyncIterator, Final
 
 import pytest
-from fretworx.attribute import Attribute, RequiredAttribute
-from fretworx.module import FretworxModule
-from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
-from fretworx.transformer import Transformer, TransformerRunner
-from fretworx.types import Event, Message, State
 
+from fretworx.attribute import RequiredAttribute
+from fretworx.module import FretworxModule
+from fretworx.transformer import Transformer
+from fretworx.types import Event, Message, State
+from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
 COUNT: Final = RequiredAttribute[int]("count")
 CURSOR: Final = RequiredAttribute[int]("cursor")
@@ -161,6 +161,7 @@ def test_stateful_counter():
 
 def test_functional_transformer():
     """Functional Transformer with a transform function (no subclass)."""
+
     async def my_transform(msg, _):
         yield Message(key=msg.key, topic="out", value=msg.value)
 
@@ -177,6 +178,7 @@ def test_functional_transformer():
 
 def test_functional_transformer_with_extract_key():
     """Functional Transformer with custom extract_key."""
+
     async def my_transform(msg, state):
         yield Message(key=msg.key, topic="out", value=msg.value)
 
@@ -195,6 +197,7 @@ def test_functional_transformer_with_extract_key():
 
 def test_functional_transformer_default_extract_key():
     """Functional Transformer without extract_key uses msg.key."""
+
     async def my_transform(msg, _):
         yield Message(key=msg.key, topic="out", value=Event())
 
@@ -205,6 +208,7 @@ def test_functional_transformer_default_extract_key():
 
 def test_transformer_no_transform_raises():
     """Transformer without transform function raises when called."""
+
     async def run():
         t = Transformer(input_topics=["in"])
         msg = make_incoming()
@@ -349,6 +353,7 @@ def test_transformer_runner_stateless_gets_empty_state():
 
 def test_transformer_runner_stateless_does_not_persist_state():
     """Transformer that never yields State does not persist to the store."""
+
     async def stateless_transform(msg, state):
         yield Message(key=msg.key, topic="out", value=Event())
 
@@ -371,6 +376,7 @@ def test_transformer_runner_stateless_does_not_persist_state():
 
 def test_transformer_runner_in_place_state_mutation_is_persisted():
     """A transform that mutates `state` in place and yields it must still be persisted."""
+
     async def in_place_transform(msg, state):
         state[CURSOR] = state.get(CURSOR, 0) + 1
         yield state
@@ -394,6 +400,7 @@ def test_transformer_runner_in_place_state_mutation_is_persisted():
 
 def test_transformer_runner_mutation_without_yield_is_not_persisted():
     """Mutating `state` without yielding must not be persisted (contract)."""
+
     async def mutate_without_yield(msg, state):
         state[CURSOR] = 42
         yield Message(key=msg.key, topic="out", value=Event())
@@ -417,6 +424,7 @@ def test_transformer_runner_mutation_without_yield_is_not_persisted():
 
 def test_transformer_runner_yielding_empty_state_deletes_existing_entry():
     """Yielding an empty/falsy State deletes the entry from the state store."""
+
     async def tombstoning_transform(msg, state):
         yield State()
 
@@ -441,6 +449,7 @@ def test_transformer_runner_yielding_empty_state_deletes_existing_entry():
 
 def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
     """Yielding empty State with no baseline is a no-op (no delete call)."""
+
     async def tombstoning_transform(msg, state):
         yield State()
 
@@ -471,6 +480,7 @@ def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
 
 def test_transformer_runner_functional_stateful():
     """Functional stateful transformer with custom extract_key via runner."""
+
     async def my_transform(msg, state):
         count = state.get(COUNT, 0) + 1
         yield Message(key=msg.key, topic="out", value=Event({"count": count}))
@@ -538,6 +548,7 @@ def test_transformer_context_manager():
 
 def test_transformer_runner_error_propagates_from_run():
     """Errors from transform propagate out of run()."""
+
     class FailingTransformer(Transformer):
         input_topics = ["in"]
 
@@ -562,6 +573,7 @@ def test_transformer_runner_error_propagates_from_run():
 
 def test_transformer_runner_filter_yields_nothing():
     """Runner handles transforms that yield zero messages."""
+
     async def skip_all(msg, _):
         return
         yield  # pragma: no cover
@@ -619,6 +631,7 @@ def test_transformer_runner_same_key_in_batch_sees_overlay():
 
 def test_transformer_runner_one_transaction_per_batch():
     """A batch of N records opens exactly one Kafka transaction."""
+
     async def passthrough(msg, _):
         yield Message(key=msg.key, topic="out", value=msg.value)
 

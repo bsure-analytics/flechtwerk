@@ -17,10 +17,10 @@ from pathlib import Path
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
-from reactor_di import CachingStrategy, module, make, lookup
+from reactor_di import CachingStrategy, module, lookup
 
 from .extractor import Extractor, ExtractorRunner
-from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic, StateStore
+from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -47,10 +47,10 @@ class FretworxModule:
     client_id: lookup[str]
     group_id: lookup[str]
     extractor_runner: ExtractorRunner
-    inner_store: make[StateStore, RocksDBStateStore]
+    inner_store: RocksDBStateStore
     poll_interval_seconds: lookup[int]
     stage: lookup[Extractor | Transformer]
-    state_store: make[StateStore, ChangelogStateStore]
+    state_store: ChangelogStateStore
     transformer_runner: TransformerRunner
 
     @cached_property

@@ -50,11 +50,11 @@ class Transformer:
     input_topics: list[str]
 
     def __init__(
-        self,
-        *,
-        input_topics: list[str] | None = None,
-        transform: TransformFn | None = None,
-        extract_key: ExtractKeyFn | None = None,
+            self,
+            *,
+            input_topics: list[str] | None = None,
+            transform: TransformFn | None = None,
+            extract_key: ExtractKeyFn | None = None,
     ):
         if input_topics is not None:
             self.input_topics = input_topics
@@ -177,10 +177,10 @@ class TransformerRunner:
         await self.send_transactional(output, state_changes, offsets)
 
     async def send_transactional(
-        self,
-        messages: list[Message],
-        state_changes: dict[str, State],
-        offsets: dict,
+            self,
+            messages: list[Message],
+            state_changes: dict[str, State],
+            offsets: dict,
     ) -> None:
         """Send messages, persist state, and commit offsets in a single Kafka transaction.
 

@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-from fretworx.attribute import Attribute, OptionalAttribute
 from reactor_di import lookup
 
+from fretworx.attribute import OptionalAttribute
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .state import StateStore
 from .types import Config, IncomingMessage, Message, State
