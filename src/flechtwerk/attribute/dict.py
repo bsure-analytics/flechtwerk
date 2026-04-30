@@ -18,7 +18,7 @@ optional fields use `.get()` / `.pop()`.
 Iteration yields the raw name strings of the wrapped dict — useful for
 inspection but not for re-indexing back into the `Dict`.
 """
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from copy import deepcopy
 from typing import Any, TypeVar, overload
 
@@ -61,7 +61,7 @@ class Dict:
         instance.raw = {}
         return instance
 
-    def __init__(self, source: Mapping[Attribute | str, Any] | Dict | None = None, /) -> None:
+    def __init__(self, source: dict[Attribute | str, Any] | Dict | None = None, /) -> None:
         if source is None:
             return  # raw already {} from __new__
         # Delegate to `encode_any` — its dispatch handles every shape we care

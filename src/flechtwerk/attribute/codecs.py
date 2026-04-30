@@ -5,7 +5,7 @@ primitives, the JSON-friendly containers (with recursive walkers for `dict`
 and `list`), and the small set of non-JSON-native types we round-trip through
 JSON: `set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601 string.
 """
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
@@ -38,27 +38,20 @@ def _validate(t: type[T]) -> Callable[[Any], T]:
 def encode_any(v: Any) -> Any:
     """Encode any value to JSON-native form via the codec registry.
 
-    Dispatches on `type(v)` first (registered encoder hits exactly the right
-    codec for primitives, `datetime`, `set`/`tuple`, `Dict` subclasses, etc.).
-    Falls back to `_encode_list` for `list` and `_encode_dict` for any
-    `Mapping` (covers `dict`, `MappingProxyType`, etc.).
-
-    `list` is matched exactly rather than via `Sequence`/`Iterable` because
-    `str` and `bytes` are also sequences but must not be iterated as lists.
+    Dispatches strictly on `type(v)`: the registered encoder for the exact
+    type runs (recursive walkers for `dict` and `list`, codec round-trips
+    for `datetime` / `set` / `tuple`, identity-with-validate for primitives,
+    auto-registered shallow copy for `Dict` subclasses).
 
     Raises `CodecError` on unknown types — silent passthrough would let
     non-JSON-native values land in `Dict.raw` and crash later in `json.dumps`.
+    Subclasses (`OrderedDict`, `MappingProxyType`, etc.) aren't matched by
+    exact-type lookup; if you need them, register an encoder explicitly.
     """
     enc = _encoders.get(type(v))
-    if enc is not None:
-        return enc(v)
-    if isinstance(v, list):
-        return _encode_list(v)
-    if isinstance(v, Mapping):
-        return _encode_dict(v)
-    raise CodecError(
-        f"no encoder registered for {type(v).__name__}: {v!r}"
-    )
+    if enc is None:
+        raise CodecError(f"no encoder registered for {type(v).__name__}: {v!r}")
+    return enc(v)
 
 
 # --- primitives: validate-on-pass-through ---
@@ -87,7 +80,7 @@ decoder(list)(_identity)
 
 
 @encoder(dict)
-def _encode_dict(d: Mapping) -> dict:
+def _encode_dict(d: dict) -> dict:
     """Encode a mapping to a JSON-native dict.
 
     Keys are passed through unchanged unless they are `Attribute` instances,
