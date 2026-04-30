@@ -24,7 +24,7 @@ from typing import Any, TypeVar, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
 from .codecs import encode_leaf
-from .registry import decoder, encoder, lookup_encoder
+from .registry import decoder, encoder
 
 V = TypeVar("V")
 
@@ -40,11 +40,15 @@ class Dict:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # Auto-register encode/decode for every Dict subclass.
-        # Encode walks the inner contents via the registered `dict` walker so
-        # nested non-JSON-native values (datetime/set/tuple/Dict) are encoded
-        # to JSON-native form. Decode rewraps the raw dict in the subclass.
-        encoder(cls)(lambda d: lookup_encoder(dict)(d.raw))
+        # Auto-register encode/decode for every Dict subclass. Encode returns
+        # a shallow copy of `.raw` directly — it's already JSON-native by the
+        # constructor / `__setitem__` invariants, so re-walking it through the
+        # `dict` encoder would be redundant work. Top-level isolation is
+        # preserved (the new owner gets its own dict to mutate via
+        # `__setitem__`); nested dicts/lists are shared, matching the
+        # framework's "treat `.raw` as immutable from outside" contract.
+        # Decode rewraps the raw dict in the subclass.
+        encoder(cls)(lambda d: d.raw.copy())
         decoder(cls)(cls)
 
     # TODO(legacy-pickle-compat): once all changelog topics in every environment

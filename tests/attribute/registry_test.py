@@ -180,7 +180,12 @@ def test_dict_subclass_auto_registers():
     assert isinstance(decoded, _AutoReg)
     assert decoded.raw == {"x": 1}
 
-    # encoder unwraps to raw and recursively walks
-    instance = _AutoReg()
-    instance.raw = {"ts": datetime(2024, 1, 1, tzinfo=timezone.utc)}
-    assert lookup_encoder(_AutoReg)(instance) == {"ts": "2024-01-01T00:00:00.000Z"}
+    # encoder returns a shallow copy of `.raw`. The constructor /
+    # `__setitem__` invariants guarantee `.raw` is already JSON-native, so
+    # re-walking it would be redundant — the encoder trusts the invariant.
+    nested = [1, 2, 3]
+    instance = _AutoReg({"x": 1, "nested": nested})
+    encoded = lookup_encoder(_AutoReg)(instance)
+    assert encoded == {"x": 1, "nested": [1, 2, 3]}
+    assert encoded is not instance.raw  # top-level isolated
+    assert encoded["nested"] is instance.raw["nested"]  # nested shared
