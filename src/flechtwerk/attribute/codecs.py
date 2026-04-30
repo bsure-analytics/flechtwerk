@@ -35,14 +35,18 @@ def _validate(t: type[T]) -> Callable[[Any], T]:
     return check
 
 
-def encode_leaf(v: Any) -> Any:
-    """Apply the registered encoder for `type(v)`. Recurses into bare lists and
-    arbitrary `Mapping` instances (covers `dict`, `MappingProxyType`, etc.).
+def encode_any(v: Any) -> Any:
+    """Encode any value to JSON-native form via the codec registry.
+
+    Dispatches on `type(v)` first (registered encoder hits exactly the right
+    codec for primitives, `datetime`, `set`/`tuple`, `Dict` subclasses, etc.).
+    Falls back to `_encode_list` for `list` and `_encode_dict` for any
+    `Mapping` (covers `dict`, `MappingProxyType`, etc.).
 
     `list` is matched exactly rather than via `Sequence`/`Iterable` because
     `str` and `bytes` are also sequences but must not be iterated as lists.
 
-    Raises `CodecError` on unknown leaf types — silent passthrough would let
+    Raises `CodecError` on unknown types — silent passthrough would let
     non-JSON-native values land in `Dict.raw` and crash later in `json.dumps`.
     """
     enc = _encoders.get(type(v))
@@ -89,20 +93,20 @@ def _encode_dict(d: Mapping) -> dict:
     Keys are passed through unchanged unless they are `Attribute` instances,
     in which case the key is rekeyed to `attr.name` and the value is run
     through the attribute's encoder. Other-typed keys' values go through
-    `encode_leaf` (recursive for nested dicts/lists). This lets dict literals
+    `encode_any` (recursive for nested dicts/lists). This lets dict literals
     mix typed (`Attribute`) and plain string keys at the call site —
     `Event({DATA: payload, "literal_key": dt})` produces the right `.raw`.
     """
     return {
         (k.name if isinstance(k, Attribute) else k):
-            (k.encode(v) if isinstance(k, Attribute) else encode_leaf(v))
+            (k.encode(v) if isinstance(k, Attribute) else encode_any(v))
         for k, v in d.items()
     }
 
 
 @encoder(list)
 def _encode_list(items: list) -> list:
-    return [encode_leaf(v) for v in items]
+    return [encode_any(v) for v in items]
 
 
 # --- non-JSON-native types: real conversion ---

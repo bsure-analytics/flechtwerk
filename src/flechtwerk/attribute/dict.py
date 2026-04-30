@@ -23,7 +23,7 @@ from copy import deepcopy
 from typing import Any, TypeVar, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
-from .codecs import encode_leaf
+from .codecs import encode_any
 from .registry import decoder, encoder
 
 V = TypeVar("V")
@@ -64,13 +64,13 @@ class Dict:
     def __init__(self, source: Mapping[Attribute | str, Any] | Dict | None = None, /) -> None:
         if source is None:
             return  # raw already {} from __new__
-        # Delegate to `encode_leaf` — its dispatch handles every shape we care
+        # Delegate to `encode_any` — its dispatch handles every shape we care
         # about: a Dict subclass goes through the registered shallow-copy
         # encoder; a plain dict / Mapping goes through `_encode_dict`, which
         # rekeys Attribute keys to `attr.name`, runs the attribute's encoder
         # on their values, and recursively encodes everything else. The
         # invariant — `.raw` is JSON-native — is enforced by the codec layer.
-        self.raw = encode_leaf(source)
+        self.raw = encode_any(source)
 
     def __reduce__(self) -> tuple:
         # Clean modern pickle format: (cls, (raw,)) → reconstruct via cls(raw).
@@ -160,7 +160,7 @@ class Dict:
 
 
 # `__init_subclass__` only fires for subclasses, so register the base `Dict`
-# class manually with the same shallow-copy encoder. This lets `encode_leaf`
+# class manually with the same shallow-copy encoder. This lets `encode_any`
 # dispatch on a base-class instance (i.e. someone instantiated `Dict`
 # directly) the same way it handles subclasses.
 encoder(Dict)(lambda d: d.raw.copy())
