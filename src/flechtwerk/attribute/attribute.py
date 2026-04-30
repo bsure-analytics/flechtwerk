@@ -41,13 +41,14 @@ class Attribute(Generic[V]):
 
     @cached_property
     def decode(self) -> Callable[[Any], V]:
-        return lookup_decoder(self._require_value_type())
+        return lookup_decoder(self._required_value_type)
 
     @cached_property
     def encode(self) -> Callable[[V], Any]:
-        return lookup_encoder(self._require_value_type())
+        return lookup_encoder(self._required_value_type)
 
-    def _require_value_type(self) -> type[V]:
+    @property
+    def _required_value_type(self) -> type[V]:
         orig = getattr(self, "__orig_class__", None)
         if orig is not None:
             args = get_args(orig)
