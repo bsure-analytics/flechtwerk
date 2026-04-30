@@ -1,6 +1,6 @@
 """A typed dict wrapper, keyed exclusively by `Attribute` objects.
 
-`Dict` wraps an underlying `dict[str, Any]` (exposed as `raw`) whose
+`Record` wraps an underlying `dict[str, Any]` (exposed as `raw`) whose
 string keys serialize directly to JSON. All public access uses
 `Attribute` instances:
 
@@ -16,7 +16,7 @@ Indexing with a string raises `TypeError`. The `__getitem__` / `get` /
 optional fields use `.get()` / `.pop()`.
 
 Iteration yields the raw name strings of the wrapped dict — useful for
-inspection but not for re-indexing back into the `Dict`.
+inspection but not for re-indexing back into the `Record`.
 """
 from collections.abc import Iterator
 from copy import deepcopy
@@ -28,17 +28,17 @@ from .registry import Codec, decoder, encoder
 
 
 class MissingAttributeError(KeyError):
-    """To raise by `Dict.__getitem__` when a required attribute is missing or `None`."""
+    """To raise by `Record.__getitem__` when a required attribute is missing or `None`."""
 
 
-class Dict:
+class Record:
     """Wrapper around `dict[str, Any]` with `Attribute`-only access."""
 
     raw: dict[str, Any]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # Auto-register encode/decode for every Dict subclass. Encode returns
+        # Auto-register encode/decode for every Record subclass. Encode returns
         # a shallow copy of `.raw` directly — it's already JSON-native by the
         # constructor / `__setitem__` invariants, so re-walking it through the
         # `dict` encoder would be redundant work. Top-level isolation is
@@ -59,11 +59,11 @@ class Dict:
         instance.raw = {}
         return instance
 
-    def __init__(self, source: dict[Attribute | str, Any] | Dict | None = None, /) -> None:
+    def __init__(self, source: dict[Attribute | str, Any] | Record | None = None, /) -> None:
         if source is None:
             return  # raw already {} from __new__
         # Delegate to `encode_any` — its dispatch handles every shape we care
-        # about: a Dict subclass goes through the registered shallow-copy
+        # about: a Record subclass goes through the registered shallow-copy
         # encoder; a plain dict / Mapping goes through `_encode_dict`, which
         # rekeys Attribute keys to `attr.name`, runs the attribute's encoder
         # on their values, and recursively encodes everything else. The
@@ -128,10 +128,10 @@ class Dict:
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.raw!r})"
 
-    def __copy__(self) -> Dict:
+    def __copy__(self) -> Record:
         return type(self)(self.raw)  # type: ignore[arg-type]
 
-    def __deepcopy__(self, memo: dict) -> Dict:
+    def __deepcopy__(self, memo: dict) -> Record:
         return type(self)(deepcopy(self.raw, memo))  # type: ignore[arg-type]
 
     # --- Pythonic helpers (Optional only) ---
@@ -153,31 +153,31 @@ class Dict:
             return default[0]
         raise KeyError(attr)
 
-    def update(self, other: Dict) -> None:
-        """Merge another `Dict` into this one."""
+    def update(self, other: Record) -> None:
+        """Merge another `Record` into this one."""
         self.raw.update(other.raw)
 
 
-# `__init_subclass__` only fires for subclasses, so register the base `Dict`
+# `__init_subclass__` only fires for subclasses, so register the base `Record`
 # class manually with the same shallow-copy encoder. This lets `encode_any`
-# dispatch on a base-class instance (i.e., someone instantiated `Dict` directly)
+# dispatch on a base-class instance (i.e., someone instantiated `Record` directly)
 # the same way it handles subclasses.
-encoder(Dict)(lambda d: d.raw.copy())
-decoder(Dict)(lambda raw: Dict(raw))
+encoder(Record)(lambda d: d.raw.copy())
+decoder(Record)(lambda raw: Record(raw))
 
 
-LIST_OF_DICTS: Final[Codec[list[Dict]]] = Codec(
-    decode=lambda lst: [Dict(d) for d in lst],
-    encode=lambda lst: [d.raw if isinstance(d, Dict) else d for d in lst],
+LIST_OF_RECORDS: Final[Codec[list[Record]]] = Codec(
+    decode=lambda lst: [Record(d) for d in lst],
+    encode=lambda lst: [d.raw if isinstance(d, Record) else d for d in lst],
 )
-"""Codec for an `Attribute` whose value is a list of `Dict` instances.
+"""Codec for an `Attribute` whose value is a list of `Record` instances.
 
-Use as `RequiredAttribute[list[Dict]](name, LIST_OF_DICTS)`. The
-`decode` wraps each list item in `Dict`; the `encode` unwraps each
-`Dict` back to its raw dict (passing plain dicts through unchanged so
+Use as `RequiredAttribute[list[Record]](name, LIST_OF_RECORDS)`. The
+`decode` wraps each list item in `Record`; the `encode` unwraps each
+`Record` back to its raw dict (passing plain dicts through unchanged so
 existing callers that haven't migrated still work). The registry has
-no built-in codec for `list[Dict]` because the parametrization isn't
+no built-in codec for `list[Record]` because the parametrization isn't
 matched at runtime — this constant is the per-attribute override.
 
-For a list of `Dict`-subclass instances, write the `Codec` inline.
+For a list of `Record`-subclass instances, write the `Codec` inline.
 """

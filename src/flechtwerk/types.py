@@ -2,18 +2,18 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from fretworx.attribute import Dict
+from fretworx.attribute import Record
 
 
-class Config(Dict):
+class Config(Record):
     """Configuration object read from a Kafka config topic."""
 
 
-class Event(Dict):
+class Event(Record):
     """Event object read from or written to a Kafka data topic."""
 
 
-class State(Dict):
+class State(Record):
     """Mutable per-key state managed by the framework."""
 
 

@@ -118,10 +118,10 @@ def test_converted_attribute_is_cached():
 
 
 def test_converted_attribute_works_with_dict_access():
-    """An `OPT.required` is accepted by `Dict.__getitem__`."""
-    from fretworx.attribute import Dict
+    """An `OPT.required` is accepted by `Record.__getitem__`."""
+    from fretworx.attribute import Record
     opt = OptionalAttribute[str]("token")
-    d = Dict({"token": "abc"})
+    d = Record({"token": "abc"})
     assert d[opt.required] == "abc"
 
 
@@ -163,8 +163,8 @@ def test_attribute_overrides_carry_through_kind_conversion():
 
 
 def test_attribute_overrides_used_via_dict_access():
-    """A `Dict` uses the attribute's codec for both encode (set) and decode (get)."""
-    from fretworx.attribute import Dict
+    """A `Record` uses the attribute's codec for both encode (set) and decode (get)."""
+    from fretworx.attribute import Record
     attr = RequiredAttribute[int](
         "count",
         Codec(
@@ -172,7 +172,7 @@ def test_attribute_overrides_used_via_dict_access():
             decode=lambda v: int(v.split(":")[1]),
         ),
     )
-    d = Dict()
+    d = Record()
     d[attr] = 5
     assert d.raw["count"] == "int:5"
     assert d[attr] == 5

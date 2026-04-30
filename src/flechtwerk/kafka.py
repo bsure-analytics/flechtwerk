@@ -8,7 +8,7 @@ from typing import Any
 import aiokafka
 from aiokafka import ConsumerRecord
 
-from fretworx.attribute import Dict
+from fretworx.attribute import Record
 
 from .types import Event, IncomingMessage
 
@@ -25,7 +25,7 @@ def encode_json(value: Any) -> bytes:
     """
     if isinstance(value, str):
         return value.encode("utf-8")
-    if isinstance(value, Dict):
+    if isinstance(value, Record):
         value = value.raw
     return json.dumps(
         value,

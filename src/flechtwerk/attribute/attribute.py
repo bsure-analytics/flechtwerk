@@ -1,8 +1,8 @@
 """Type-safe handles on keys in a dict, with paired encode/decode codecs.
 
 `Attribute` is abstract — instantiate `RequiredAttribute` or
-`OptionalAttribute` to declare schema intent. `Dict.__getitem__` only
-accepts `RequiredAttribute`; `Dict.get` and `Dict.pop` only accept
+`OptionalAttribute` to declare schema intent. `Record.__getitem__` only
+accepts `RequiredAttribute`; `Record.get` and `Record.pop` only accept
 `OptionalAttribute`. `OptionalAttribute[V].required` and
 `RequiredAttribute[V].optional` are `cached_property`s returning the
 other-kind view of the same attribute (same name and `[V]`); use them at
@@ -15,8 +15,8 @@ information about the value's shape, so it can't drive a meaningful codec.
 
 Codecs are looked up in the type-keyed registry (`fretworx/attribute/registry.py`)
 on first decode/encode access. Built-in codecs cover the JSON-native primitives,
-`set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601, and any `Dict`
-subclass via `Dict.__init_subclass__`. Asymmetric or domain-specific codecs are
+`set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601, and any `Record`
+subclass via `Record.__init_subclass__`. Asymmetric or domain-specific codecs are
 registered with `@encoder(T)` / `@decoder(T)` decorators in `codecs.py` (or
 wherever `T` is defined).
 """
@@ -116,7 +116,7 @@ class OptionalAttribute[V](Attribute[V]):
         """The required view of this attribute (same name, `[V]`, and resolved codecs).
 
         Use at sites where the value is known to be present (e.g. immediately
-        after writing it) so `Dict.__getitem__` accepts it without a checker
+        after writing it) so `Record.__getitem__` accepts it without a checker
         downgrade.
         """
         new: RequiredAttribute[V] = RequiredAttribute(

@@ -4,7 +4,7 @@ from typing import NewType
 
 import pytest
 
-from fretworx.attribute import Dict, OptionalAttribute, RequiredAttribute
+from fretworx.attribute import Record, OptionalAttribute, RequiredAttribute
 from fretworx.attribute.registry import (
     CodecError,
     decoder,
@@ -168,11 +168,11 @@ def test_dict_decoder_is_identity():
     assert lookup_decoder(dict)(raw) is raw
 
 
-# --- Dict subclass auto-registration ---
+# --- Record subclass auto-registration ---
 
 
 def test_dict_subclass_auto_registers():
-    class _AutoReg(Dict):
+    class _AutoReg(Record):
         pass
 
     # decoder wraps a raw dict in the subclass

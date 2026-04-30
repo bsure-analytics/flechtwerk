@@ -38,10 +38,10 @@ def encode_any(v: Any) -> Any:
     Dispatches strictly on `type(v)`: the registered encoder for the exact
     type runs (recursive walkers for `dict` and `list`, codec round-trips
     for `datetime` / `set` / `tuple`, identity-with-validate for primitives,
-    auto-registered shallow copy for `Dict` subclasses).
+    auto-registered shallow copy for `Record` subclasses).
 
     Raises `CodecError` on unknown types — silent passthrough would let
-    non-JSON-native values land in `Dict.raw` and crash later in `json.dumps`.
+    non-JSON-native values land in `Record.raw` and crash later in `json.dumps`.
     Subclasses (`OrderedDict`, `MappingProxyType`, etc.) aren't matched by
     exact-type lookup; if you need them, register an encoder explicitly.
     """
