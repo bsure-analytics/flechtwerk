@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from .attribute import Attribute
-from .registry import CodecError, Decoder, _encoders, decoder, encoder
+from .registry import Decoder, decoder, encoder, lookup_encoder
 
 T = TypeVar("T")
 
@@ -47,10 +47,7 @@ def encode_any(v: Any) -> Any:
     Subclasses (`OrderedDict`, `MappingProxyType`, etc.) aren't matched by
     exact-type lookup; if you need them, register an encoder explicitly.
     """
-    enc = _encoders.get(type(v))
-    if enc is None:
-        raise CodecError(f"no encoder registered for {type(v).__name__}: {v!r}")
-    return enc(v)
+    return lookup_encoder(type(v))(v)
 
 
 # --- primitives: validate-on-pass-through ---

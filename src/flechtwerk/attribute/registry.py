@@ -7,7 +7,7 @@ independently — and the lookup raises if a codec is missing.
 The `dict` and `list` encoders are recursive walkers: they apply registered
 encoders to leaf values, raising on any unknown type. This keeps `Dict.raw`
 JSON-native by construction, which means `json.dumps(state.raw)` doesn't need
-a `default=` callback — every conversion happens at write time, before the
+a `default=` callback — every conversion happens at write-time, before the
 value lands in `raw`.
 """
 from collections.abc import Callable

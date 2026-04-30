@@ -159,7 +159,7 @@ def test_list_encoder_walks_nested_datetimes():
 
 def test_dict_encoder_raises_on_unknown_leaf_type():
     class _Mystery: ...
-    with pytest.raises(CodecError, match="no encoder registered for _Mystery"):
+    with pytest.raises(CodecError, match="no encoder registered for .*_Mystery"):
         lookup_encoder(dict)({"x": _Mystery()})
 
 
