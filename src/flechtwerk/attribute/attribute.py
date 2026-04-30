@@ -21,14 +21,12 @@ registered with `@encoder(T)` / `@decoder(T)` decorators in `codecs.py` (or
 wherever `T` is defined).
 """
 from functools import cached_property
-from typing import Any, Generic, TypeVar, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 from .registry import Codec, Decoder, Encoder, lookup_decoder, lookup_encoder
 
-V = TypeVar("V")
 
-
-class Attribute(Generic[V]):
+class Attribute[V]:
     """A typed handle on one key in a `dict[str, Any]`, paired with an encode/decode codec.
 
     Abstract — direct instantiation is rejected; use `RequiredAttribute` or
@@ -110,7 +108,7 @@ class Attribute(Generic[V]):
         return f"{type(self).__name__}({self.name!r})"
 
 
-class OptionalAttribute(Attribute[V]):
+class OptionalAttribute[V](Attribute[V]):
     """An attribute that may be absent or `None`."""
 
     @cached_property
@@ -129,7 +127,7 @@ class OptionalAttribute(Attribute[V]):
         return new
 
 
-class RequiredAttribute(Attribute[V]):
+class RequiredAttribute[V](Attribute[V]):
     """An attribute that must be present and non-`None`."""
 
     @cached_property

@@ -12,9 +12,7 @@ value lands in `raw`.
 """
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
-
-V = TypeVar("V")
+from typing import Any
 
 type Decoder[V] = Callable[[Any], V]
 """A function that decodes a wire value to a Python value of type `V`."""
@@ -24,7 +22,7 @@ type Encoder[V] = Callable[[V], Any]
 
 
 @dataclass(frozen=True, slots=True)
-class Codec(Generic[V]):
+class Codec[V]:
     """A pair of `(decode, encode)` callables overriding the registry default.
 
     Either field may be `None` to keep that direction on the registry
@@ -44,21 +42,25 @@ class CodecError(LookupError):
 
 def decoder[T](t: type[T]) -> Callable[[Decoder[T]], Decoder[T]]:
     """Register `fn` as the decoder for `t`. Raises if one is already registered."""
+
     def register(fn: Decoder[T]) -> Decoder[T]:
         if t in _decoders:
             raise CodecError(f"decoder for {t!r} already registered")
         _decoders[t] = fn
         return fn
+
     return register
 
 
 def encoder[T](t: type[T]) -> Callable[[Encoder[T]], Encoder[T]]:
     """Register `fn` as the encoder for `t`. Raises if one is already registered."""
+
     def register(fn: Encoder[T]) -> Encoder[T]:
         if t in _encoders:
             raise CodecError(f"encoder for {t!r} already registered")
         _encoders[t] = fn
         return fn
+
     return register
 
 

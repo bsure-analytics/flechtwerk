@@ -20,13 +20,11 @@ inspection but not for re-indexing back into the `Dict`.
 """
 from collections.abc import Iterator
 from copy import deepcopy
-from typing import Any, Final, Self, TypeVar, overload
+from typing import Any, Final, Self, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
 from .codecs import encode_any
 from .registry import Codec, decoder, encoder
-
-V = TypeVar("V")
 
 
 class MissingAttributeError(KeyError):
@@ -80,13 +78,13 @@ class Dict:
 
     # --- indexing ---
 
-    def __getitem__(self, attr: RequiredAttribute[V]) -> V:
+    def __getitem__[V](self, attr: RequiredAttribute[V]) -> V:
         v = self.raw.get(attr.name)
         if v is None:
             raise MissingAttributeError(f"attribute {attr!r} is missing")
         return attr.decode(v)
 
-    def __setitem__(self, attr: Attribute[V], value: V) -> None:
+    def __setitem__[V](self, attr: Attribute[V], value: V) -> None:
         # TODO(legacy-pickle-compat): once all changelog topics in every
         # environment have been fully replaced with new-format entries, remove
         # the str-key branch below — it exists only for unpickling legacy
@@ -139,15 +137,15 @@ class Dict:
     # --- Pythonic helpers (Optional only) ---
 
     @overload
-    def get(self, attr: OptionalAttribute[V]) -> V | None: ...
+    def get[V](self, attr: OptionalAttribute[V]) -> V | None: ...
     @overload
-    def get(self, attr: OptionalAttribute[V], default: V) -> V: ...
-    def get(self, attr: OptionalAttribute[V], default: V | None = None) -> V | None:
+    def get[V](self, attr: OptionalAttribute[V], default: V) -> V: ...
+    def get[V](self, attr: OptionalAttribute[V], default: V | None = None) -> V | None:
         """Return the decoded value, or `default` if missing or `None`."""
         v = self.raw.get(attr.name)
         return default if v is None else attr.decode(v)
 
-    def pop(self, attr: OptionalAttribute[V], /, *default: V) -> V:
+    def pop[V](self, attr: OptionalAttribute[V], /, *default: V) -> V:
         """Remove and return the decoded value; raise KeyError if missing and no default given."""
         if attr.name in self.raw:
             return attr.decode(self.raw.pop(attr.name))
