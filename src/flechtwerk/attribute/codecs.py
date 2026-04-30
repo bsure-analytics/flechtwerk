@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
+from .attribute import Attribute
 from .registry import CodecError, _encoders, decoder, encoder
 
 T = TypeVar("T")
@@ -83,7 +84,20 @@ decoder(list)(_identity)
 
 @encoder(dict)
 def _encode_dict(d: Mapping) -> dict:
-    return {k: encode_leaf(v) for k, v in d.items()}
+    """Encode a mapping to a JSON-native dict.
+
+    Keys are passed through unchanged unless they are `Attribute` instances,
+    in which case the key is rekeyed to `attr.name` and the value is run
+    through the attribute's encoder. Other-typed keys' values go through
+    `encode_leaf` (recursive for nested dicts/lists). This lets dict literals
+    mix typed (`Attribute`) and plain string keys at the call site —
+    `Event({DATA: payload, "literal_key": dt})` produces the right `.raw`.
+    """
+    return {
+        (k.name if isinstance(k, Attribute) else k):
+            (k.encode(v) if isinstance(k, Attribute) else encode_leaf(v))
+        for k, v in d.items()
+    }
 
 
 @encoder(list)

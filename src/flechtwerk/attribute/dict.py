@@ -64,18 +64,13 @@ class Dict:
     def __init__(self, source: Mapping[Attribute | str, Any] | Dict | None = None, /) -> None:
         if source is None:
             return  # raw already {} from __new__
-        if isinstance(source, Dict):
-            self.raw = source.raw.copy()
-            return
-        # Per item: Attribute keys rekey to `attr.name` and run the attribute's
-        # encoder; string keys pass through unchanged but their values are run
-        # through the type-registered encoder (recursive for dict/list). Either
-        # way, `.raw` ends up JSON-native.
-        self.raw = {
-            (k.name if isinstance(k, Attribute) else k):
-                (k.encode(v) if isinstance(k, Attribute) else encode_leaf(v))
-            for k, v in source.items()
-        }
+        # Delegate to `encode_leaf` — its dispatch handles every shape we care
+        # about: a Dict subclass goes through the registered shallow-copy
+        # encoder; a plain dict / Mapping goes through `_encode_dict`, which
+        # rekeys Attribute keys to `attr.name`, runs the attribute's encoder
+        # on their values, and recursively encodes everything else. The
+        # invariant — `.raw` is JSON-native — is enforced by the codec layer.
+        self.raw = encode_leaf(source)
 
     def __reduce__(self) -> tuple:
         # Clean modern pickle format: (cls, (raw,)) → reconstruct via cls(raw).
@@ -162,3 +157,11 @@ class Dict:
     def update(self, other: Dict) -> None:
         """Merge another `Dict` into this one."""
         self.raw.update(other.raw)
+
+
+# `__init_subclass__` only fires for subclasses, so register the base `Dict`
+# class manually with the same shallow-copy encoder. This lets `encode_leaf`
+# dispatch on a base-class instance (i.e. someone instantiated `Dict`
+# directly) the same way it handles subclasses.
+encoder(Dict)(lambda d: d.raw.copy())
+decoder(Dict)(Dict)
