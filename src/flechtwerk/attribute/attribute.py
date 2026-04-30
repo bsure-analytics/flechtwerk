@@ -20,11 +20,10 @@ subclass via `Dict.__init_subclass__`. Asymmetric or domain-specific codecs are
 registered with `@encoder(T)` / `@decoder(T)` decorators in `codecs.py` (or
 wherever `T` is defined).
 """
-from collections.abc import Callable
 from functools import cached_property
 from typing import Any, Generic, TypeVar, get_args, get_origin
 
-from .registry import lookup_decoder, lookup_encoder
+from .registry import Codec, Decoder, Encoder, lookup_decoder, lookup_encoder
 
 V = TypeVar("V")
 
@@ -34,21 +33,36 @@ class Attribute(Generic[V]):
 
     Abstract — direct instantiation is rejected; use `RequiredAttribute` or
     `OptionalAttribute`.
+
+    Codecs default to the registry lookup keyed on `V`. The `codec` keyword
+    argument overrides either or both directions for this attribute alone —
+    useful when two attributes share a Python value type but need different
+    wire formats (e.g. one `[datetime]` field encoded as epoch millis,
+    another as ISO 8601). When both directions are overridden, the `[V]`
+    subscript is no longer strictly required by the codec lookup (it still
+    drives the static type of `event[ATTR]`).
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, codec: Codec[V] = Codec()) -> None:
         if type(self) is Attribute:
             raise TypeError(
                 "Attribute is abstract; instantiate RequiredAttribute or OptionalAttribute"
             )
         self.name = name
+        # Override the cached_property by pre-filling its slot in `__dict__`.
+        # The descriptor's `__get__` checks `__dict__` first, so we just hand
+        # it the answer up front and it never runs the lookup.
+        if codec.decode is not None:
+            self.decode = codec.decode
+        if codec.encode is not None:
+            self.encode = codec.encode
 
     @cached_property
-    def decode(self) -> Callable[[Any], V]:
+    def decode(self) -> Decoder[V]:
         return lookup_decoder(self._required_value_type)
 
     @cached_property
-    def encode(self) -> Callable[[V], Any]:
+    def encode(self) -> Encoder[V]:
         return lookup_encoder(self._required_value_type)
 
     @property
@@ -101,13 +115,16 @@ class OptionalAttribute(Attribute[V]):
 
     @cached_property
     def required(self) -> RequiredAttribute[V]:
-        """The required view of this attribute (same name and `[V]`).
+        """The required view of this attribute (same name, `[V]`, and resolved codecs).
 
         Use at sites where the value is known to be present (e.g. immediately
         after writing it) so `Dict.__getitem__` accepts it without a checker
         downgrade.
         """
-        new: RequiredAttribute[V] = RequiredAttribute(self.name)
+        new: RequiredAttribute[V] = RequiredAttribute(
+            self.name,
+            codec=Codec(decode=self.decode, encode=self.encode),
+        )
         _copy_value_type(self, new, RequiredAttribute)
         return new
 
@@ -117,12 +134,15 @@ class RequiredAttribute(Attribute[V]):
 
     @cached_property
     def optional(self) -> OptionalAttribute[V]:
-        """The optional view of this attribute (same name and `[V]`).
+        """The optional view of this attribute (same name, `[V]`, and resolved codecs).
 
         Use at sites where you want `.get()` / `.pop()` semantics on a
         normally-required field (e.g. presence-checked reads, defaults).
         """
-        new: OptionalAttribute[V] = OptionalAttribute(self.name)
+        new: OptionalAttribute[V] = OptionalAttribute(
+            self.name,
+            codec=Codec(decode=self.decode, encode=self.encode),
+        )
         _copy_value_type(self, new, OptionalAttribute)
         return new
 

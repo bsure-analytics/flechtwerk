@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from fretworx.attribute import Attribute, OptionalAttribute, RequiredAttribute
+from fretworx.attribute import Attribute, Codec, OptionalAttribute, RequiredAttribute
 
 
 def test_attribute_is_abstract():
@@ -24,10 +24,10 @@ def test_subclasses_inherit_attribute():
     assert issubclass(OptionalAttribute, Attribute)
 
 
-def test_attribute_takes_only_a_name():
-    """The constructor takes only `name`. No `decode=`/`encode=` kwargs — codecs come from the registry."""
+def test_attribute_codec_kwarg_is_keyword_only():
+    """`codec` is keyword-only — passing it positionally fails."""
     with pytest.raises(TypeError):
-        RequiredAttribute[int]("count", decode=int)  # type: ignore[call-arg]
+        RequiredAttribute[int]("count", Codec(decode=int))  # type: ignore[misc]
 
 
 def test_v_subscript_drives_validation_by_default():
@@ -129,3 +129,56 @@ def test_converted_attribute_works_with_dict_access():
     opt = OptionalAttribute[str]("token")
     d = Dict({"token": "abc"})
     assert d[opt.required] == "abc"
+
+
+# --- per-attribute codec overrides ---
+
+
+def test_attribute_encode_override_replaces_registry_codec():
+    """A `Codec(encode=...)` overrides the registry's encoder for this attribute."""
+    attr = RequiredAttribute[int]("count", codec=Codec(encode=lambda v: f"int:{v}"))
+    assert attr.encode(5) == "int:5"
+
+
+def test_attribute_decode_override_replaces_registry_codec():
+    """A `Codec(decode=...)` overrides the registry's decoder for this attribute."""
+    attr = RequiredAttribute[int]("count", codec=Codec(decode=lambda v: int(v) * 2))
+    assert attr.decode("3") == 6
+
+
+def test_attribute_partial_override_falls_back_to_registry():
+    """Overriding only one direction leaves the other on the registry default."""
+    attr = RequiredAttribute[int]("count", codec=Codec(encode=lambda v: f"int:{v}"))
+    assert attr.encode(5) == "int:5"
+    # decode falls back to registry's _validate(int)
+    assert attr.decode(7) == 7
+
+
+def test_attribute_overrides_carry_through_kind_conversion():
+    """`OPT.required` (and reverse) inherit the source's codec overrides."""
+    opt = OptionalAttribute[int](
+        "count",
+        codec=Codec(
+            encode=lambda v: f"e:{v}",
+            decode=lambda v: int(v.split(":")[1]) if isinstance(v, str) else v,
+        ),
+    )
+    req = opt.required
+    assert req.encode(5) == "e:5"
+    assert req.decode("e:5") == 5
+
+
+def test_attribute_overrides_used_via_dict_access():
+    """A `Dict` uses the attribute's codec for both encode (set) and decode (get)."""
+    from fretworx.attribute import Dict
+    attr = RequiredAttribute[int](
+        "count",
+        codec=Codec(
+            encode=lambda v: f"int:{v}",
+            decode=lambda v: int(v.split(":")[1]),
+        ),
+    )
+    d = Dict()
+    d[attr] = 5
+    assert d.raw["count"] == "int:5"
+    assert d[attr] == 5

@@ -24,7 +24,7 @@ from typing import Any, TypeVar, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
 from .codecs import encode_any
-from .registry import decoder, encoder
+from .registry import Codec, decoder, encoder
 
 V = TypeVar("V")
 
@@ -165,3 +165,21 @@ class Dict:
 # directly) the same way it handles subclasses.
 encoder(Dict)(lambda d: d.raw.copy())
 decoder(Dict)(Dict)
+
+
+def list_of() -> Codec[list[Dict]]:
+    """Codec for an `Attribute` whose value is a list of `Dict` instances.
+
+    Use as `RequiredAttribute[list[Dict]](name, codec=list_of())`. The
+    `decode` wraps each list item in `Dict`; the `encode` unwraps each
+    `Dict` back to its raw dict (passing plain dicts through unchanged so
+    existing callers that haven't migrated still work). The registry has
+    no built-in codec for `list[Dict]` because the parametrization isn't
+    matched at runtime — this helper is the per-attribute override.
+
+    For a list of `Dict`-subclass instances, write the `Codec` inline.
+    """
+    return Codec(
+        decode=lambda lst: [Dict(d) for d in lst],
+        encode=lambda lst: [d.raw if isinstance(d, Dict) else d for d in lst],
+    )

@@ -5,12 +5,11 @@ primitives, the JSON-friendly containers (with recursive walkers for `dict`
 and `list`), and the small set of non-JSON-native types we round-trip through
 JSON: `set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601 string.
 """
-from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from .attribute import Attribute
-from .registry import CodecError, _encoders, decoder, encoder
+from .registry import CodecError, Decoder, _encoders, decoder, encoder
 
 T = TypeVar("T")
 
@@ -22,7 +21,7 @@ def _identity(x: T) -> T:
     return x
 
 
-def _validate(t: type[T]) -> Callable[[Any], T]:
+def _validate(t: type[T]) -> Decoder[T]:
     """Codec that asserts `isinstance(x, t)`, raising `TypeError` on mismatch."""
 
     def check(x: Any) -> T:

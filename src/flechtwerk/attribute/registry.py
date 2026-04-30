@@ -11,21 +11,40 @@ a `default=` callback — every conversion happens at write time, before the
 value lands in `raw`.
 """
 from collections.abc import Callable
-from typing import Any, TypeVar
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
-T = TypeVar("T")
+V = TypeVar("V")
 
-_decoders: dict[type, Callable[[Any], Any]] = {}
-_encoders: dict[type, Callable[[Any], Any]] = {}
+type Decoder[V] = Callable[[Any], V]
+"""A function that decodes a wire value to a Python value of type `V`."""
+
+type Encoder[V] = Callable[[V], Any]
+"""A function that encodes a Python value of type `V` to a JSON-native wire value."""
+
+
+@dataclass(frozen=True, slots=True)
+class Codec(Generic[V]):
+    """A pair of `(decode, encode)` callables overriding the registry default.
+
+    Either field may be `None` to keep that direction on the registry
+    default. Pass to `Attribute` as `codec=Codec(...)`.
+    """
+    decode: Decoder[V] | None = None
+    encode: Encoder[V] | None = None
+
+
+_decoders: dict[type, Decoder[Any]] = {}
+_encoders: dict[type, Encoder[Any]] = {}
 
 
 class CodecError(LookupError):
     """Raised on missing or duplicate codec registration."""
 
 
-def decoder(t: type) -> Callable[[Callable[[Any], T]], Callable[[Any], T]]:
+def decoder[T](t: type[T]) -> Callable[[Decoder[T]], Decoder[T]]:
     """Register `fn` as the decoder for `t`. Raises if one is already registered."""
-    def register(fn: Callable[[Any], T]) -> Callable[[Any], T]:
+    def register(fn: Decoder[T]) -> Decoder[T]:
         if t in _decoders:
             raise CodecError(f"decoder for {t!r} already registered")
         _decoders[t] = fn
@@ -33,9 +52,9 @@ def decoder(t: type) -> Callable[[Callable[[Any], T]], Callable[[Any], T]]:
     return register
 
 
-def encoder(t: type) -> Callable[[Callable[[T], Any]], Callable[[T], Any]]:
+def encoder[T](t: type[T]) -> Callable[[Encoder[T]], Encoder[T]]:
     """Register `fn` as the encoder for `t`. Raises if one is already registered."""
-    def register(fn: Callable[[T], Any]) -> Callable[[T], Any]:
+    def register(fn: Encoder[T]) -> Encoder[T]:
         if t in _encoders:
             raise CodecError(f"encoder for {t!r} already registered")
         _encoders[t] = fn
@@ -43,14 +62,14 @@ def encoder(t: type) -> Callable[[Callable[[T], Any]], Callable[[T], Any]]:
     return register
 
 
-def lookup_decoder(t: type) -> Callable[[Any], Any]:
+def lookup_decoder[T](t: type[T]) -> Decoder[T]:
     try:
         return _decoders[t]
     except KeyError:
         raise CodecError(f"no decoder registered for {t!r}") from None
 
 
-def lookup_encoder(t: type) -> Callable[[Any], Any]:
+def lookup_encoder[T](t: type[T]) -> Encoder[T]:
     try:
         return _encoders[t]
     except KeyError:
