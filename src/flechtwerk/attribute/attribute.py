@@ -56,7 +56,7 @@ class Attribute(Generic[V]):
                     f"{type(self).__name__}({self.name!r}) uses [Any], which is "
                     "not meaningful for an Attribute; pick a concrete type"
                 )
-        t = self.value_type
+        t = self._value_type
         if t is None:
             raise TypeError(
                 f"{type(self).__name__}({self.name!r}) is missing its [V] type "
@@ -66,7 +66,7 @@ class Attribute(Generic[V]):
         return t  # type: ignore[return-value]
 
     @property
-    def value_type(self) -> type | None:
+    def _value_type(self) -> type | None:
         """The runtime type extracted from the `[V]` subscript, or `None` if unsubscripted."""
         orig = getattr(self, "__orig_class__", None)
         if orig is None:
