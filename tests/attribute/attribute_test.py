@@ -86,3 +86,46 @@ def test_required_attribute_repr():
 def test_optional_attribute_repr():
     attr = OptionalAttribute[int]("count")
     assert repr(attr) == "OptionalAttribute('count')"
+
+
+# --- presence-kind conversion ---
+
+
+def test_optional_required_returns_required_with_same_name_and_codec():
+    opt = OptionalAttribute[int]("count")
+    req = opt.required
+    assert isinstance(req, RequiredAttribute)
+    assert req.name == "count"
+    # Codec lookup must work via the copied [V] parametrization.
+    assert req.decode(42) == 42
+
+
+def test_required_optional_returns_optional_with_same_name_and_codec():
+    req = RequiredAttribute[int]("count")
+    opt = req.optional
+    assert isinstance(opt, OptionalAttribute)
+    assert opt.name == "count"
+    assert opt.decode(42) == 42
+
+
+def test_converted_attribute_round_trip_preserves_value_type():
+    opt = OptionalAttribute[str]("name")
+    assert opt.required.optional == opt
+    req = RequiredAttribute[str]("name")
+    assert req.optional.required == req
+
+
+def test_converted_attribute_is_cached():
+    """`required` / `optional` cache the converted view on the source instance."""
+    opt = OptionalAttribute[str]("name")
+    assert opt.required is opt.required
+    req = RequiredAttribute[str]("name")
+    assert req.optional is req.optional
+
+
+def test_converted_attribute_works_with_dict_access():
+    """An `OPT.required` is accepted by `Dict.__getitem__`."""
+    from fretworx.attribute import Dict
+    opt = OptionalAttribute[str]("token")
+    d = Dict({"token": "abc"})
+    assert d[opt.required] == "abc"

@@ -3,7 +3,11 @@
 `Attribute` is abstract — instantiate `RequiredAttribute` or
 `OptionalAttribute` to declare schema intent. `Dict.__getitem__` only
 accepts `RequiredAttribute`; `Dict.get` and `Dict.pop` only accept
-`OptionalAttribute`.
+`OptionalAttribute`. `OptionalAttribute[V].required` and
+`RequiredAttribute[V].optional` are `cached_property`s returning the
+other-kind view of the same attribute (same name and `[V]`); use them at
+sites where the runtime presence semantic doesn't match the declared
+schema kind (e.g. `state[OPT.required]` immediately after writing).
 
 The `[V]` subscript is **required** — bare `RequiredAttribute("name")` raises
 on first decode/encode access. `[Any]` is also rejected — `Any` carries no
@@ -95,6 +99,46 @@ class Attribute(Generic[V]):
 class OptionalAttribute(Attribute[V]):
     """An attribute that may be absent or `None`."""
 
+    @cached_property
+    def required(self) -> RequiredAttribute[V]:
+        """The required view of this attribute (same name and `[V]`).
+
+        Use at sites where the value is known to be present (e.g. immediately
+        after writing it) so `Dict.__getitem__` accepts it without a checker
+        downgrade.
+        """
+        new: RequiredAttribute[V] = RequiredAttribute(self.name)
+        _copy_value_type(self, new, RequiredAttribute)
+        return new
+
 
 class RequiredAttribute(Attribute[V]):
     """An attribute that must be present and non-`None`."""
+
+    @cached_property
+    def optional(self) -> OptionalAttribute[V]:
+        """The optional view of this attribute (same name and `[V]`).
+
+        Use at sites where you want `.get()` / `.pop()` semantics on a
+        normally-required field (e.g. presence-checked reads, defaults).
+        """
+        new: OptionalAttribute[V] = OptionalAttribute(self.name)
+        _copy_value_type(self, new, OptionalAttribute)
+        return new
+
+
+def _copy_value_type(src: Attribute, dst: Attribute, dst_cls: type[Attribute]) -> None:
+    """Carry the `[V]` parametrization from `src` to `dst`.
+
+    `Attribute._value_type` reads off the instance's `__orig_class__`, which
+    `_GenericAlias.__call__` sets when `Foo[T]("name")` is instantiated.
+    A plain `Foo("name")` doesn't have one, so we synthesize the equivalent
+    alias on `dst`. If `src` itself has no `[V]` (a framework-level error
+    already), `dst` inherits the same problem and raises identically on first
+    decode/encode access.
+    """
+    orig = getattr(src, "__orig_class__", None)
+    if orig is not None:
+        args = get_args(orig)
+        if args:
+            dst.__orig_class__ = dst_cls[args[0]]  # type: ignore[attr-defined]
