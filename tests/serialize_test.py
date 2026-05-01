@@ -3,14 +3,14 @@ import pickle
 from datetime import datetime, timezone
 from typing import Final
 
-from fretworx.attribute import OptionalAttribute, RequiredAttribute
+from fretworx.attribute import DATETIME, OptionalAttribute, RequiredAttribute, SET, STR, TUPLE
 from fretworx.state import deserialize, serialize
 from fretworx.types import State
 
 
-HASHES: Final = OptionalAttribute[set]("hashes")
-LAST_TIME: Final = RequiredAttribute[datetime]("last_time")
-RESULT_IDS: Final = RequiredAttribute[tuple]("result_ids")
+HASHES: Final = OptionalAttribute("hashes", SET(STR))
+LAST_TIME: Final = RequiredAttribute("last_time", DATETIME)
+RESULT_IDS: Final = RequiredAttribute("result_ids", TUPLE(STR))
 
 
 # --- JSON round-trip ---
@@ -43,11 +43,11 @@ def test_json_round_trip_datetime():
 
 def test_json_round_trip_tuple():
     state = State()
-    state[RESULT_IDS] = (1, 2, 3)
+    state[RESULT_IDS] = ("a", "b", "c")
     bytes_ = serialize(state)
-    assert bytes_ == b'{"result_ids":[1,2,3]}'
+    assert bytes_ == b'{"result_ids":["a","b","c"]}'
     restored = deserialize(bytes_)
-    assert restored[RESULT_IDS] == (1, 2, 3)
+    assert restored[RESULT_IDS] == ("a", "b", "c")
 
 
 def test_serialize_set_diff_stability():

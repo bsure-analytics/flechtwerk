@@ -3,13 +3,20 @@ import pickle
 
 import pytest
 
-from fretworx.attribute import Attribute, Record, MissingAttributeError, OptionalAttribute, RequiredAttribute
+from fretworx.attribute import (
+    INT,
+    MissingAttributeError,
+    OptionalAttribute,
+    Record,
+    RequiredAttribute,
+    STR,
+)
 
 
-COUNT = RequiredAttribute[int]("count")
-NAME = RequiredAttribute[str]("name")
-LABEL = OptionalAttribute[str]("label")
-MAYBE_COUNT = OptionalAttribute[int]("count")
+COUNT = RequiredAttribute("count", INT)
+NAME = RequiredAttribute("name", STR)
+LABEL = OptionalAttribute("label", STR)
+MAYBE_COUNT = OptionalAttribute("count", INT)
 
 
 # --- construction ---

@@ -1,29 +1,33 @@
-"""Built-in codec registrations.
+"""Built-in codec atoms and constructors.
 
-Importing this module populates the registry with codecs for the JSON-native
-primitives, the JSON-friendly containers (with recursive walkers for `dict`
-and `list`), and the small set of non-JSON-native types we round-trip through
-JSON: `set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601 string.
+The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `FLOAT`,
+`DATETIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
+`DICT`) take an inner codec and return a parameterized container codec.
+Element validation is uniform — `LIST(STR).encode([1, 2, 3])` rejects
+non-strings (each element runs through `STR.encode`).
+
+`RECORD` and `ANY` live in `record.py` because they need the `Record`
+class and the recursive `_encode_any` walker, respectively.
+
+Naming convention: all atoms and constructors use uppercase identifiers
+matching the ALL_CAPS style of the typed-attribute call sites.
 """
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Final
 
 from .attribute import Attribute
-from .registry import Decoder, decoder, encoder, lookup_encoder
-
-
-# --- helpers (used by registrations below) ---
-
-
-def _identity[T](x: T) -> T:
-    return x
+from .codec import Codec, Decoder
 
 
 def _validate[T](t: type[T]) -> Decoder[T]:
-    """Codec that asserts `isinstance(x, t)`, raising `TypeError` on mismatch."""
+    """Codec helper that asserts `type(x) is t`, raising `TypeError` on mismatch.
+
+    Exact-type check, not `isinstance` — this matters for the int/bool split
+    (`bool` is a subclass of `int`, but `INT.encode(True)` should reject).
+    """
 
     def check(x: Any) -> T:
-        if not isinstance(x, t):
+        if type(x) is not t:
             raise TypeError(
                 f"expected {t.__name__}, got {type(x).__name__}: {x!r}"
             )
@@ -32,88 +36,87 @@ def _validate[T](t: type[T]) -> Decoder[T]:
     return check
 
 
-def encode_any(v: Any) -> Any:
-    """Encode any value to JSON-native form via the codec registry.
-
-    Dispatches strictly on `type(v)`: the registered encoder for the exact
-    type runs (recursive walkers for `dict` and `list`, codec round-trips
-    for `datetime` / `set` / `tuple`, identity-with-validate for primitives,
-    auto-registered shallow copy for `Record` subclasses).
-
-    Raises `CodecError` on unknown types — silent passthrough would let
-    non-JSON-native values land in `Record.raw` and crash later in `json.dumps`.
-    Subclasses (`OrderedDict`, `MappingProxyType`, etc.) aren't matched by
-    exact-type lookup; if you need them, register an encoder explicitly.
-    """
-    return lookup_encoder(type(v))(v)
-
-
-# --- primitives: validate-on-pass-through ---
-
-
-for _t in (str, int, bool, float):
-    decoder(_t)(_validate(_t))
-    encoder(_t)(_validate(_t))
-
-# --- JSON's `null` ---
-# Registered separately because `_validate(NoneType)` would always pass anyway
-# (only `None` is NoneType), and the recursive walker needs a registered
-# encoder for the type so it doesn't raise on `None` values nested inside
-# dicts/lists.
-
-
-decoder(type(None))(_identity)
-encoder(type(None))(_identity)
-
-# --- containers: recursive walkers on encode, identity on decode ---
-
-
-decoder(dict)(_identity)
-decoder(list)(_identity)
-
-
-@encoder(dict)
-def _encode_dict(d: dict) -> dict:
-    """Encode a mapping to a JSON-native dict.
-
-    Keys are passed through unchanged unless they are `Attribute` instances,
-    in which case the key is rekeyed to `attr.name` and the value is run
-    through the attribute's encoder. Other-typed keys' values go through
-    `encode_any` (recursive for nested dicts/lists). This lets dict literals
-    mix typed (`Attribute`) and plain string keys at the call site —
-    `Event({DATA: payload, "literal_key": dt})` produces the right `.raw`.
-    """
-    return {
-        (k.name if isinstance(k, Attribute) else k):
-            (k.encode(v) if isinstance(k, Attribute) else encode_any(v))
-        for k, v in d.items()
-    }
-
-
-@encoder(list)
-def _encode_list(items: list) -> list:
-    return [encode_any(v) for v in items]
-
-
-# --- non-JSON-native types: real conversion ---
-
-
-decoder(set)(lambda items: set(items))
-encoder(set)(lambda s: sorted(s))  # deterministic wire form for diff stability
-
-decoder(tuple)(lambda t: tuple(t))
-encoder(tuple)(lambda t: list(t))
-
-
-@decoder(datetime)
-def datetime_from_iso(s: str) -> datetime:
+def _datetime_from_iso(s: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
-@encoder(datetime)
-def datetime_to_iso(dt: datetime) -> str:
+def _datetime_to_iso(dt: datetime) -> str:
     return (
         dt.astimezone(timezone.utc)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
+
+
+# --- atoms ---
+
+
+STR: Final[Codec[str]] = Codec(_validate(str), _validate(str))
+INT: Final[Codec[int]] = Codec(_validate(int), _validate(int))
+BOOL: Final[Codec[bool]] = Codec(_validate(bool), _validate(bool))
+FLOAT: Final[Codec[float]] = Codec(_validate(float), _validate(float))
+DATETIME: Final[Codec[datetime]] = Codec(_datetime_from_iso, _datetime_to_iso)
+
+
+# --- constructors ---
+
+
+def LIST[V](inner: Codec[V]) -> Codec[list[V]]:
+    """Codec for `list[V]` — runs `inner` over each element."""
+    return Codec(
+        decode=lambda lst: [inner.decode(x) for x in lst],
+        encode=lambda lst: [inner.encode(x) for x in lst],
+    )
+
+
+def SET[V](inner: Codec[V]) -> Codec[set[V]]:
+    """Codec for `set[V]` — runs `inner` over each element.
+
+    Encode emits a sorted list (deterministic wire form for diff stability).
+    Sort is on raw values, then each is encoded — preserves the natural
+    ordering of the source type. V must be hashable (a Python set
+    requirement) and the raw values must be comparable to each other.
+    """
+    return Codec(
+        decode=lambda items: {inner.decode(x) for x in items},
+        encode=lambda s: [inner.encode(x) for x in sorted(s)],
+    )
+
+
+def TUPLE[V](inner: Codec[V]) -> Codec[tuple[V, ...]]:
+    """Codec for `tuple[V, ...]` — runs `inner` over each element, preserves order."""
+    return Codec(
+        decode=lambda items: tuple(inner.decode(x) for x in items),
+        encode=lambda t: [inner.encode(x) for x in t],
+    )
+
+
+def DICT[V](inner: Codec[V]) -> Codec[dict[str, V]]:
+    """Codec for `dict[str, V]` — runs `inner` over each value.
+
+    Encode also handles `Attribute` keys: an `Attribute` key rekeys to
+    `attr.name` and runs `attr.encode` on its value (overriding `inner`),
+    so a `Record({SOME_ATTR: v, "literal_key": v2})` produces JSON-native
+    `.raw` even when keys are mixed.
+    """
+    return Codec(
+        decode=lambda d: {k: inner.decode(v) for k, v in d.items()},
+        encode=lambda d: {
+            (k.name if isinstance(k, Attribute) else k):
+                (k.encode(v) if isinstance(k, Attribute) else inner.encode(v))
+            for k, v in d.items()
+        },
+    )
+
+
+__all__ = [
+    "BOOL",
+    "DATETIME",
+    "DICT",
+    "FLOAT",
+    "INT",
+    "LIST",
+    "SET",
+    "STR",
+    "TUPLE",
+]

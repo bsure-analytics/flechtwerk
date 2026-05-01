@@ -20,34 +20,54 @@ inspection but not for re-indexing back into the `Record`.
 """
 from collections.abc import Iterator
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Final, Self, overload
 
 from .attribute import Attribute, OptionalAttribute, RequiredAttribute
-from .codecs import encode_any
-from .registry import Codec, decoder, encoder
+from .codec import Codec
+from .codecs import DATETIME, DICT, LIST, SET, TUPLE
 
 
 class MissingAttributeError(KeyError):
     """To raise by `Record.__getitem__` when a required attribute is missing or `None`."""
 
 
+def _encode_any(v: Any) -> Any:
+    """Recursively encode any value to JSON-native form via isinstance dispatch.
+
+    Walks dicts/lists/sets/tuples through their `(ANY)` codecs; converts
+    `datetime` to ISO 8601, `Record` to a shallow copy of its `raw`. The
+    JSON-native primitives (`str`, `int`, `float`, `bool`, `None`) pass
+    through unchanged. Raises `TypeError` on any other type — silent
+    passthrough would let non-JSON-native values land in `Record.raw` and
+    crash later in `json.dumps`.
+
+    This is the implementation of `ANY.encode` and the runtime-dispatch
+    layer that container codecs delegate into when their inner is `ANY`.
+    """
+    if v is None:
+        return v
+    if isinstance(v, (str, int, float)):  # bool ⊂ int — passes through as bool
+        return v
+    if isinstance(v, Record):
+        return RECORD.encode(v)
+    if isinstance(v, dict):
+        return _DICT_OF_ANY.encode(v)
+    if isinstance(v, list):
+        return _LIST_OF_ANY.encode(v)
+    if isinstance(v, datetime):
+        return DATETIME.encode(v)
+    if isinstance(v, set):
+        return _SET_OF_ANY.encode(v)
+    if isinstance(v, tuple):
+        return _TUPLE_OF_ANY.encode(v)
+    raise TypeError(f"no encoder for {type(v).__name__}: {v!r}")
+
+
 class Record:
     """Wrapper around `dict[str, Any]` with `Attribute`-only access."""
 
     raw: dict[str, Any]
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        # Auto-register encode/decode for every Record subclass. Encode returns
-        # a shallow copy of `.raw` directly — it's already JSON-native by the
-        # constructor / `__setitem__` invariants, so re-walking it through the
-        # `dict` encoder would be redundant work. Top-level isolation is
-        # preserved (the new owner gets its own dict to mutate via
-        # `__setitem__`); nested dicts/lists are shared, matching the
-        # framework's "treat `.raw` as immutable from outside" contract.
-        # Decode rewraps the raw dict in the subclass.
-        encoder(cls)(lambda d: d.raw.copy())
-        decoder(cls)(lambda raw: cls(raw))
 
     # TODO(legacy-pickle-compat): once all changelog topics in every environment
     # have been fully replaced with new-format entries (the str-key __setitem__
@@ -62,13 +82,13 @@ class Record:
     def __init__(self, source: dict[Attribute | str, Any] | Record | None = None, /) -> None:
         if source is None:
             return  # raw already {} from __new__
-        # Delegate to `encode_any` — its dispatch handles every shape we care
-        # about: a Record subclass goes through the registered shallow-copy
-        # encoder; a plain dict / Mapping goes through `_encode_dict`, which
-        # rekeys Attribute keys to `attr.name`, runs the attribute's encoder
-        # on their values, and recursively encodes everything else. The
-        # invariant — `.raw` is JSON-native — is enforced by the codec layer.
-        self.raw = encode_any(source)
+        # `_encode_any` handles every shape we care about: a Record (or
+        # subclass) → shallow copy of `.raw`; a plain dict / Mapping →
+        # recursive walk that rekeys Attribute keys to `attr.name`, runs
+        # the attribute's encoder on their values, and recursively
+        # encodes everything else. The invariant — `.raw` is JSON-native —
+        # is enforced at the boundary.
+        self.raw = _encode_any(source)
 
     def __reduce__(self) -> tuple:
         # Clean modern pickle format: (cls, (raw,)) → reconstruct via cls(raw).
@@ -158,26 +178,51 @@ class Record:
         self.raw.update(other.raw)
 
 
-# `__init_subclass__` only fires for subclasses, so register the base `Record`
-# class manually with the same shallow-copy encoder. This lets `encode_any`
-# dispatch on a base-class instance (i.e., someone instantiated `Record` directly)
-# the same way it handles subclasses.
-encoder(Record)(lambda d: d.raw.copy())
-decoder(Record)(lambda raw: Record(raw))
+def record_codec[T: Record](cls: type[T]) -> Codec[T]:
+    """Build a `Codec[T]` for a `Record` subclass `T`.
+
+    Decode wraps the raw dict in `cls`; encode returns a shallow copy of
+    `.raw`. Top-level isolation is preserved (the new owner gets its own
+    dict to mutate via `__setitem__`); nested dicts/lists are shared,
+    matching the framework's "treat `.raw` as immutable from outside"
+    contract.
+    """
+    return Codec(
+        decode=lambda raw: cls(raw),
+        encode=lambda r: r.raw.copy(),
+    )
 
 
-LIST_OF_RECORDS: Final[Codec[list[Record]]] = Codec(
-    decode=lambda lst: [Record(d) for d in lst],
-    encode=lambda lst: [d.raw if isinstance(d, Record) else d for d in lst],
-)
-"""Codec for an `Attribute` whose value is a list of `Record` instances.
+RECORD: Final[Codec[Record]] = record_codec(Record)
+"""Codec for an untyped `Record` value.
 
-Use as `RequiredAttribute[list[Record]](name, LIST_OF_RECORDS)`. The
-`decode` wraps each list item in `Record`; the `encode` unwraps each
-`Record` back to its raw dict (passing plain dicts through unchanged so
-existing callers that haven't migrated still work). The registry has
-no built-in codec for `list[Record]` because the parametrization isn't
-matched at runtime — this constant is the per-attribute override.
-
-For a list of `Record`-subclass instances, write the `Codec` inline.
+Use as `RequiredAttribute("data", RECORD)` for fields whose value is a
+plain `Record`. For `Record` subclasses, build a per-subclass codec via
+`record_codec(cls)` (or use the constants exported from `fretworx.types`
+for `Config`, `Event`, `State`).
 """
+
+ANY: Final[Codec[Any]] = Codec(
+    decode=lambda x: x,
+    encode=_encode_any,
+)
+"""The universal escape-hatch codec for `Any`-typed values.
+
+Decode is identity (the wire value passes through unchanged — JSON load
+already produced JSON-native shape). Encode runs the recursive
+`_encode_any` walker, which dispatches on runtime type and handles
+`Record`, `dict`, `list`, `set`, `tuple`, `datetime`, and the JSON-native
+primitives.
+
+Compose with the container constructors for typed-but-heterogeneous
+fields: `LIST(DICT(ANY))` for `list[dict[str, Any]]`, `DICT(ANY)` for
+`dict[str, Any]`, etc.
+"""
+
+# Pre-built bare-Any container codecs, used by `_encode_any`'s isinstance
+# dispatch. Building these once at module load avoids reconstructing a
+# fresh `Codec` per recursive call.
+_DICT_OF_ANY: Final = DICT(ANY)
+_LIST_OF_ANY: Final = LIST(ANY)
+_SET_OF_ANY: Final = SET(ANY)
+_TUPLE_OF_ANY: Final = TUPLE(ANY)

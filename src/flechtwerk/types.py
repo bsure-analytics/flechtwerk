@@ -1,8 +1,9 @@
 """Core types for the fretworx framework."""
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final
 
-from fretworx.attribute import Record
+from fretworx.attribute import Codec, Record, record_codec
 
 
 class Config(Record):
@@ -15,6 +16,11 @@ class Event(Record):
 
 class State(Record):
     """Mutable per-key state managed by the framework."""
+
+
+CONFIG: Final[Codec[Config]] = record_codec(Config)
+EVENT: Final[Codec[Event]] = record_codec(Event)
+STATE: Final[Codec[State]] = record_codec(State)
 
 
 @dataclass(frozen=True, slots=True)

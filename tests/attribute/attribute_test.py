@@ -1,22 +1,30 @@
-from typing import Any
+from datetime import datetime, timezone
 
 import pytest
 
-from fretworx.attribute import Attribute, Codec, OptionalAttribute, RequiredAttribute
+from fretworx.attribute import (
+    Attribute,
+    Codec,
+    DATETIME,
+    INT,
+    OptionalAttribute,
+    RequiredAttribute,
+    STR,
+)
 
 
 def test_attribute_is_abstract():
     """Direct instantiation of the base `Attribute` is rejected."""
     with pytest.raises(TypeError):
-        Attribute("count")  # type: ignore[abstract]
+        Attribute("count", INT)  # type: ignore[abstract]
 
 
 def test_required_attribute_is_concrete():
-    RequiredAttribute[int]("count")
+    RequiredAttribute("count", INT)
 
 
 def test_optional_attribute_is_concrete():
-    OptionalAttribute[int]("count")
+    OptionalAttribute("count", INT)
 
 
 def test_subclasses_inherit_attribute():
@@ -24,9 +32,9 @@ def test_subclasses_inherit_attribute():
     assert issubclass(OptionalAttribute, Attribute)
 
 
-def test_v_subscript_drives_validation_by_default():
-    """Without an explicit codec, the `[V]` subscript produces an isinstance validator via the registry."""
-    attr = RequiredAttribute[str]("name")
+def test_codec_drives_validation():
+    """The supplied codec produces an isinstance validator on str."""
+    attr = RequiredAttribute("name", STR)
     assert attr.decode("hello") == "hello"
     with pytest.raises(TypeError):
         attr.decode(42)
@@ -34,51 +42,46 @@ def test_v_subscript_drives_validation_by_default():
         attr.encode(42)
 
 
-def test_missing_v_subscript_raises_on_decode():
-    """A bare `RequiredAttribute("name")` with no `[V]` raises on first decode use."""
-    attr = RequiredAttribute("count")  # type: ignore[type-arg]
-    with pytest.raises(TypeError, match=r"\[V\] type parameter"):
-        attr.decode("anything")
+def test_int_codec_rejects_bool():
+    """Exact-type check: bool is not int even though `isinstance(True, int)` is True."""
+    attr = RequiredAttribute("count", INT)
+    with pytest.raises(TypeError):
+        attr.encode(True)
+    with pytest.raises(TypeError):
+        attr.decode(True)
 
 
-def test_missing_v_subscript_raises_on_encode():
-    attr = OptionalAttribute("count")  # type: ignore[type-arg]
-    with pytest.raises(TypeError, match=r"\[V\] type parameter"):
-        attr.encode("anything")
-
-
-def test_any_subscript_is_rejected():
-    """`[Any]` carries no information about the value's shape — using it is an error."""
-    attr = RequiredAttribute[Any]("payload")
-    with pytest.raises(TypeError, match=r"\[Any\]"):
-        attr.decode("anything")
-    with pytest.raises(TypeError, match=r"\[Any\]"):
-        attr.encode("anything")
+def test_datetime_codec_round_trip():
+    attr = RequiredAttribute("ts", DATETIME)
+    dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
+    encoded = attr.encode(dt)
+    assert encoded == "2024-06-15T14:30:00.000Z"
+    assert attr.decode(encoded) == dt
 
 
 def test_name_attribute():
-    attr = RequiredAttribute[int]("count")
+    attr = RequiredAttribute("count", INT)
     assert attr.name == "count"
 
 
 def test_attribute_is_not_a_str():
     """An attribute is a distinct type — it does not subclass str."""
-    attr = RequiredAttribute[int]("count")
+    attr = RequiredAttribute("count", INT)
     assert not isinstance(attr, str)
 
 
 def test_attribute_does_not_compare_equal_to_string():
-    attr = RequiredAttribute[int]("count")
+    attr = RequiredAttribute("count", INT)
     assert attr != "count"
 
 
 def test_required_attribute_repr():
-    attr = RequiredAttribute[int]("count")
+    attr = RequiredAttribute("count", INT)
     assert repr(attr) == "RequiredAttribute('count')"
 
 
 def test_optional_attribute_repr():
-    attr = OptionalAttribute[int]("count")
+    attr = OptionalAttribute("count", INT)
     assert repr(attr) == "OptionalAttribute('count')"
 
 
@@ -86,86 +89,78 @@ def test_optional_attribute_repr():
 
 
 def test_optional_required_returns_required_with_same_name_and_codec():
-    opt = OptionalAttribute[int]("count")
+    opt = OptionalAttribute("count", INT)
     req = opt.required
     assert isinstance(req, RequiredAttribute)
     assert req.name == "count"
-    # Codec lookup must work via the copied [V] parametrization.
+    assert req.codec is opt.codec
     assert req.decode(42) == 42
 
 
 def test_required_optional_returns_optional_with_same_name_and_codec():
-    req = RequiredAttribute[int]("count")
+    req = RequiredAttribute("count", INT)
     opt = req.optional
     assert isinstance(opt, OptionalAttribute)
     assert opt.name == "count"
+    assert opt.codec is req.codec
     assert opt.decode(42) == 42
 
 
 def test_converted_attribute_round_trip_preserves_value_type():
-    opt = OptionalAttribute[str]("name")
+    opt = OptionalAttribute("name", STR)
     assert opt.required.optional == opt
-    req = RequiredAttribute[str]("name")
+    req = RequiredAttribute("name", STR)
     assert req.optional.required == req
 
 
 def test_converted_attribute_is_cached():
     """`required` / `optional` cache the converted view on the source instance."""
-    opt = OptionalAttribute[str]("name")
+    opt = OptionalAttribute("name", STR)
     assert opt.required is opt.required
-    req = RequiredAttribute[str]("name")
+    req = RequiredAttribute("name", STR)
     assert req.optional is req.optional
 
 
 def test_converted_attribute_works_with_dict_access():
     """An `OPT.required` is accepted by `Record.__getitem__`."""
     from fretworx.attribute import Record
-    opt = OptionalAttribute[str]("token")
+    opt = OptionalAttribute("token", STR)
     d = Record({"token": "abc"})
     assert d[opt.required] == "abc"
 
 
-# --- per-attribute codec overrides ---
+# --- per-attribute custom codecs ---
 
 
-def test_attribute_encode_override_replaces_registry_codec():
-    """A `Codec(encode=...)` overrides the registry's encoder for this attribute."""
-    attr = RequiredAttribute[int]("count", Codec(encode=lambda v: f"int:{v}"))
-    assert attr.encode(5) == "int:5"
-
-
-def test_attribute_decode_override_replaces_registry_codec():
-    """A `Codec(decode=...)` overrides the registry's decoder for this attribute."""
-    attr = RequiredAttribute[int]("count", Codec(decode=lambda v: int(v) * 2))
-    assert attr.decode("3") == 6
-
-
-def test_attribute_partial_override_falls_back_to_registry():
-    """Overriding only one direction leaves the other on the registry default."""
-    attr = RequiredAttribute[int]("count", Codec(encode=lambda v: f"int:{v}"))
-    assert attr.encode(5) == "int:5"
-    # decode falls back to registry's _validate(int)
-    assert attr.decode(7) == 7
-
-
-def test_attribute_overrides_carry_through_kind_conversion():
-    """`OPT.required` (and reverse) inherit the source's codec overrides."""
-    opt = OptionalAttribute[int](
+def test_attribute_with_custom_codec():
+    """A `Codec` with custom encode/decode is honored end-to-end."""
+    attr = RequiredAttribute(
         "count",
         Codec(
-            encode=lambda v: f"e:{v}",
-            decode=lambda v: int(v.split(":")[1]) if isinstance(v, str) else v,
+            encode=lambda v: f"int:{v}",
+            decode=lambda v: int(v.split(":")[1]),
         ),
     )
+    assert attr.encode(5) == "int:5"
+    assert attr.decode("int:5") == 5
+
+
+def test_attribute_custom_codec_carries_through_kind_conversion():
+    """`OPT.required` (and reverse) inherit the source's codec."""
+    codec = Codec(
+        encode=lambda v: f"e:{v}",
+        decode=lambda v: int(v.split(":")[1]) if isinstance(v, str) else v,
+    )
+    opt = OptionalAttribute("count", codec)
     req = opt.required
     assert req.encode(5) == "e:5"
     assert req.decode("e:5") == 5
 
 
-def test_attribute_overrides_used_via_dict_access():
+def test_attribute_custom_codec_used_via_dict_access():
     """A `Record` uses the attribute's codec for both encode (set) and decode (get)."""
     from fretworx.attribute import Record
-    attr = RequiredAttribute[int](
+    attr = RequiredAttribute(
         "count",
         Codec(
             encode=lambda v: f"int:{v}",

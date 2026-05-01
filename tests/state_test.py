@@ -1,23 +1,21 @@
 """Tests for fretworx state store."""
 import asyncio
-import pickle
 from datetime import datetime, timezone
-from typing import Any, Final
+from typing import Final
 
-from fretworx.attribute import Attribute, RequiredAttribute
+from fretworx.attribute import ANY, DATETIME, DICT, INT, RequiredAttribute, SET, STR
 from fretworx.state import ChangelogStateStore, RocksDBStateStore
 from testing import FakeKafkaProducer, InMemoryStateStore
 from fretworx.types import State
 
 
-CHANGES_SINCE: Final = RequiredAttribute[str]("changes_since")
-COUNT: Final = RequiredAttribute[int]("count")
-DATA: Final = RequiredAttribute[int]("data")
-HASHES: Final = RequiredAttribute[set[str]]("hashes")
-LAST_IDS: Final = RequiredAttribute[list[int]]("last_ids")
-LAST_TIME: Final = RequiredAttribute[datetime]("last_time")
-NESTED: Final = RequiredAttribute[dict[str, Any]]("nested")
-X: Final = RequiredAttribute[int]("x")
+CHANGES_SINCE: Final = RequiredAttribute("changes_since", STR)
+COUNT: Final = RequiredAttribute("count", INT)
+DATA: Final = RequiredAttribute("data", INT)
+HASHES: Final = RequiredAttribute("hashes", SET(STR))
+LAST_TIME: Final = RequiredAttribute("last_time", DATETIME)
+NESTED: Final = RequiredAttribute("nested", DICT(ANY))
+X: Final = RequiredAttribute("x", INT)
 
 
 def test_in_memory_get_missing_returns_none():

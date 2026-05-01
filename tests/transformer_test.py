@@ -5,22 +5,22 @@ from typing import AsyncIterator, Final
 
 import pytest
 
-from fretworx.attribute import RequiredAttribute
+from fretworx.attribute import BOOL, INT, LIST, OptionalAttribute, RECORD, RequiredAttribute, STR
 from fretworx.module import FretworxModule
 from fretworx.transformer import Transformer
 from fretworx.types import Event, Message, State
 from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
-COUNT: Final = RequiredAttribute[int]("count")
-CURSOR: Final = RequiredAttribute[int]("cursor")
-DATA: Final = RequiredAttribute[str]("data")
-FORM_ID: Final = RequiredAttribute[str]("form_id")
-ID: Final = RequiredAttribute[int]("id")
-LEAKED: Final = RequiredAttribute[bool]("leaked")
-MUTATED: Final = RequiredAttribute[bool]("mutated")
-PRODUCTS: Final = RequiredAttribute[list]("products")
-TYPE: Final = RequiredAttribute[str]("type")
-X: Final = RequiredAttribute[int]("x")
+COUNT: Final = RequiredAttribute("count", INT)
+CURSOR: Final = RequiredAttribute("cursor", INT)
+DATA: Final = RequiredAttribute("data", STR)
+FORM_ID: Final = RequiredAttribute("form_id", STR)
+ID: Final = RequiredAttribute("id", INT)
+LEAKED: Final = RequiredAttribute("leaked", BOOL)
+MUTATED: Final = RequiredAttribute("mutated", BOOL)
+PRODUCTS: Final = OptionalAttribute("products", LIST(RECORD))
+TYPE: Final = RequiredAttribute("type", STR)
+X: Final = RequiredAttribute("x", INT)
 
 
 # --- Subclass-based transformers (for backward compat testing) ---

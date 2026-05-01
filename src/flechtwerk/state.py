@@ -11,9 +11,12 @@ from typing import Any
 from aiokafka import AIOKafkaProducer
 from reactor_di import lookup
 
-from .attribute.registry import lookup_encoder
+from .attribute import ANY, DICT
 from .kafka import encode_json, restore_changelog
 from .types import State
+
+# `dict[str, Any]` codec for the legacy-pickle deserialization path.
+_DICT_OF_ANY = DICT(ANY)
 
 log = logging.getLogger(__name__)
 
@@ -30,16 +33,16 @@ def serialize(state: State) -> bytes:
 
 def deserialize(b: bytes) -> State:
     """Try JSON first; fall back to pickle for legacy bytes from before the
-    JSON migration. The pickle path walks raw values through the recursive
-    `dict` encoder so any native datetime/set/tuple inside the legacy state
-    lands in JSON-native form before being returned."""
+    JSON migration. The pickle path walks raw values through `DICT(ANY)`
+    so any native datetime/set/tuple inside the legacy state lands in
+    JSON-native form before being returned."""
     try:
         return State(json.loads(b))
     except (json.JSONDecodeError, UnicodeDecodeError):
         # TODO(legacy-pickle-state): remove this branch once all changelog
         # topics in every environment have rolled over to JSON.
         legacy = pickle.loads(b)  # noqa: S301
-        return State(lookup_encoder(dict)(legacy.raw))
+        return State(_DICT_OF_ANY.encode(legacy.raw))
 
 
 # --- Stores ---
@@ -80,8 +83,8 @@ class StateStore(ABC):
 class RocksDBStateStore(StateStore):
     """RocksDB-backed state store.
 
-    State values are JSON-serialized via `serialize` (which goes through the
-    codec registry). Every put() writes to the RocksDB WAL immediately — no
+    State values are JSON-serialized via `serialize` (which uses each
+    `Attribute`'s codec). Every put() writes to the RocksDB WAL immediately — no
     periodic snapshots.
 
     The ``path`` attribute is set by the DI container (reactor-di) or directly

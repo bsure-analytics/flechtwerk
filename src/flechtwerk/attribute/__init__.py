@@ -1,21 +1,48 @@
-"""Type-safe handles on dict keys with paired encode/decode codecs."""
+"""Type-safe handles on dict keys, paired with explicit encode/decode codecs."""
 from .attribute import (
     Attribute,
     OptionalAttribute,
     RequiredAttribute,
 )
-from .record import Record, LIST_OF_RECORDS, MissingAttributeError
-from .registry import Codec, Decoder, Encoder
-from . import codecs  # noqa: F401  — populates the registry as a side-effect
+from .codec import Codec, Decoder, Encoder
+from .codecs import (
+    BOOL,
+    DATETIME,
+    DICT,
+    FLOAT,
+    INT,
+    LIST,
+    SET,
+    STR,
+    TUPLE,
+)
+from .record import (
+    ANY,
+    MissingAttributeError,
+    RECORD,
+    Record,
+    record_codec,
+)
 
 __all__ = [
+    "ANY",
     "Attribute",
+    "BOOL",
     "Codec",
+    "DATETIME",
+    "DICT",
     "Decoder",
-    "Record",
     "Encoder",
-    "LIST_OF_RECORDS",
+    "FLOAT",
+    "INT",
+    "LIST",
     "MissingAttributeError",
     "OptionalAttribute",
+    "RECORD",
+    "Record",
     "RequiredAttribute",
+    "SET",
+    "STR",
+    "TUPLE",
+    "record_codec",
 ]

@@ -5,22 +5,22 @@ from typing import AsyncIterator, Final
 
 import pytest
 
-from fretworx.attribute import OptionalAttribute, RequiredAttribute
+from fretworx.attribute import BOOL, INT, OptionalAttribute, RequiredAttribute, STR
 from fretworx.extractor import ConfigEntry, Extractor
 from fretworx.module import FretworxModule
 from fretworx.types import Config, Message, State
 from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
-API_KEY: Final = RequiredAttribute[str]("api_key")
-CURSOR: Final = RequiredAttribute[int]("cursor")
-DATA: Final = RequiredAttribute[str]("data")
-ENRICHED: Final = RequiredAttribute[bool]("enriched")
-ENTERED: Final = RequiredAttribute[bool]("entered")
-ID: Final = OptionalAttribute[str]("id")
-ORIGINAL: Final = RequiredAttribute[bool]("original")
-POLLED: Final = RequiredAttribute[bool]("polled")
-SUSPENDED: Final = RequiredAttribute[bool]("suspended")
-TAG: Final = OptionalAttribute[str]("tag")
+API_KEY: Final = RequiredAttribute("api_key", STR)
+CURSOR: Final = RequiredAttribute("cursor", INT)
+DATA: Final = RequiredAttribute("data", STR)
+ENRICHED: Final = RequiredAttribute("enriched", BOOL)
+ENTERED: Final = RequiredAttribute("entered", BOOL)
+ID: Final = OptionalAttribute("id", STR)
+ORIGINAL: Final = RequiredAttribute("original", BOOL)
+POLLED: Final = RequiredAttribute("polled", BOOL)
+SUSPENDED: Final = RequiredAttribute("suspended", BOOL)
+TAG: Final = OptionalAttribute("tag", STR)
 
 
 class SimpleExtractor(Extractor):

@@ -1,29 +1,24 @@
-"""Type-safe handles on keys in a dict, with paired encode/decode codecs.
+"""Type-safe handles on keys in a dict, with a paired encode/decode codec.
 
 `Attribute` is abstract — instantiate `RequiredAttribute` or
 `OptionalAttribute` to declare schema intent. `Record.__getitem__` only
 accepts `RequiredAttribute`; `Record.get` and `Record.pop` only accept
 `OptionalAttribute`. `OptionalAttribute[V].required` and
 `RequiredAttribute[V].optional` are `cached_property`s returning the
-other-kind view of the same attribute (same name and `[V]`); use them at
+other-kind view of the same attribute (same name and codec); use them at
 sites where the runtime presence semantic doesn't match the declared
 schema kind (e.g. `state[OPT.required]` immediately after writing).
 
-The `[V]` subscript is **required** — bare `RequiredAttribute("name")` raises
-on first decode/encode access. `[Any]` is also rejected — `Any` carries no
-information about the value's shape, so it can't drive a meaningful codec.
-
-Codecs are looked up in the type-keyed registry (`fretworx/attribute/registry.py`)
-on first decode/encode access. Built-in codecs cover the JSON-native primitives,
-`set` ⇄ sorted `list`, `tuple` ⇄ `list`, `datetime` ⇄ ISO 8601, and any `Record`
-subclass via `Record.__init_subclass__`. Asymmetric or domain-specific codecs are
-registered with `@encoder(T)` / `@decoder(T)` decorators in `codecs.py` (or
-wherever `T` is defined).
+Each `Attribute` carries a `Codec[V]` that drives both the static type
+parameter and the runtime encode/decode. The type checker infers the
+`[V]` from the codec — `RequiredAttribute("name", STR)` produces a
+`RequiredAttribute[str]` without an explicit subscript. Built-in codecs
+are exported from `fretworx.attribute` (`STR`, `INT`, `DATETIME`,
+`RECORD`, `LIST(RECORD)`, …).
 """
 from functools import cached_property
-from typing import Any, get_args, get_origin
 
-from .registry import Codec, Decoder, Encoder, lookup_decoder, lookup_encoder
+from .codec import Codec, Decoder, Encoder
 
 
 class Attribute[V]:
@@ -32,71 +27,31 @@ class Attribute[V]:
     Abstract — direct instantiation is rejected; use `RequiredAttribute` or
     `OptionalAttribute`.
 
-    Codecs default to the registry lookup keyed on `V`. The `codec` keyword
-    argument overrides either or both directions for this attribute alone —
-    useful when two attributes share a Python value type but need different
-    wire formats (e.g. one `[datetime]` field encoded as epoch millis,
-    another as ISO 8601). When both directions are overridden, the `[V]`
-    subscript is no longer strictly required by the codec lookup (it still
-    drives the static type of `event[ATTR]`).
+    Public attributes:
+
+    - `name`: the wire-level dict key this attribute reads/writes.
+    - `codec`: the `Codec[V]` driving encode/decode. Exposed so callers can
+      compose codecs (e.g. `LIST(some_attr.codec)` lifts an attribute's
+      codec into a list-of-V codec).
+    - `decode` / `encode`: convenience properties delegating to
+      `codec.decode` / `codec.encode`.
     """
 
-    def __init__(self, name: str, codec: Codec[V] = Codec()) -> None:
+    def __init__(self, name: str, codec: Codec[V]) -> None:
         if type(self) is Attribute:
             raise TypeError(
                 "Attribute is abstract; instantiate RequiredAttribute or OptionalAttribute"
             )
         self.name = name
-        # Override the cached_property by pre-filling its slot in `__dict__`.
-        # The descriptor's `__get__` checks `__dict__` first, so we just hand
-        # it the answer up front and it never runs the lookup.
-        if codec.decode is not None:
-            self.decode = codec.decode
-        if codec.encode is not None:
-            self.encode = codec.encode
+        self.codec = codec
 
-    @cached_property
+    @property
     def decode(self) -> Decoder[V]:
-        return lookup_decoder(self._required_value_type)
+        return self.codec.decode
 
-    @cached_property
+    @property
     def encode(self) -> Encoder[V]:
-        return lookup_encoder(self._required_value_type)
-
-    @property
-    def _required_value_type(self) -> type[V]:
-        orig = getattr(self, "__orig_class__", None)
-        if orig is not None:
-            args = get_args(orig)
-            if args and args[0] is Any:
-                raise TypeError(
-                    f"{type(self).__name__}({self.name!r}) uses [Any], which is "
-                    "not meaningful for an Attribute; pick a concrete type"
-                )
-        t = self._value_type
-        if t is None:
-            raise TypeError(
-                f"{type(self).__name__}({self.name!r}) is missing its [V] type "
-                "parameter; subscript with a concrete type, e.g. "
-                f"{type(self).__name__}[str]({self.name!r})"
-            )
-        return t  # type: ignore[return-value]
-
-    @property
-    def _value_type(self) -> type | None:
-        """The runtime type extracted from the `[V]` subscript, or `None` if unsubscripted."""
-        orig = getattr(self, "__orig_class__", None)
-        if orig is None:
-            return None
-        args = get_args(orig)
-        if not args:
-            return None
-        v = args[0]
-        if isinstance(v, type):
-            return v
-        # Generic alias like `dict[str, Any]` — extract the bare origin class.
-        origin = get_origin(v)
-        return origin if isinstance(origin, type) else None
+        return self.codec.encode
 
     def __eq__(self, other: object) -> bool:
         return type(other) is type(self) and other.name == self.name  # type: ignore[attr-defined]
@@ -113,18 +68,13 @@ class OptionalAttribute[V](Attribute[V]):
 
     @cached_property
     def required(self) -> RequiredAttribute[V]:
-        """The required view of this attribute (same name, `[V]`, and resolved codecs).
+        """The required view of this attribute (same name and codec).
 
         Use at sites where the value is known to be present (e.g. immediately
         after writing it) so `Record.__getitem__` accepts it without a checker
         downgrade.
         """
-        new: RequiredAttribute[V] = RequiredAttribute(
-            self.name,
-            Codec(decode=self.decode, encode=self.encode),
-        )
-        _copy_value_type(self, new, RequiredAttribute)
-        return new
+        return RequiredAttribute(self.name, self.codec)
 
 
 class RequiredAttribute[V](Attribute[V]):
@@ -132,31 +82,9 @@ class RequiredAttribute[V](Attribute[V]):
 
     @cached_property
     def optional(self) -> OptionalAttribute[V]:
-        """The optional view of this attribute (same name, `[V]`, and resolved codecs).
+        """The optional view of this attribute (same name and codec).
 
         Use at sites where you want `.get()` / `.pop()` semantics on a
         normally-required field (e.g. presence-checked reads, defaults).
         """
-        new: OptionalAttribute[V] = OptionalAttribute(
-            self.name,
-            Codec(decode=self.decode, encode=self.encode),
-        )
-        _copy_value_type(self, new, OptionalAttribute)
-        return new
-
-
-def _copy_value_type(src: Attribute, dst: Attribute, dst_cls: type[Attribute]) -> None:
-    """Carry the `[V]` parametrization from `src` to `dst`.
-
-    `Attribute._value_type` reads off the instance's `__orig_class__`, which
-    `_GenericAlias.__call__` sets when `Foo[T]("name")` is instantiated.
-    A plain `Foo("name")` doesn't have one, so we synthesize the equivalent
-    alias on `dst`. If `src` itself has no `[V]` (a framework-level error
-    already), `dst` inherits the same problem and raises identically on first
-    decode/encode access.
-    """
-    orig = getattr(src, "__orig_class__", None)
-    if orig is not None:
-        args = get_args(orig)
-        if args:
-            dst.__orig_class__ = dst_cls[args[0]]  # type: ignore[attr-defined]
+        return OptionalAttribute(self.name, self.codec)
