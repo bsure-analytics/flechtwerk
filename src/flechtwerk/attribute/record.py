@@ -79,16 +79,23 @@ class Record:
         instance.raw = {}
         return instance
 
-    def __init__(self, source: dict[Attribute | str, Any] | Record | None = None, /) -> None:
+    def __init__(self, source: dict[str | Attribute, Any] | Record | None = None, /) -> None:
         if source is None:
             return  # raw already {} from __new__
-        # `_encode_any` handles every shape we care about: a Record (or
-        # subclass) → shallow copy of `.raw`; a plain dict / Mapping →
-        # recursive walk that rekeys Attribute keys to `attr.name`, runs
-        # the attribute's encoder on their values, and recursively
-        # encodes everything else. The invariant — `.raw` is JSON-native —
-        # is enforced at the boundary.
-        self.raw = _encode_any(source)
+        if isinstance(source, Record):
+            self.raw = source.raw.copy()
+            return
+        # Top-level Attribute keys rekey to `attr.name` and run the
+        # attribute's encoder on the value; plain string keys pass
+        # through and the value goes through the recursive `_encode_any`
+        # walker. This is the only place in the framework that accepts
+        # mixed `Attribute | str` keys — every codec downstream is
+        # strict (`DICT(V)` rejects non-str keys).
+        self.raw = {
+            (k.name if isinstance(k, Attribute) else k):
+                (k.encode(v) if isinstance(k, Attribute) else _encode_any(v))
+            for k, v in source.items()
+        }
 
     def __reduce__(self) -> tuple:
         # Clean modern pickle format: (cls, (raw,)) → reconstruct via cls(raw).

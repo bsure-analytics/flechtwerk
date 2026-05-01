@@ -15,7 +15,6 @@ matching the ALL_CAPS style of the typed-attribute call sites.
 from datetime import datetime, timezone
 from typing import Any, Final
 
-from .attribute import Attribute
 from .codec import Codec, Decoder
 
 
@@ -94,18 +93,20 @@ def TUPLE[V](inner: Codec[V]) -> Codec[tuple[V, ...]]:
 def DICT[V](inner: Codec[V]) -> Codec[dict[str, V]]:
     """Codec for `dict[str, V]` — runs `inner` over each value.
 
-    Encode also handles `Attribute` keys: an `Attribute` key rekeys to
-    `attr.name` and runs `attr.encode` on its value (overriding `inner`),
-    so a `Record({SOME_ATTR: v, "literal_key": v2})` produces JSON-native
-    `.raw` even when keys are mixed.
+    Keys must be `str` — enforced statically by the `dict[str, V]`
+    parameter and asserted at runtime as a safety net (the only place
+    that accepts mixed `Attribute | str` keys is `Record.__init__`,
+    which rewrites Attribute keys before delegating to the codec layer).
     """
+
+    def encode(d: dict[str, V]) -> dict[str, Any]:
+        for k in d:
+            assert isinstance(k, str), f"DICT key must be str, got {type(k).__name__}: {k!r}"
+        return {k: inner.encode(v) for k, v in d.items()}
+
     return Codec(
         decode=lambda d: {k: inner.decode(v) for k, v in d.items()},
-        encode=lambda d: {
-            (k.name if isinstance(k, Attribute) else k):
-                (k.encode(v) if isinstance(k, Attribute) else inner.encode(v))
-            for k, v in d.items()
-        },
+        encode=encode,
     )
 
 
