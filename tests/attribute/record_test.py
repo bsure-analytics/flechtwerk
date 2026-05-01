@@ -72,10 +72,10 @@ def test_getitem_validates_and_returns():
     assert d[COUNT] == 42
 
 
-def test_getitem_raises_typeerror_on_wire_type_mismatch():
-    """If the wire value isn't an instance of V, the type-validating decoder raises."""
+def test_getitem_raises_on_wire_type_mismatch():
+    """If the wire value isn't an instance of V, the type-validating decoder asserts."""
     d = Record({"count": "42"})  # wire is str but COUNT is RequiredAttribute[int]
-    with pytest.raises(TypeError):
+    with pytest.raises(AssertionError):
         _ = d[COUNT]
 
 
@@ -100,10 +100,10 @@ def test_setitem_validates_and_stores():
     assert d.raw == {"count": 42}
 
 
-def test_setitem_raises_typeerror_on_value_type_mismatch():
-    """The type-validating encoder raises if the value isn't of the expected type."""
+def test_setitem_raises_on_value_type_mismatch():
+    """The type-validating encoder asserts if the value isn't of the expected type."""
     d = Record()
-    with pytest.raises(TypeError):
+    with pytest.raises(AssertionError):
         d[COUNT] = "42"  # type: ignore[assignment]
 
 

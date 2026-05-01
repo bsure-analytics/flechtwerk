@@ -19,17 +19,16 @@ from .codec import Codec, Decoder
 
 
 def _validate[T](t: type[T]) -> Decoder[T]:
-    """Codec helper that asserts `type(x) is t`, raising `TypeError` on mismatch.
+    """Codec helper that asserts `type(x) is t`.
 
     Exact-type check, not `isinstance` — this matters for the int/bool split
     (`bool` is a subclass of `int`, but `INT.encode(True)` should reject).
+    Statically enforced by the `Codec[T]` parameter at the call site; the
+    runtime `assert` is a safety net that disappears under `python -O`.
     """
 
     def check(x: Any) -> T:
-        if type(x) is not t:
-            raise TypeError(
-                f"expected {t.__name__}, got {type(x).__name__}: {x!r}"
-            )
+        assert type(x) is t, f"expected {t.__name__}, got {type(x).__name__}: {x!r}"
         return x
 
     return check

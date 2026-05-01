@@ -33,21 +33,21 @@ def test_subclasses_inherit_attribute():
 
 
 def test_codec_drives_validation():
-    """The supplied codec produces an isinstance validator on str."""
+    """The supplied codec asserts on type mismatch."""
     attr = RequiredAttribute("name", STR)
     assert attr.decode("hello") == "hello"
-    with pytest.raises(TypeError):
+    with pytest.raises(AssertionError):
         attr.decode(42)
-    with pytest.raises(TypeError):
+    with pytest.raises(AssertionError):
         attr.encode(42)
 
 
 def test_int_codec_rejects_bool():
     """Exact-type check: bool is not int even though `isinstance(True, int)` is True."""
     attr = RequiredAttribute("count", INT)
-    with pytest.raises(TypeError):
+    with pytest.raises(AssertionError):
         attr.encode(True)
-    with pytest.raises(TypeError):
+    with pytest.raises(AssertionError):
         attr.decode(True)
 
 
