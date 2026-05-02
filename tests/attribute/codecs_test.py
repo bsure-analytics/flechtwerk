@@ -8,9 +8,9 @@ def test_datetime_to_iso_utc():
     assert DATETIME.encode(dt) == "2024-01-01T00:00:00.000Z"
 
 
-def test_datetime_to_iso_normalizes_to_utc():
+def test_datetime_to_iso_preserves_offset():
     dt = datetime(2024, 1, 1, 2, 0, 0, tzinfo=timezone(timedelta(hours=2)))
-    assert DATETIME.encode(dt) == "2024-01-01T00:00:00.000Z"
+    assert DATETIME.encode(dt) == "2024-01-01T02:00:00.000+02:00"
 
 
 def test_datetime_from_iso_round_trip():

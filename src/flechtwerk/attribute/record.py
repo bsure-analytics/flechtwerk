@@ -200,7 +200,7 @@ def record_codec[T: Record](cls: type[T]) -> Codec[T]:
     )
 
 
-RECORD: Final[Codec[Record]] = record_codec(Record)
+RECORD: Final = record_codec(Record)
 """Codec for an untyped `Record` value.
 
 Use as `RequiredAttribute("data", RECORD)` for fields whose value is a
@@ -209,7 +209,7 @@ plain `Record`. For `Record` subclasses, build a per-subclass codec via
 for `Config`, `Event`, `State`).
 """
 
-ANY: Final[Codec[Any]] = Codec(
+ANY: Final = Codec[Any](
     decode=lambda x: x,
     encode=_encode_any,
 )

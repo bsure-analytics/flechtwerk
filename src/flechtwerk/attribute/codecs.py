@@ -12,7 +12,7 @@ class and the recursive `_encode_any` walker, respectively.
 Naming convention: all atoms and constructors use uppercase identifiers
 matching the ALL_CAPS style of the typed-attribute call sites.
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Final
 
 from .codec import Codec, Decoder
@@ -39,21 +39,17 @@ def _datetime_from_iso(s: str) -> datetime:
 
 
 def _datetime_to_iso(dt: datetime) -> str:
-    return (
-        dt.astimezone(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 # --- atoms ---
 
 
-STR: Final[Codec[str]] = Codec(_validate(str), _validate(str))
-INT: Final[Codec[int]] = Codec(_validate(int), _validate(int))
-BOOL: Final[Codec[bool]] = Codec(_validate(bool), _validate(bool))
-FLOAT: Final[Codec[float]] = Codec(_validate(float), _validate(float))
-DATETIME: Final[Codec[datetime]] = Codec(_datetime_from_iso, _datetime_to_iso)
+STR: Final = Codec[str](_validate(str), _validate(str))
+INT: Final = Codec[int](_validate(int), _validate(int))
+BOOL: Final = Codec[bool](_validate(bool), _validate(bool))
+FLOAT: Final = Codec[float](_validate(float), _validate(float))
+DATETIME: Final = Codec[datetime](_datetime_from_iso, _datetime_to_iso)
 
 
 # --- constructors ---
