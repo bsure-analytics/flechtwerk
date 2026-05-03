@@ -10,6 +10,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
 
 from .kafka import encode_json, datetime_to_millis, parse_message
+from .observer import Observer
 from .state import StateStore
 from .types import IncomingMessage, Message, State
 
@@ -102,6 +103,7 @@ class TransformerRunner:
 
     consumer: AIOKafkaConsumer
     group_id: str
+    observer: Observer
     producer: AIOKafkaProducer
     state_store: StateStore
     transformer: lookup[Transformer, "stage"]  # noqa: PyUnresolvedReferences
@@ -130,51 +132,57 @@ class TransformerRunner:
         topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
         ordered_tps = sorted(records, key=lambda p: topic_order.get(p.topic, 0))
 
+        total = sum(len(msgs) for msgs in records.values())
+
         output: list[Message] = []
         baseline: dict[str, State] = {}
         overlay: dict[str, State] = {}
         yielded_keys: set[str] = set()
         offsets: dict = {}
 
-        for tp in ordered_tps:
-            for raw_msg in records[tp]:
-                msg = parse_message(raw_msg)
-                key = self.transformer.extract_key(msg)
+        with self.observer.batch_scope(total):
+            for tp in ordered_tps:
+                for raw_msg in records[tp]:
+                    msg = parse_message(raw_msg)
+                    self.observer.message_in(msg.topic)
+                    key = self.transformer.extract_key(msg)
 
-                if key not in overlay:
-                    stored = State(await self.state_store.get(key) or {})
-                    baseline[key] = deepcopy(stored)
-                    overlay[key] = stored
+                    if key not in overlay:
+                        stored = State(await self.state_store.get(key) or {})
+                        baseline[key] = deepcopy(stored)
+                        overlay[key] = stored
 
-                # Defensive copy: in-place mutation without a yield must not
-                # leak into either the overlay or a later same-key record.
-                state_for_call = deepcopy(overlay[key])
+                    # Defensive copy: in-place mutation without a yield must not
+                    # leak into either the overlay or a later same-key record.
+                    state_for_call = deepcopy(overlay[key])
 
-                new_state: State | None = None
-                async for item in self.transformer.transform(msg, state_for_call):
-                    if isinstance(item, State):
-                        new_state = item
-                    elif isinstance(item, Message):
-                        output.append(item)
-                    else:
-                        raise TypeError(
-                            f"transform() yielded {type(item).__name__}, expected Message or State"
-                        )
+                    new_state: State | None = None
+                    with self.observer.dispatch_scope():
+                        async for item in self.transformer.transform(msg, state_for_call):
+                            if isinstance(item, State):
+                                new_state = item
+                            elif isinstance(item, Message):
+                                output.append(item)
+                                self.observer.message_out(item.topic)
+                            else:
+                                raise TypeError(
+                                    f"transform() yielded {type(item).__name__}, expected Message or State"
+                                )
 
-                if new_state is not None:
-                    overlay[key] = new_state
-                    yielded_keys.add(key)
+                    if new_state is not None:
+                        overlay[key] = new_state
+                        yielded_keys.add(key)
 
-                tp_obj = aiokafka.TopicPartition(msg.topic, msg.partition)
-                offsets[tp_obj] = max(offsets.get(tp_obj, 0), msg.offset + 1)
+                    tp_obj = aiokafka.TopicPartition(msg.topic, msg.partition)
+                    offsets[tp_obj] = max(offsets.get(tp_obj, 0), msg.offset + 1)
 
-        state_changes = {
-            key: overlay[key]
-            for key in yielded_keys
-            if overlay[key] != baseline[key]
-        }
+            state_changes = {
+                key: overlay[key]
+                for key in yielded_keys
+                if overlay[key] != baseline[key]
+            }
 
-        await self.send_transactional(output, state_changes, offsets)
+            await self.send_transactional(output, state_changes, offsets)
 
     async def send_transactional(
             self,
@@ -204,5 +212,6 @@ class TransformerRunner:
                     await self.state_store.delete(key)
             await self.producer.send_offsets_to_transaction(offsets, self.group_id)
 
+        self.observer.transaction_committed()
         log.debug("Transaction committed: %d messages, %d state changes",
                   len(messages), len(state_changes))

@@ -14,12 +14,16 @@ import logging
 import tempfile
 from functools import cached_property
 from pathlib import Path
+from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
+from prometheus_client import REGISTRY, CollectorRegistry
 from reactor_di import CachingStrategy, module, lookup
 
 from .extractor import Extractor, ExtractorRunner
+from .metrics import Metrics
+from .observer import Observer, PrometheusObserver
 from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
@@ -48,7 +52,12 @@ class FretworxModule:
     group_id: lookup[str]
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
+    metrics: Metrics
+    metrics_labels: dict[str, str] = {}
+    metrics_port: int = 0
     poll_interval_seconds: lookup[int]
+    prometheus_observer: PrometheusObserver
+    registry: CollectorRegistry = REGISTRY
     stage: lookup[Extractor | Transformer]
     state_store: ChangelogStateStore
     transformer_runner: TransformerRunner
@@ -96,7 +105,29 @@ class FretworxModule:
         """
         return self.extractor_runner if isinstance(self.stage, Extractor) else self.transformer_runner
 
+    @cached_property
+    def observer(self) -> Observer:
+        """No-op when metrics are disabled, PrometheusObserver otherwise."""
+        return self.prometheus_observer if self.metrics_port > 0 else Observer()
+
+    @cached_property
+    def metrics_server(self) -> tuple[Any, Any] | None:
+        """The Prometheus scrape HTTP server (None when disabled).
+
+        Port collisions raise OSError — let it crash so K8s surfaces the
+        problem in pod logs and CrashLoopBackOff makes it impossible to
+        ignore.
+        """
+        if self.metrics_port <= 0:
+            return None
+        from prometheus_client import start_http_server
+        return start_http_server(addr="0.0.0.0", port=self.metrics_port, registry=self.registry)
+
     async def __aenter__(self) -> FretworxModule:
+        # Bring up the scrape endpoint first so health probes see it as
+        # soon as the process is up.
+        _ = self.metrics_server
+
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         await admin.start()
         try:
@@ -124,3 +155,10 @@ class FretworxModule:
         await self.consumer.stop()
         await self.producer.stop()
         await self.state_store.close()
+        # Stop the scrape server last so a final scrape can land mid-shutdown.
+        # Access via __dict__ to avoid triggering the cached_property if the
+        # endpoint was never started.
+        server_tuple = self.__dict__.get("metrics_server")
+        if server_tuple is not None:
+            server, _thread = server_tuple
+            server.shutdown()

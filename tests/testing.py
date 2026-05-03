@@ -1,10 +1,49 @@
 """Test doubles for fretworx framework testing."""
+from contextlib import contextmanager
 from typing import Any
 
 from aiokafka import ConsumerRecord, TopicPartition
 
+from fretworx.observer import Observer
 from fretworx.state import StateStore, deserialize
 from fretworx.types import Message, State
+
+
+class RecordingObserver(Observer):
+    """Captures every observer hook call into a list for assertion."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def message_in(self, topic: str) -> None:
+        self.calls.append(("message_in", topic))
+
+    def message_out(self, topic: str) -> None:
+        self.calls.append(("message_out", topic))
+
+    def transaction_committed(self) -> None:
+        self.calls.append(("transaction_committed",))
+
+    def active_configs(self, n: int) -> None:
+        self.calls.append(("active_configs", n))
+
+    @contextmanager
+    def dispatch_scope(self):
+        self.calls.append(("dispatch_enter",))
+        yield
+        self.calls.append(("dispatch_exit",))
+
+    @contextmanager
+    def batch_scope(self, size: int):
+        self.calls.append(("batch_enter", size))
+        yield
+        self.calls.append(("batch_exit",))
+
+    @contextmanager
+    def poll_cycle_scope(self):
+        self.calls.append(("poll_cycle_enter",))
+        yield
+        self.calls.append(("poll_cycle_exit",))
 
 
 class InMemoryStateStore(StateStore):

@@ -11,6 +11,7 @@ from reactor_di import lookup
 
 from fretworx.attribute import BOOL, OptionalAttribute
 from .kafka import encode_json, datetime_to_millis, parse_message
+from .observer import Observer
 from .state import StateStore
 from .types import Config, IncomingMessage, Message, State
 
@@ -125,6 +126,7 @@ class ExtractorRunner:
 
     consumer: AIOKafkaConsumer
     extractor: lookup[Extractor, "stage"]  # noqa: PyUnresolvedReferences
+    observer: Observer
     poll_interval_seconds: int
     producer: AIOKafkaProducer
     state_store: StateStore
@@ -148,12 +150,14 @@ class ExtractorRunner:
                     k: e for k, e in self.configs.items()
                     if not e.config.get(SUSPENDED)
                 }
+                self.observer.active_configs(len(active))
                 if active:
                     log.debug("Polling %d active config(s)", len(active))
-                    results = await asyncio.gather(
-                        *(self.poll_one(e) for e in active.values()),
-                        return_exceptions=True,
-                    )
+                    with self.observer.poll_cycle_scope():
+                        results = await asyncio.gather(
+                            *(self.poll_one(e) for e in active.values()),
+                            return_exceptions=True,
+                        )
                     for key, result in zip(active.keys(), results):
                         if isinstance(result, Exception):
                             log.error("Poll failed for key %s", key, exc_info=result)
@@ -192,6 +196,7 @@ class ExtractorRunner:
 
     async def apply_config(self, msg: IncomingMessage) -> None:
         """Enrich and store a config update."""
+        self.observer.message_in(msg.topic)
         key = msg.key
         config = Config(msg.value)
         if not config:
@@ -215,13 +220,15 @@ class ExtractorRunner:
 
         messages: list[Message] = []
         new_state: State | None = None
-        async for item in self.extractor.poll(entry.config, state):
-            if isinstance(item, State):
-                new_state = item
-            elif isinstance(item, Message):
-                messages.append(item)
-            else:
-                raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
+        with self.observer.dispatch_scope():
+            async for item in self.extractor.poll(entry.config, state):
+                if isinstance(item, State):
+                    new_state = item
+                elif isinstance(item, Message):
+                    messages.append(item)
+                    self.observer.message_out(item.topic)
+                else:
+                    raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
 
         await self.send_batch(messages)
         if new_state is not None and new_state != baseline:
