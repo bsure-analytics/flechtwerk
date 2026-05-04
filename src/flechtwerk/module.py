@@ -90,7 +90,7 @@ class Fretworx:
         instance.bootstrap_servers = bootstrap_servers
         instance.client_id = client_id
         instance.group_id = group_id
-        instance.metrics_labels = metrics_labels if metrics_labels is not None else {}
+        instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
         instance.metrics_port = metrics_port
         instance.poll_interval_seconds = poll_interval_seconds
         instance.stage = stage
