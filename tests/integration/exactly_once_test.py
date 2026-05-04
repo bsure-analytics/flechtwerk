@@ -100,7 +100,7 @@ async def test_successful_transaction_commits_output_state_and_offsets(
         runner = TransformerRunner()
         runner.producer = txn_producer
         runner.state_store = state_store
-        runner.group_id = unique_group_id
+        runner.application_id = unique_group_id
         runner.observer = Observer()
 
         tp = TopicPartition(input_topic, 0)

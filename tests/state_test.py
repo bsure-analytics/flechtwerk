@@ -294,9 +294,9 @@ def test_module_wires_changelog_state_store():
 
     async def run():
         mod = Fretworx()
-        mod.client_id = "test-app"
-        mod.group_id = "test-app"
+        mod.application_id = "test-app"
         mod.bootstrap_servers = "localhost:9092"
+        mod.client_id = "test-app"
         mod.stage = StubExtractor()
 
         store = mod.state_store
@@ -341,9 +341,9 @@ def test_module_lookups_resolve_from_parent():
     class App:
         # Primitive-typed annotations are skipped by @module — values come
         # from instance attributes set after construction.
+        application_id: str
         bootstrap_servers: str
         client_id: str
-        group_id: str
         metrics_labels: dict
         metrics_port: int
         poll_interval_seconds: int
@@ -354,9 +354,9 @@ def test_module_lookups_resolve_from_parent():
         fretworx: Fretworx
 
     app = App()
+    app.application_id = "aid"
     app.bootstrap_servers = "broker:9092"
     app.client_id = "cid"
-    app.group_id = "gid"
     app.metrics_labels = {"env": "test"}
     app.metrics_port = 9464
     app.poll_interval_seconds = 30
@@ -364,9 +364,9 @@ def test_module_lookups_resolve_from_parent():
 
     f = app.fretworx
 
+    assert f.application_id == "aid"
     assert f.bootstrap_servers == "broker:9092"
     assert f.client_id == "cid"
-    assert f.group_id == "gid"
     assert f.metrics_labels == {"env": "test"}
     assert f.metrics_port == 9464
     assert f.poll_interval_seconds == 30
@@ -388,9 +388,9 @@ def test_app_factory_defaults_metrics_when_omitted():
             yield  # pragma: no cover
 
     f = Fretworx.of(
+        application_id="g",
         bootstrap_servers="b:9092",
         client_id="c",
-        group_id="g",
         poll_interval_seconds=60,
         stage=StubExtractor(),
     )
@@ -407,9 +407,9 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
 
     f = Fretworx()
     for name in (
+        "application_id",
         "bootstrap_servers",
         "client_id",
-        "group_id",
         "metrics_labels",
         "metrics_port",
         "poll_interval_seconds",

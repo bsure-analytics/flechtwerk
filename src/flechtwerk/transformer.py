@@ -101,8 +101,8 @@ class TransformerRunner:
     send_transactional() participate in the same Kafka transaction.
     """
 
+    application_id: str
     consumer: AIOKafkaConsumer
-    group_id: str
     observer: Observer
     producer: AIOKafkaProducer
     state_store: StateStore
@@ -210,7 +210,7 @@ class TransformerRunner:
                     await self.state_store.put(key, new_state)
                 else:
                     await self.state_store.delete(key)
-            await self.producer.send_offsets_to_transaction(offsets, self.group_id)
+            await self.producer.send_offsets_to_transaction(offsets, self.application_id)
 
         self.observer.transaction_committed()
         log.debug("Transaction committed: %d messages, %d state changes",

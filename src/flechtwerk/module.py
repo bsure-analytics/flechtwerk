@@ -40,9 +40,9 @@ class Fretworx:
       call ``run()``::
 
           await Fretworx.of(
+              application_id="ariadne-extractor",
               bootstrap_servers="localhost:9092",
               client_id="ariadne-extractor-0",
-              group_id="ariadne-extractor",
               poll_interval_seconds=60,
               stage=my_extractor,
           ).run()
@@ -53,9 +53,9 @@ class Fretworx:
       nothing, leaving every slot for the parent to fill.
     """
 
+    application_id: lookup[str]
     bootstrap_servers: lookup[str]
     client_id: lookup[str]
-    group_id: lookup[str]
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
     metrics: Metrics
@@ -72,9 +72,9 @@ class Fretworx:
     def of(
         cls,
         *,
+        application_id: str,
         bootstrap_servers: str,
         client_id: str,
-        group_id: str,
         poll_interval_seconds: int,
         stage: Extractor | Transformer,
         metrics_labels: dict[str, str] | None = None,
@@ -87,9 +87,9 @@ class Fretworx:
         defaults to 0 (Prometheus disabled); everything else is required.
         """
         instance = cls()
+        instance.application_id = application_id
         instance.bootstrap_servers = bootstrap_servers
         instance.client_id = client_id
-        instance.group_id = group_id
         instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
         instance.metrics_port = metrics_port
         instance.poll_interval_seconds = poll_interval_seconds
@@ -98,7 +98,7 @@ class Fretworx:
 
     @cached_property
     def changelog_topic(self) -> str:
-        return self.group_id + "-changelog"
+        return self.application_id + "-changelog"
 
     @cached_property
     def consumer(self) -> AIOKafkaConsumer:
@@ -107,7 +107,7 @@ class Fretworx:
             auto_offset_reset="earliest",
             client_id=self.client_id,
             enable_auto_commit=False,
-            group_id=self.group_id if isinstance(self.stage, Transformer) else None,
+            group_id=self.application_id if isinstance(self.stage, Transformer) else None,
         )
 
     @cached_property

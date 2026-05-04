@@ -57,8 +57,8 @@ class Extractor:
                 ...
 
     Extractors do not use Kafka consumer groups — config topics are re-read
-    from the earliest on every startup. The caller sets the 'group_id' used for changelog topic naming,
-    and client ID defaults on `Fretworx`; stages don't carry it.
+    from the earliest on every startup. The caller sets the ``application_id``
+    used for changelog topic naming on `Fretworx`; stages don't carry it.
     """
 
     input_topics: list[str]
