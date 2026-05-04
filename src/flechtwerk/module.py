@@ -34,16 +34,23 @@ log = logging.getLogger(__name__)
 class Fretworx:
     """DI container for all Kafka resources.
 
-    Set client_id, group_id, and stage before first access, then call
-    ``run()`` (or use as an async context manager for finer control)::
+    Two ways to construct one:
 
-        mod = Fretworx()
-        mod.client_id = "ariadne-extractor-0"
-        mod.group_id = "ariadne-extractor"
-        mod.bootstrap_servers = "localhost:9092"
-        mod.stage = my_extractor
+    * As a top-level application container, use the ``of`` factory and
+      call ``run()``::
 
-        await mod.run()
+          await Fretworx.of(
+              bootstrap_servers="localhost:9092",
+              client_id="ariadne-extractor-0",
+              group_id="ariadne-extractor",
+              poll_interval_seconds=60,
+              stage=my_extractor,
+          ).run()
+
+    * As a component of a larger reactor-di module, construct with no
+      args (``Fretworx()``) and let the parent module wire every
+      ``lookup`` field by attribute name. The bare constructor sets
+      nothing, leaving every slot for the parent to fill.
     """
 
     bootstrap_servers: lookup[str]
@@ -52,14 +59,42 @@ class Fretworx:
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
     metrics: Metrics
-    metrics_labels: dict[str, str] = {}
-    metrics_port: int = 0
+    metrics_labels: lookup[dict[str, str]]
+    metrics_port: lookup[int]
     poll_interval_seconds: lookup[int]
     prometheus_observer: PrometheusObserver
     registry: CollectorRegistry = REGISTRY
     stage: lookup[Extractor | Transformer]
     state_store: ChangelogStateStore
     transformer_runner: TransformerRunner
+
+    @classmethod
+    def of(
+        cls,
+        *,
+        bootstrap_servers: str,
+        client_id: str,
+        group_id: str,
+        poll_interval_seconds: int,
+        stage: Extractor | Transformer,
+        metrics_labels: dict[str, str] | None = None,
+        metrics_port: int = 0,
+    ) -> Fretworx:
+        """Build a fully-configured top-level application container.
+
+        Use this when running Fretworx as the program's entry point.
+        ``metrics_labels`` defaults to an empty dict and ``metrics_port``
+        defaults to 0 (Prometheus disabled); everything else is required.
+        """
+        instance = cls()
+        instance.bootstrap_servers = bootstrap_servers
+        instance.client_id = client_id
+        instance.group_id = group_id
+        instance.metrics_labels = metrics_labels if metrics_labels is not None else {}
+        instance.metrics_port = metrics_port
+        instance.poll_interval_seconds = poll_interval_seconds
+        instance.stage = stage
+        return instance
 
     @cached_property
     def changelog_topic(self) -> str:

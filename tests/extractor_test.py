@@ -79,6 +79,8 @@ def make_module(extractor, consumer=None, producer=None, state_store=None):
     mod.client_id = "test"
     mod.group_id = "test"
     mod.bootstrap_servers = "localhost:9092"
+    mod.metrics_labels = {}
+    mod.metrics_port = 0
     mod.poll_interval_seconds = 0
     mod.stage = extractor
     mod.consumer = consumer or FakeKafkaConsumer()

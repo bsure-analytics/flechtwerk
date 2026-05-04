@@ -83,6 +83,8 @@ def make_module(transformer, consumer=None, producer=None, state_store=None):
     mod.client_id = "test-group"
     mod.group_id = "test-group"
     mod.bootstrap_servers = "localhost:9092"
+    mod.metrics_labels = {}
+    mod.metrics_port = 0
     mod.stage = transformer
     mod.consumer = consumer or FakeKafkaConsumer()
     mod.producer = producer or FakeKafkaProducer()

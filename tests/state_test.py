@@ -311,3 +311,108 @@ def test_module_wires_changelog_state_store():
         assert store.topic == "test-app-changelog"
 
     asyncio.run(run())
+
+
+def test_module_lookups_resolve_from_parent():
+    """A parent reactor-di module can inject every Fretworx lookup field by
+    name when Fretworx is embedded as a child component.
+
+    Reactor-di calls the child's no-arg constructor and then writes a
+    dependency map into ``instance.__dict__``; subsequent access to a
+    ``lookup[X]`` field falls through to ``__getattr__`` only if the field
+    is *not* already in ``__dict__``. Fretworx.__init__ therefore writes
+    each lookup parameter only when explicitly provided — so the no-arg
+    form leaves every slot for the parent to fill.
+    """
+    from fretworx.extractor import Extractor
+    from fretworx.module import Fretworx
+    from reactor_di import CachingStrategy, module
+
+    class StubExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, config, state):
+            return
+            yield  # pragma: no cover
+
+    stage = StubExtractor()
+
+    @module(CachingStrategy.NOT_THREAD_SAFE)
+    class App:
+        # Primitive-typed annotations are skipped by @module — values come
+        # from instance attributes set after construction.
+        bootstrap_servers: str
+        client_id: str
+        group_id: str
+        metrics_labels: dict
+        metrics_port: int
+        poll_interval_seconds: int
+        stage: Extractor
+
+        # Child component — reactor-di builds its dependency map from the
+        # parent's matching attribute names.
+        fretworx: Fretworx
+
+    app = App()
+    app.bootstrap_servers = "broker:9092"
+    app.client_id = "cid"
+    app.group_id = "gid"
+    app.metrics_labels = {"env": "test"}
+    app.metrics_port = 9464
+    app.poll_interval_seconds = 30
+    app.stage = stage
+
+    f = app.fretworx
+
+    assert f.bootstrap_servers == "broker:9092"
+    assert f.client_id == "cid"
+    assert f.group_id == "gid"
+    assert f.metrics_labels == {"env": "test"}
+    assert f.metrics_port == 9464
+    assert f.poll_interval_seconds == 30
+    assert f.stage is stage
+
+
+def test_app_factory_defaults_metrics_when_omitted():
+    """Fretworx.of fills metrics_labels={} / metrics_port=0 when those
+    args are omitted, so the resulting Fretworx is fully configured even
+    when the caller doesn't care about Prometheus."""
+    from fretworx.extractor import Extractor
+    from fretworx.module import Fretworx
+
+    class StubExtractor(Extractor):
+        input_topics = ["cfg"]
+
+        async def poll(self, config, state):
+            return
+            yield  # pragma: no cover
+
+    f = Fretworx.of(
+        bootstrap_servers="b:9092",
+        client_id="c",
+        group_id="g",
+        poll_interval_seconds=60,
+        stage=StubExtractor(),
+    )
+
+    assert f.metrics_labels == {}
+    assert f.metrics_port == 0
+
+
+def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
+    """The bare constructor (no args) sets nothing, so a parent module
+    can inject every lookup field — including metrics_labels and
+    metrics_port."""
+    from fretworx.module import Fretworx
+
+    f = Fretworx()
+    for name in (
+        "bootstrap_servers",
+        "client_id",
+        "group_id",
+        "metrics_labels",
+        "metrics_port",
+        "poll_interval_seconds",
+        "stage",
+    ):
+        assert name not in f.__dict__
