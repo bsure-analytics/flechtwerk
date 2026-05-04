@@ -2,7 +2,7 @@
 import logging
 from collections.abc import Callable
 from copy import deepcopy
-from typing import AsyncIterator
+from typing import AsyncIterator, Never
 
 import aiokafka
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
@@ -45,7 +45,7 @@ class Transformer:
 
     The Kafka consumer group ID (driving consumer group membership,
     transactional offset commits, and changelog topic naming) is set on
-    `FretworxModule` by the caller; stages don't carry it.
+    `Fretworx` by the caller; stages don't carry it.
     """
 
     input_topics: list[str]
@@ -108,11 +108,11 @@ class TransformerRunner:
     state_store: StateStore
     transformer: lookup[Transformer, "stage"]  # noqa: PyUnresolvedReferences
 
-    async def run(self) -> None:
+    async def run(self) -> Never:
         """Main event loop. Consumes batches and processes each transactionally.
 
         Resource lifecycle (consumer/producer start/stop) is managed by
-        FretworxModule, not the runner.
+        Fretworx, not the runner.
         """
         self.consumer.subscribe(self.transformer.input_topics)
         async with self.transformer:

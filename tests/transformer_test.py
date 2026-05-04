@@ -6,7 +6,7 @@ from typing import AsyncIterator, Final
 import pytest
 
 from fretworx.attribute import BOOL, INT, LIST, OptionalAttribute, RECORD, RequiredAttribute, STR
-from fretworx.module import FretworxModule
+from fretworx.module import Fretworx
 from fretworx.transformer import Transformer
 from fretworx.types import Event, Message, State
 from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
@@ -78,8 +78,8 @@ def make_incoming(key="k", value=None, topic="input-topic"):
 
 
 def make_module(transformer, consumer=None, producer=None, state_store=None):
-    """Create a FretworxModule with monkey-patched fake resources."""
-    mod = FretworxModule()
+    """Create a Fretworx with monkey-patched fake resources."""
+    mod = Fretworx()
     mod.client_id = "test-group"
     mod.group_id = "test-group"
     mod.bootstrap_servers = "localhost:9092"

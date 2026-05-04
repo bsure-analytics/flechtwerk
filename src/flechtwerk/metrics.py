@@ -12,7 +12,7 @@ from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 class Metrics:
     """Lazy registry for the framework's metric set.
 
-    reactor-di wires `metrics_labels` and `registry` from `FretworxModule`
+    reactor-di wires `metrics_labels` and `registry` from `Fretworx`
     by attribute name. Each metric is a `cached_property` that builds its
     prometheus_client object on first access, taking
     `list(self.metrics_labels.keys()) + per_metric_extras` as `labelnames`.

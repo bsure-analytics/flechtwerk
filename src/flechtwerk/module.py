@@ -1,6 +1,6 @@
 """Dependency injection module for fretworx Kafka resources.
 
-FretworxModule is the single place where all Kafka resources (admin client,
+Fretworx is the single place where all Kafka resources (admin client,
 consumer, producer, state store) are created and shared. The module uses
 reactor-di for lazy dependency resolution and provides an async context
 manager for lifecycle management (start/stop).
@@ -14,7 +14,7 @@ import logging
 import tempfile
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
@@ -31,20 +31,19 @@ log = logging.getLogger(__name__)
 
 
 @module(CachingStrategy.NOT_THREAD_SAFE)
-class FretworxModule:
+class Fretworx:
     """DI container for all Kafka resources.
 
-    Set client_id, group_id, and stage before first access.
-    Then use as an async context manager to start/stop resources::
+    Set client_id, group_id, and stage before first access, then call
+    ``run()`` (or use as an async context manager for finer control)::
 
-        mod = FretworxModule()
+        mod = Fretworx()
         mod.client_id = "ariadne-extractor-0"
         mod.group_id = "ariadne-extractor"
         mod.bootstrap_servers = "localhost:9092"
         mod.stage = my_extractor
 
-        async with mod:
-            await mod.runner.run()
+        await mod.run()
     """
 
     bootstrap_servers: lookup[str]
@@ -123,7 +122,7 @@ class FretworxModule:
         from prometheus_client import start_http_server
         return start_http_server(addr="0.0.0.0", port=self.metrics_port, registry=self.registry)
 
-    async def __aenter__(self) -> FretworxModule:
+    async def __aenter__(self) -> Fretworx:
         # Bring up the scrape endpoint first so health probes see it as
         # soon as the process is up.
         _ = self.metrics_server
@@ -162,3 +161,23 @@ class FretworxModule:
         if server_tuple is not None:
             server, _thread = server_tuple
             server.shutdown()
+
+    async def run(self) -> Never:  # noqa: return type — PyCharm misreads await of Never inside async with
+        """Bootstrap resources and run the configured stage.
+
+        The runner's main loop is ``while True``, so under normal operation
+        this coroutine never returns — it terminates only by cancellation
+        or an unrecovered exception.
+
+        On Ctrl-C, ``asyncio.run`` / ``uvloop.run`` translates SIGINT into
+        a ``Task.cancel()`` on the main task, so what propagates *through*
+        this coroutine is ``asyncio.CancelledError`` — not
+        ``KeyboardInterrupt``. ``async with self`` still runs ``__aexit__``
+        (Kafka clients stopped, metrics server torn down) before the
+        cancellation unwinds. ``KeyboardInterrupt`` is re-raised by the
+        event-loop runner at the ``_loop.run(...)`` boundary *after* this
+        coroutine has finished cleaning up; the application is expected to
+        catch it there.
+        """
+        async with self:
+            await self.runner.run()

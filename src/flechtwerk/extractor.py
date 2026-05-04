@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
@@ -57,9 +57,8 @@ class Extractor:
                 ...
 
     Extractors do not use Kafka consumer groups — config topics are re-read
-    from earliest on every startup. The `group_id` used for changelog topic
-    naming and client ID defaults is set on `FretworxModule` by the caller;
-    stages don't carry it.
+    from the earliest on every startup. The caller sets the 'group_id' used for changelog topic naming,
+    and client ID defaults on `Fretworx`; stages don't carry it.
     """
 
     input_topics: list[str]
@@ -134,11 +133,11 @@ class ExtractorRunner:
     def __init__(self):
         self.configs: dict[str, ConfigEntry] = {}
 
-    async def run(self) -> None:
+    async def run(self) -> Never:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
 
         Resource lifecycle (consumer/producer start/stop) is managed by
-        FretworxModule, not the runner.
+        Fretworx, not the runner.
         """
         self.consumer.subscribe(self.extractor.input_topics)
         async with self.extractor:

@@ -257,7 +257,7 @@ def test_changelog_inner_store_tombstone_deletes():
 def test_changelog_close_closes_inner():
     """close() closes the inner store but does NOT stop the producer.
 
-    Producer lifecycle is managed by the DI container (FretworxModule),
+    Producer lifecycle is managed by the DI container (Fretworx),
     not by the state store.
     """
     async def run():
@@ -277,13 +277,13 @@ def test_changelog_close_closes_inner():
     asyncio.run(run())
 
 
-# --- FretworxModule DI wiring tests ---
+# --- Fretworx DI wiring tests ---
 
 
 def test_module_wires_changelog_state_store():
-    """FretworxModule wires ChangelogStateStore via reactor-di lookups."""
+    """Fretworx wires ChangelogStateStore via reactor-di lookups."""
     from fretworx.extractor import Extractor
-    from fretworx.module import FretworxModule
+    from fretworx.module import Fretworx
 
     class StubExtractor(Extractor):
         input_topics = ["cfg"]
@@ -293,7 +293,7 @@ def test_module_wires_changelog_state_store():
             yield  # pragma: no cover
 
     async def run():
-        mod = FretworxModule()
+        mod = Fretworx()
         mod.client_id = "test-app"
         mod.group_id = "test-app"
         mod.bootstrap_servers = "localhost:9092"
