@@ -8,8 +8,8 @@ string keys serialize directly to JSON. All public access uses
     event[CHANNEL_ID] = value      # any Attribute → encodes via attr.encode
     event.get(STATUS, default)     # OptionalAttribute → decoded V or default
     event.pop(LAST_TIME, default)  # OptionalAttribute → decoded V or default
-    del event[CHANNEL_ID]          # any Attribute → removes the entry
-    CHANNEL_ID in event            # any Attribute → presence check
+    del event[STATUS]              # OptionalAttribute → removes the entry
+    STATUS in event                # OptionalAttribute → presence check
 
 Indexing with a string raises `TypeError`. The `__getitem__` / `get` /
 `pop` signatures encode the schema intent: required fields use `[]`,
@@ -127,10 +127,10 @@ class Record:
             raise ValueError(f"encoder for {attr!r} returned None")
         self.raw[attr.name] = encoded
 
-    def __delitem__(self, attr: Attribute) -> None:
+    def __delitem__(self, attr: OptionalAttribute) -> None:
         del self.raw[attr.name]
 
-    def __contains__(self, attr: Attribute) -> bool:
+    def __contains__(self, attr: OptionalAttribute) -> bool:
         return attr.name in self.raw
 
     # --- container protocol ---

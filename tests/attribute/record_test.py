@@ -118,14 +118,14 @@ def test_setitem_overwrites_existing():
 
 def test_delitem_removes_key():
     d = Record({"count": 42, "name": "x"})
-    del d[COUNT]
+    del d[COUNT.optional]
     assert d.raw == {"name": "x"}
 
 
 def test_delitem_missing_raises_keyerror():
     d = Record()
     with pytest.raises(KeyError):
-        del d[COUNT]
+        del d[COUNT.optional]
 
 
 # --- __contains__ ---
