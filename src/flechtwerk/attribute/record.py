@@ -93,7 +93,7 @@ class Record:
         # strict (`DICT(V)` rejects non-str keys).
         self.raw = {
             (k.name if isinstance(k, Attribute) else k):
-                (k.encode(v) if isinstance(k, Attribute) else _encode_any(v))
+                (k.encode_or_null(v) if isinstance(k, Attribute) else _encode_any(v))
             for k, v in source.items()
         }
 
@@ -111,7 +111,11 @@ class Record:
             raise MissingAttributeError(f"attribute {attr!r} is missing")
         return attr.decode(v)
 
-    def __setitem__[V](self, attr: Attribute[V], value: V) -> None:
+    @overload
+    def __setitem__[V](self, attr: RequiredAttribute[V], value: V) -> None: ...
+    @overload
+    def __setitem__[V](self, attr: OptionalAttribute[V], value: V | None) -> None: ...
+    def __setitem__[V](self, attr: Attribute[V], value: V | None) -> None:
         # TODO(legacy-pickle-compat): once all changelog topics in every
         # environment have been fully replaced with new-format entries, remove
         # the str-key branch below — it exists only for unpickling legacy
@@ -122,10 +126,7 @@ class Record:
             # rejects str keys; only pickle's SETITEMS opcode reaches this branch.
             self.raw[attr] = value
             return
-        encoded = attr.encode(value)
-        if encoded is None:
-            raise ValueError(f"encoder for {attr!r} returned None")
-        self.raw[attr.name] = encoded
+        self.raw[attr.name] = attr.encode_or_null(value)
 
     def __delitem__(self, attr: OptionalAttribute) -> None:
         del self.raw[attr.name]
@@ -172,10 +173,16 @@ class Record:
         v = self.raw.get(attr.name)
         return default if v is None else attr.decode(v)
 
-    def pop[V](self, attr: OptionalAttribute[V], /, *default: V) -> V:
-        """Remove and return the decoded value; raise KeyError if missing and no default given."""
+    def pop[V](self, attr: OptionalAttribute[V], /, *default: V) -> V | None:
+        """Remove and return the decoded value; raise KeyError if missing and no default given.
+
+        A stored `None` is returned as `None` (no decode) and the key is removed —
+        mirroring `dict.pop` semantics and matching how `_encode_attr` allows
+        `None` writes for `OptionalAttribute`.
+        """
         if attr.name in self.raw:
-            return attr.decode(self.raw.pop(attr.name))
+            v = self.raw.pop(attr.name)
+            return None if v is None else attr.decode(v)
         if default:
             return default[0]
         raise KeyError(attr)

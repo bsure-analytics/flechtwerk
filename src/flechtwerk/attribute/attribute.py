@@ -16,16 +16,17 @@ parameter and the runtime encode/decode. The type checker infers the
 are exported from `fretworx.attribute` (`STR`, `INT`, `DATETIME`,
 `RECORD`, `LIST(RECORD)`, …).
 """
+from abc import ABC, abstractmethod
 from functools import cached_property
+from typing import Any
 
 from .codec import Codec, Decoder, Encoder
 
 
-class Attribute[V]:
+class Attribute[V](ABC):
     """A typed handle on one key in a `dict[str, Any]`, paired with an encode/decode codec.
 
-    Abstract — direct instantiation is rejected; use `RequiredAttribute` or
-    `OptionalAttribute`.
+    Abstract — instantiate `RequiredAttribute` or `OptionalAttribute`.
 
     Public attributes:
 
@@ -38,10 +39,6 @@ class Attribute[V]:
     """
 
     def __init__(self, name: str, codec: Codec[V]) -> None:
-        if type(self) is Attribute:
-            raise TypeError(
-                "Attribute is abstract; instantiate RequiredAttribute or OptionalAttribute"
-            )
         self.name = name
         self.codec = codec
 
@@ -52,6 +49,21 @@ class Attribute[V]:
     @property
     def encode(self) -> Encoder[V]:
         return self.codec.encode
+
+    @abstractmethod
+    def encode_or_null(self, value: V | None) -> Any:
+        """Encode `value` for storage in `Record.raw`.
+
+        `None` handling is type-specific — see the subclass overrides.
+        For non-`None` values both subclasses run the codec encoder and
+        reject a `None` result as a codec bug (`_encoded_non_null`).
+        """
+
+    def _encoded_non_null(self, value: V) -> Any:
+        encoded = self.encode(value)
+        if encoded is None:
+            raise ValueError(f"encoder for {self!r} returned None")
+        return encoded
 
     def __eq__(self, other: object) -> bool:
         return type(other) is type(self) and other.name == self.name  # type: ignore[attr-defined]
@@ -66,6 +78,10 @@ class Attribute[V]:
 class OptionalAttribute[V](Attribute[V]):
     """An attribute that may be absent or `None`."""
 
+    def encode_or_null(self, value: V | None) -> Any:
+        """`None` is stored as JSON `null` (codec encoder bypassed)."""
+        return None if value is None else self._encoded_non_null(value)
+
     @cached_property
     def required(self) -> RequiredAttribute[V]:
         """The required view of this attribute (same name and codec).
@@ -79,6 +95,12 @@ class OptionalAttribute[V](Attribute[V]):
 
 class RequiredAttribute[V](Attribute[V]):
     """An attribute that must be present and non-`None`."""
+
+    def encode_or_null(self, value: V) -> Any:
+        """`None` is rejected at the write site so it can't land silently as `null`."""
+        if value is None:
+            raise ValueError(f"cannot assign None to required {self!r}")
+        return self._encoded_non_null(value)
 
     @cached_property
     def optional(self) -> OptionalAttribute[V]:

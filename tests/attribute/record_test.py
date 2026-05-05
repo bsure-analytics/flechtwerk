@@ -113,6 +113,32 @@ def test_setitem_overwrites_existing():
     assert d.raw == {"count": 99}
 
 
+def test_setitem_optional_stores_none_without_encode():
+    """`OptionalAttribute` accepts `None` — stored as `null`, encoder is bypassed."""
+    d = Record()
+    d[LABEL] = None
+    assert d.raw == {"label": None}
+
+
+def test_setitem_required_rejects_none():
+    """Writing `None` to a `RequiredAttribute` is a type bug — fail loudly."""
+    d = Record()
+    with pytest.raises(ValueError, match="cannot assign None to required"):
+        d[COUNT] = None  # type: ignore[assignment]
+
+
+def test_construct_optional_attribute_with_none_stores_null():
+    """The `Record(...)` constructor mirrors `__setitem__` for Attribute keys."""
+    d = Record({LABEL: None})
+    assert d.raw == {"label": None}
+
+
+def test_construct_required_attribute_with_none_raises():
+    d = Record()
+    with pytest.raises(ValueError, match="cannot assign None to required"):
+        Record({COUNT: None})  # type: ignore[dict-item]
+
+
 # --- __delitem__ ---
 
 
@@ -307,6 +333,13 @@ def test_pop_missing_without_default_raises():
     d = Record()
     with pytest.raises(KeyError):
         d.pop(MAYBE_COUNT)
+
+
+def test_pop_returns_none_for_explicit_null_and_removes():
+    """A stored `None` pops back as `None`, key is removed (decode is skipped)."""
+    d = Record({"count": None, "name": "x"})
+    assert d.pop(MAYBE_COUNT) is None
+    assert d.raw == {"name": "x"}
 
 
 # --- update() ---
