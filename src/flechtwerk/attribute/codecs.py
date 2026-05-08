@@ -88,15 +88,16 @@ def TUPLE[V](inner: Codec[V]) -> Codec[tuple[V, ...]]:
 def DICT[V](inner: Codec[V]) -> Codec[dict[str, V]]:
     """Codec for `dict[str, V]` — runs `inner` over each value.
 
-    Keys must be `str` — enforced statically by the `dict[str, V]`
-    parameter and asserted at runtime as a safety net (the only place
-    that accepts mixed `Attribute | str` keys is `Record.__init__`,
-    which rewrites Attribute keys before delegating to the codec layer).
+    Keys must be exactly `str` — enforced statically by the
+    `dict[str, V]` parameter and asserted at runtime via exact-type
+    check (same discipline as `_validate`). Str subclasses (e.g.
+    `StrEnum` members) are rejected — accepting them silently would
+    lose type information at the boundary.
     """
 
     def encode(d: dict[str, V]) -> dict[str, Any]:
         for k in d:
-            assert isinstance(k, str), f"DICT key must be str, got {type(k).__name__}: {k!r}"
+            assert type(k) is str, f"DICT key must be str, got {type(k).__name__}: {k!r}"
         return {k: inner.encode(v) for k, v in d.items()}
 
     return Codec(
