@@ -1,10 +1,11 @@
 """Transformer base class and runner for event-driven stream processing."""
+import asyncio
 import logging
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import AsyncIterator, Never
 
-import aiokafka
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
 from reactor_di import lookup
@@ -18,6 +19,18 @@ log = logging.getLogger(__name__)
 
 TransformFn = Callable[[IncomingMessage, State], AsyncIterator[Message | State]]
 ExtractKeyFn = Callable[[IncomingMessage], str]
+
+
+@dataclass(frozen=True, slots=True)
+class BucketResult:
+    """One state-key bucket's contribution to a batch.
+
+    ``state_change`` is ``None`` when nothing should be written to the
+    state store — either because the transform didn't yield ``State``,
+    or because what it yielded matched the baseline.
+    """
+    outputs: list[Message]
+    state_change: State | None
 
 
 class Transformer:
@@ -125,64 +138,69 @@ class TransformerRunner:
     async def process_batch(self, records: dict) -> None:
         """Process all records in a getmany batch under a single transaction.
 
-        Records sharing a state key see each other's yielded state via an
-        in-memory overlay scoped to this call. Records are walked in
-        ``input_topics`` order (e.g. config before requests).
+        Records are bucketed by state key. Same-key records are processed
+        serially inside their bucket (so each one sees the previous one's
+        yielded state); buckets run concurrently via ``asyncio.gather``,
+        which lets I/O-bound ``transform()`` calls overlap. Cross-key
+        ordering is not preserved. Within a bucket, records appear in
+        ``input_topics`` order then Kafka offset order.
         """
         topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
-        ordered_tps = sorted(records, key=lambda p: topic_order.get(p.topic, 0))
+        ordered_tps = sorted(records, key=lambda p: topic_order[p.topic])
 
         total = sum(len(msgs) for msgs in records.values())
 
-        output: list[Message] = []
-        baseline: dict[str, State] = {}
-        overlay: dict[str, State] = {}
-        yielded_keys: set[str] = set()
+        buckets: dict[str, list] = {}
         offsets: dict = {}
 
+        for tp in ordered_tps:
+            for raw_msg in records[tp]:
+                msg = parse_message(raw_msg)
+                key = self.transformer.extract_key(msg)
+                buckets.setdefault(key, []).append(msg)
+                offsets[tp] = max(offsets.get(tp, 0), msg.offset + 1)
+
         with self.observer.batch_scope(total):
-            for tp in ordered_tps:
-                for raw_msg in records[tp]:
-                    msg = parse_message(raw_msg)
-                    self.observer.message_in(msg.topic)
-                    key = self.transformer.extract_key(msg)
+            results = await asyncio.gather(*(
+                self._process_key_bucket(key, msgs) for key, msgs in buckets.items()
+            ))
 
-                    if key not in overlay:
-                        stored = State(await self.state_store.get(key) or {})
-                        baseline[key] = deepcopy(stored)
-                        overlay[key] = stored
-
-                    # Defensive copy: in-place mutation without a yield must not
-                    # leak into either the overlay or a later same-key record.
-                    state_for_call = deepcopy(overlay[key])
-
-                    new_state: State | None = None
-                    with self.observer.dispatch_scope():
-                        async for item in self.transformer.transform(msg, state_for_call):
-                            if isinstance(item, State):
-                                new_state = item
-                            elif isinstance(item, Message):
-                                output.append(item)
-                                self.observer.message_out(item.topic)
-                            else:
-                                raise TypeError(
-                                    f"transform() yielded {type(item).__name__}, expected Message or State"
-                                )
-
-                    if new_state is not None:
-                        overlay[key] = new_state
-                        yielded_keys.add(key)
-
-                    tp_obj = aiokafka.TopicPartition(msg.topic, msg.partition)
-                    offsets[tp_obj] = max(offsets.get(tp_obj, 0), msg.offset + 1)
-
-            state_changes = {
-                key: overlay[key]
-                for key in yielded_keys
-                if overlay[key] != baseline[key]
-            }
+            output: list[Message] = []
+            state_changes: dict[str, State] = {}
+            for key, result in zip(buckets, results):
+                output.extend(result.outputs)
+                if result.state_change is not None:
+                    state_changes[key] = result.state_change
 
             await self.send_transactional(output, state_changes, offsets)
+
+    async def _process_key_bucket(self, key: str, msgs: list) -> BucketResult:
+        """Process all records sharing one state key, serially."""
+        baseline = State(await self.state_store.get(key) or {})
+        current = baseline
+        final_state: State | None = None
+        outputs: list[Message] = []
+
+        for msg in msgs:
+            self.observer.message_in(msg.topic)
+            # Defensive copy: in-place mutation without a yield must not
+            # leak into either the running state or a later same-key record.
+            state_for_call = deepcopy(current)
+            with self.observer.dispatch_scope():
+                async for item in self.transformer.transform(msg, state_for_call):
+                    if isinstance(item, State):
+                        current = item
+                        final_state = item
+                    elif isinstance(item, Message):
+                        outputs.append(item)
+                        self.observer.message_out(item.topic)
+                    else:
+                        raise TypeError(
+                            f"transform() yielded {type(item).__name__}, expected Message or State"
+                        )
+
+        changed = final_state is not None and final_state != baseline
+        return BucketResult(outputs, final_state if changed else None)
 
     async def send_transactional(
             self,
