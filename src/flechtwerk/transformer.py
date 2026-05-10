@@ -1,6 +1,7 @@
 """Transformer base class and runner for event-driven stream processing."""
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -33,28 +34,33 @@ class BucketResult:
     state_change: State | None
 
 
-class Transformer:
+class Transformer(ABC):
     """Event transformer (stateless or stateful).
 
-    Can be used directly with a transform function::
+    Two ways to construct one:
 
-        transformer = Transformer(
-            input_topics=["my-topic"],
-            transform=my_transform_fn,
-        )
+    * Functionally with ``Transformer.of(...)``, supplying a transform
+      function and the input topics::
 
-    Or subclassed for lifecycle management (HTTP clients, dedup instances):
+          stage = Transformer.of(
+              input_topics=["my-topic"],
+              transform=my_transform_fn,
+          )
 
-        class MyTransformer(Transformer):
-            async def __aenter__(self):
-                self.http = httpx.AsyncClient()
-                return self
+    * As a subclass for lifecycle management (HTTP clients, dedup instances)::
 
-            async def __aexit__(self, *exc_info):
-                await self.http.aclose()
+          class MyTransformer(Transformer):
+              input_topics = ["my-topic"]
 
-            async def transform(self, msg, state):
-                ...
+              async def __aenter__(self):
+                  self.http = httpx.AsyncClient()
+                  return self
+
+              async def __aexit__(self, *exc_info):
+                  await self.http.aclose()
+
+              async def transform(self, msg, state):
+                  ...
 
     The Kafka consumer group ID (driving consumer group membership,
     transactional offset commits, and changelog topic naming) is set on
@@ -63,19 +69,26 @@ class Transformer:
 
     input_topics: list[str]
 
-    def __init__(
-            self,
+    @classmethod
+    def of(
+            cls,
             *,
-            input_topics: list[str] | None = None,
-            transform: TransformFn | None = None,
+            input_topics: list[str],
+            transform: TransformFn,
             extract_key: ExtractKeyFn | None = None,
-    ):
-        if input_topics is not None:
-            self.input_topics = input_topics
-        if transform is not None:
-            self.transform = transform
-        if extract_key is not None:
-            self.extract_key = extract_key
+    ) -> Transformer:
+        """Build a Transformer from a transform function and input topics.
+
+        Returns a concrete subclass that delegates ``transform`` to the
+        supplied callable. Use this for stateless or simply-stateful stages
+        that don't need lifecycle management; subclass directly for stages
+        that own resources (HTTP clients, dedup instances, etc.).
+        """
+        return _FunctionalTransformer(
+            input_topics=input_topics,
+            transform=transform,
+            extract_key=extract_key,
+        )
 
     def extract_key(self, msg: IncomingMessage) -> str:
         """Extract the state key from the incoming message. Default: msg.key."""
@@ -87,6 +100,7 @@ class Transformer:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
+    @abstractmethod
     async def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
         """Transform an incoming message into zero or more output Messages.
 
@@ -96,7 +110,31 @@ class Transformer:
         the entry from the state store (and writes a Kafka tombstone to the
         changelog) atomically with the output messages.
         """
-        raise NotImplementedError("Provide a transform function or override in a subclass")
+
+
+class _FunctionalTransformer(Transformer):
+    """Concrete Transformer that delegates ``transform`` to a callable.
+
+    Created by ``Transformer.of(...)`` — application code should construct
+    Transformers either via ``Transformer.of(...)`` for the functional
+    case or by subclassing ``Transformer`` directly.
+    """
+
+    def __init__(
+            self,
+            *,
+            input_topics: list[str],
+            transform: TransformFn,
+            extract_key: ExtractKeyFn | None = None,
+    ):
+        self.input_topics = input_topics
+        self._transform_fn = transform
+        if extract_key is not None:
+            self.extract_key = extract_key
+
+    async def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+        async for item in self._transform_fn(msg, state):
+            yield item
 
 
 class TransformerRunner:

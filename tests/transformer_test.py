@@ -167,7 +167,7 @@ def test_functional_transformer():
     async def my_transform(msg, _):
         yield Message(key=msg.key, topic="out", value=msg.value)
 
-    t = Transformer(input_topics=["in"], transform=my_transform)
+    t = Transformer.of(input_topics=["in"], transform=my_transform)
 
     async def run():
         msg = make_incoming(value={"x": 1})
@@ -187,7 +187,7 @@ def test_functional_transformer_with_extract_key():
     def my_extract_key(msg):
         return msg.value.raw.get("id", msg.key)
 
-    t = Transformer(
+    t = Transformer.of(
         input_topics=["in"],
         extract_key=my_extract_key,
         transform=my_transform,
@@ -203,21 +203,15 @@ def test_functional_transformer_default_extract_key():
     async def my_transform(msg, _):
         yield Message(key=msg.key, topic="out", value=Event())
 
-    t = Transformer(input_topics=["in"], transform=my_transform)
+    t = Transformer.of(input_topics=["in"], transform=my_transform)
     msg = make_incoming(key="my-key")
     assert t.extract_key(msg) == "my-key"
 
 
-def test_transformer_no_transform_raises():
-    """Transformer without transform function raises when called."""
-
-    async def run():
-        t = Transformer(input_topics=["in"])
-        msg = make_incoming()
-        with pytest.raises(NotImplementedError):
-            await t.transform(msg, State())
-
-    asyncio.run(run())
+def test_transformer_is_abstract():
+    """Transformer is abstract — direct instantiation raises TypeError."""
+    with pytest.raises(TypeError, match="abstract"):
+        Transformer()
 
 
 def test_subclass_defaults_not_overridden_by_init():
@@ -283,7 +277,7 @@ def test_transformer_runner_wraps_value_in_event():
         received_types.append(type(msg.value).__name__)
         yield Message(key=msg.key, topic="out", value=msg.value)
 
-    t = Transformer(input_topics=["in"], transform=spy_transform)
+    t = Transformer.of(input_topics=["in"], transform=spy_transform)
 
     async def run():
         record = json_record(value={"data": 1}, topic="in")
@@ -311,7 +305,7 @@ def test_transformer_runner_event_is_protective_copy():
         msg.value[MUTATED] = True
         yield Message(key=msg.key, topic="out", value=msg.value)
 
-    t = Transformer(input_topics=["in"], transform=mutating_transform)
+    t = Transformer.of(input_topics=["in"], transform=mutating_transform)
 
     async def run():
         record = json_record(value=original, topic="in")
@@ -336,7 +330,7 @@ def test_transformer_runner_stateless_gets_empty_state():
         received_states.append(state)
         yield Message(key=msg.key, topic="out", value=Event())
 
-    t = Transformer(input_topics=["in"], transform=spy_transform)
+    t = Transformer.of(input_topics=["in"], transform=spy_transform)
 
     async def run():
         record = json_record(topic="in")
@@ -359,7 +353,7 @@ def test_transformer_runner_stateless_does_not_persist_state():
     async def stateless_transform(msg, state):
         yield Message(key=msg.key, topic="out", value=Event())
 
-    t = Transformer(input_topics=["in"], transform=stateless_transform)
+    t = Transformer.of(input_topics=["in"], transform=stateless_transform)
 
     async def run():
         state_store = InMemoryStateStore()
@@ -383,7 +377,7 @@ def test_transformer_runner_in_place_state_mutation_is_persisted():
         state[CURSOR] = state.get(CURSOR, 0) + 1
         yield state
 
-    t = Transformer(input_topics=["in"], transform=in_place_transform)
+    t = Transformer.of(input_topics=["in"], transform=in_place_transform)
 
     async def run():
         state_store = InMemoryStateStore()
@@ -407,7 +401,7 @@ def test_transformer_runner_mutation_without_yield_is_not_persisted():
         state[CURSOR] = 42
         yield Message(key=msg.key, topic="out", value=Event())
 
-    t = Transformer(input_topics=["in"], transform=mutate_without_yield)
+    t = Transformer.of(input_topics=["in"], transform=mutate_without_yield)
 
     async def run():
         state_store = InMemoryStateStore()
@@ -430,7 +424,7 @@ def test_transformer_runner_yielding_empty_state_deletes_existing_entry():
     async def tombstoning_transform(msg, state):
         yield State()
 
-    t = Transformer(input_topics=["in"], transform=tombstoning_transform)
+    t = Transformer.of(input_topics=["in"], transform=tombstoning_transform)
 
     async def run():
         state_store = InMemoryStateStore()
@@ -455,7 +449,7 @@ def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
     async def tombstoning_transform(msg, state):
         yield State()
 
-    t = Transformer(input_topics=["in"], transform=tombstoning_transform)
+    t = Transformer.of(input_topics=["in"], transform=tombstoning_transform)
 
     async def run():
         deleted: list[str] = []
@@ -491,7 +485,7 @@ def test_transformer_runner_functional_stateful():
     def my_extract_key(msg):
         return msg.value.raw.get("form_id", msg.key)
 
-    t = Transformer(
+    t = Transformer.of(
         input_topics=["in"],
         extract_key=my_extract_key,
         transform=my_transform,
@@ -580,7 +574,7 @@ def test_transformer_runner_filter_yields_nothing():
         return
         yield  # pragma: no cover
 
-    t = Transformer(input_topics=["in"], transform=skip_all)
+    t = Transformer.of(input_topics=["in"], transform=skip_all)
 
     async def run():
         record = json_record(topic="in")
@@ -606,7 +600,7 @@ def test_transformer_runner_same_key_in_batch_sees_overlay():
         yield Message(key=msg.key, topic="out", value=Event({"count": count}))
         yield State({"count": count})
 
-    t = Transformer(input_topics=["in"], transform=counter)
+    t = Transformer.of(input_topics=["in"], transform=counter)
 
     async def run():
         recs = [
@@ -637,7 +631,7 @@ def test_transformer_runner_one_transaction_per_batch():
     async def passthrough(msg, _):
         yield Message(key=msg.key, topic="out", value=msg.value)
 
-    t = Transformer(input_topics=["in"], transform=passthrough)
+    t = Transformer.of(input_topics=["in"], transform=passthrough)
 
     async def run():
         recs = [json_record(key=f"k{i}", topic="in", offset=i) for i in range(5)]
@@ -663,7 +657,7 @@ def test_transformer_runner_in_place_mutation_without_yield_does_not_leak_in_bat
         state[LEAKED] = True
         yield Message(key=msg.key, topic="out", value=Event())
 
-    t = Transformer(input_topics=["in"], transform=mutating_no_yield)
+    t = Transformer.of(input_topics=["in"], transform=mutating_no_yield)
 
     async def run():
         recs = [
@@ -691,7 +685,7 @@ def test_transformer_runner_offsets_are_max_per_partition():
     async def passthrough(msg, _):
         yield Message(key=msg.key, topic="out", value=msg.value)
 
-    t = Transformer(input_topics=["in"], transform=passthrough)
+    t = Transformer.of(input_topics=["in"], transform=passthrough)
 
     class CapturingProducer(FakeKafkaProducer):
         async def send_offsets_to_transaction(self, offsets, group_id):

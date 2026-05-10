@@ -1,6 +1,7 @@
 """Extractor base class and runner for poll-driven data extraction."""
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -31,30 +32,33 @@ class ConfigEntry:
     state_key: str
 
 
-class Extractor:
+class Extractor(ABC):
     """Poll-driven data extractor (stateful or stateless).
 
-    Can be used directly with a poll function::
+    Two ways to construct one:
 
-        extractor = Extractor(
-            input_topics=["my-config"],
-            poll=my_poll_fn,
-        )
+    * Functionally with ``Extractor.of(...)``, supplying a poll function
+      and the input topics::
 
-    Or subclassed for lifecycle management (HTTP clients, MQTT sessions):
+          stage = Extractor.of(
+              input_topics=["my-config"],
+              poll=my_poll_fn,
+          )
 
-        class MyExtractor(Extractor):
-            input_topics = ["my-config"]
+    * As a subclass for lifecycle management (HTTP clients, MQTT sessions)::
 
-            async def __aenter__(self):
-                self.http = httpx.AsyncClient()
-                return self
+          class MyExtractor(Extractor):
+              input_topics = ["my-config"]
 
-            async def __aexit__(self, *exc_info):
-                await self.http.aclose()
+              async def __aenter__(self):
+                  self.http = httpx.AsyncClient()
+                  return self
 
-            async def poll(self, config, state):
-                ...
+              async def __aexit__(self, *exc_info):
+                  await self.http.aclose()
+
+              async def poll(self, config, state):
+                  ...
 
     Extractors do not use Kafka consumer groups — config topics are re-read
     from the earliest on every startup. The caller sets the ``application_id``
@@ -63,22 +67,28 @@ class Extractor:
 
     input_topics: list[str]
 
-    def __init__(
-        self,
-        *,
-        input_topics: list[str] | None = None,
-        poll: PollFn | None = None,
-        enrich: EnrichFn | None = None,
-        extract_key: ExtractKeyFn | None = None,
-    ):
-        if input_topics is not None:
-            self.input_topics = input_topics
-        if poll is not None:
-            self.poll = poll
-        if enrich is not None:
-            self.enrich = enrich
-        if extract_key is not None:
-            self.extract_key = extract_key
+    @classmethod
+    def of(
+            cls,
+            *,
+            input_topics: list[str],
+            poll: PollFn,
+            enrich: EnrichFn | None = None,
+            extract_key: ExtractKeyFn | None = None,
+    ) -> Extractor:
+        """Build an Extractor from a poll function and input topics.
+
+        Returns a concrete subclass that delegates ``poll`` to the supplied
+        callable. ``enrich`` and ``extract_key`` are optional overrides;
+        omit them to use the defaults (no enrichment, ``extract_key``
+        returns the Kafka message key).
+        """
+        return _FunctionalExtractor(
+            input_topics=input_topics,
+            poll=poll,
+            enrich=enrich,
+            extract_key=extract_key,
+        )
 
     def extract_key(self, msg: IncomingMessage) -> str:
         """Extract the state key from the incoming message. Default: msg.key.
@@ -105,6 +115,7 @@ class Extractor:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
+    @abstractmethod
     async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
         """Poll an external API and yield Messages.
 
@@ -114,7 +125,34 @@ class Extractor:
         state store (and writes a Kafka tombstone to the changelog). On crash,
         the last-persisted state is retained.
         """
-        raise NotImplementedError("Provide a poll function or override in a subclass")
+
+
+class _FunctionalExtractor(Extractor):
+    """Concrete Extractor that delegates ``poll`` to a callable.
+
+    Created by ``Extractor.of(...)`` — application code should construct
+    Extractors either via ``Extractor.of(...)`` for the functional case
+    or by subclassing ``Extractor`` directly.
+    """
+
+    def __init__(
+            self,
+            *,
+            input_topics: list[str],
+            poll: PollFn,
+            enrich: EnrichFn | None = None,
+            extract_key: ExtractKeyFn | None = None,
+    ):
+        self.input_topics = input_topics
+        self._poll_fn = poll
+        if enrich is not None:
+            self.enrich = enrich
+        if extract_key is not None:
+            self.extract_key = extract_key
+
+    async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
+        async for item in self._poll_fn(config, state):
+            yield item
 
 
 class ExtractorRunner:

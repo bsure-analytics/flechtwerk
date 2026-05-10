@@ -464,7 +464,7 @@ def test_functional_extractor():
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
         yield Message(key=config[API_KEY], topic="out", value={"polled": True})
 
-    ext = Extractor(input_topics=["cfg"], poll=my_poll)
+    ext = Extractor.of(input_topics=["cfg"], poll=my_poll)
 
     async def run():
         config = Config({"api_key": "k"})
@@ -488,7 +488,7 @@ def test_functional_extractor_with_enrich_and_extract_key():
     def my_extract_key(msg):
         return msg.value.get(ID, msg.value.get(API_KEY))
 
-    ext = Extractor(
+    ext = Extractor.of(
         input_topics=["cfg"],
         poll=my_poll,
         enrich=my_enrich,
@@ -513,22 +513,17 @@ def test_functional_extractor_default_extract_key():
         return
         yield  # pragma: no cover
 
-    ext = Extractor(input_topics=["cfg"], poll=my_poll)
+    ext = Extractor.of(input_topics=["cfg"], poll=my_poll)
 
     from fretworx.kafka import parse_message
     msg = parse_message(json_record(key="tenant/channel", value={"api_key": "a"}))
     assert ext.extract_key(msg) == "tenant/channel"
 
 
-def test_extractor_no_poll_raises():
-    """Extractor without poll function raises when called."""
-
-    async def run():
-        ext = Extractor(input_topics=["cfg"])
-        with pytest.raises(NotImplementedError):
-            await ext.poll(Config({"api_key": "k"}), State())
-
-    asyncio.run(run())
+def test_extractor_is_abstract():
+    """Extractor is abstract — direct instantiation raises TypeError."""
+    with pytest.raises(TypeError, match="abstract"):
+        Extractor()
 
 
 def test_subclass_defaults_not_overridden_by_init():
@@ -551,7 +546,7 @@ def test_functional_extractor_end_to_end_with_runner():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        ext = Extractor(input_topics=["test-config"], poll=my_poll)
+        ext = Extractor.of(input_topics=["test-config"], poll=my_poll)
         mod = make_module(ext, consumer, producer, state_store)
         runner = mod.runner
 
