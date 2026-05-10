@@ -78,17 +78,24 @@ class Extractor(ABC):
     ) -> Extractor:
         """Build an Extractor from a poll function and input topics.
 
-        Returns a concrete subclass that delegates ``poll`` to the supplied
-        callable. ``enrich`` and ``extract_key`` are optional overrides;
-        omit them to use the defaults (no enrichment, ``extract_key``
-        returns the Kafka message key).
+        ``enrich`` and ``extract_key`` are optional overrides; omit them
+        to use the defaults (no enrichment, ``extract_key`` returns the
+        Kafka message key).
+
+        Patches the supplied callables in as instance attributes that
+        shadow the class-level abstract method ``poll`` (and, when
+        provided, the default ``enrich`` / ``extract_key`` methods). The
+        ABC discipline still applies to every other construction path —
+        ``Extractor()`` and any abstract subclass remain uninstantiable.
         """
-        return _FunctionalExtractor(
-            input_topics=input_topics,
-            poll=poll,
-            enrich=enrich,
-            extract_key=extract_key,
-        )
+        instance = _FunctionalExtractor()
+        instance.input_topics = input_topics
+        instance.poll = poll
+        if enrich is not None:
+            instance.enrich = enrich
+        if extract_key is not None:
+            instance.extract_key = extract_key
+        return instance
 
     def extract_key(self, msg: IncomingMessage) -> str:
         """Extract the state key from the incoming message. Default: msg.key.
@@ -128,31 +135,13 @@ class Extractor(ABC):
 
 
 class _FunctionalExtractor(Extractor):
-    """Concrete Extractor that delegates ``poll`` to a callable.
+    """Shell subclass used solely as the instantiation target for ``Extractor.of``.
 
-    Created by ``Extractor.of(...)`` — application code should construct
-    Extractors either via ``Extractor.of(...)`` for the functional case
-    or by subclassing ``Extractor`` directly.
+    The class-level ``poll = None`` is a placeholder that satisfies
+    ``ABCMeta``'s abstract-method check; ``of()`` shadows it with an
+    instance attribute on every call.
     """
-
-    def __init__(
-            self,
-            *,
-            input_topics: list[str],
-            poll: PollFn,
-            enrich: EnrichFn | None = None,
-            extract_key: ExtractKeyFn | None = None,
-    ):
-        self.input_topics = input_topics
-        self._poll_fn = poll
-        if enrich is not None:
-            self.enrich = enrich
-        if extract_key is not None:
-            self.extract_key = extract_key
-
-    async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
-        async for item in self._poll_fn(config, state):
-            yield item
+    poll = None  # type: ignore[assignment]
 
 
 class ExtractorRunner:

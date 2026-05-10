@@ -79,16 +79,22 @@ class Transformer(ABC):
     ) -> Transformer:
         """Build a Transformer from a transform function and input topics.
 
-        Returns a concrete subclass that delegates ``transform`` to the
-        supplied callable. Use this for stateless or simply-stateful stages
-        that don't need lifecycle management; subclass directly for stages
-        that own resources (HTTP clients, dedup instances, etc.).
+        Use this for stateless or simply-stateful stages that don't need
+        lifecycle management; subclass directly for stages that own resources
+        (HTTP clients, dedup instances, etc.).
+
+        Patches the supplied callables in as instance attributes that
+        shadow the class-level abstract method ``transform`` (and, when
+        provided, the default ``extract_key``). The ABC discipline still
+        applies to every other construction path — ``Transformer()`` and
+        any abstract subclass remain uninstantiable.
         """
-        return _FunctionalTransformer(
-            input_topics=input_topics,
-            transform=transform,
-            extract_key=extract_key,
-        )
+        instance = _FunctionalTransformer()
+        instance.input_topics = input_topics
+        instance.transform = transform
+        if extract_key is not None:
+            instance.extract_key = extract_key
+        return instance
 
     def extract_key(self, msg: IncomingMessage) -> str:
         """Extract the state key from the incoming message. Default: msg.key."""
@@ -113,28 +119,13 @@ class Transformer(ABC):
 
 
 class _FunctionalTransformer(Transformer):
-    """Concrete Transformer that delegates ``transform`` to a callable.
+    """Shell subclass used solely as the instantiation target for ``Transformer.of``.
 
-    Created by ``Transformer.of(...)`` — application code should construct
-    Transformers either via ``Transformer.of(...)`` for the functional
-    case or by subclassing ``Transformer`` directly.
+    The class-level ``transform = None`` is a placeholder that satisfies
+    ``ABCMeta``'s abstract-method check; ``of()`` shadows it with an
+    instance attribute on every call.
     """
-
-    def __init__(
-            self,
-            *,
-            input_topics: list[str],
-            transform: TransformFn,
-            extract_key: ExtractKeyFn | None = None,
-    ):
-        self.input_topics = input_topics
-        self._transform_fn = transform
-        if extract_key is not None:
-            self.extract_key = extract_key
-
-    async def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
-        async for item in self._transform_fn(msg, state):
-            yield item
+    transform = None  # type: ignore[assignment]
 
 
 class TransformerRunner:
