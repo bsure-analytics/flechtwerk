@@ -148,17 +148,25 @@ class Record:
         return len(self.raw)
 
     def __iter__(self) -> Iterator[RequiredAttribute[Any]]:
-        return iter(self.keys())
+        """Yield a `ViewAttribute` per key in `raw`, lazily.
+
+        The primary iteration protocol — `keys()` materializes this for
+        the dict-spread path. Aligns with Python's dict idiom where
+        `__iter__` is the fundamental lazy walk and `keys()` is the
+        view-returning convenience.
+        """
+        for name in self.raw:
+            yield ViewAttribute(name)
 
     def keys(self) -> Iterable[RequiredAttribute[Any]]:
-        """Yield a `ViewAttribute` per key in `raw`.
+        """Materialize a list of `ViewAttribute` handles from `__iter__`.
 
         Enables dict-spread: ``Record({**other, NEW_ATTR: value})`` calls
         ``other.keys()`` and then ``other[view_attr]`` for each — both
         landing on the view's overridden read/write methods. The constructor
         stores the values as-is via ``ViewAttribute.write_to``.
         """
-        return [ViewAttribute(name) for name in self.raw]
+        return list(self)
 
     def __bool__(self) -> bool:
         return bool(self.raw)
