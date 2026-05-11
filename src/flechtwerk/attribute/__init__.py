@@ -1,7 +1,9 @@
 """Type-safe handles on dict keys, paired with explicit encode/decode codecs."""
 from .attribute import (
     Attribute,
+    MissingAttributeError,
     OptionalAttribute,
+    RawDict,
     RequiredAttribute,
 )
 from .codec import Codec, Decoder, Encoder
@@ -18,7 +20,6 @@ from .codecs import (
 )
 from .record import (
     ANY,
-    MissingAttributeError,
     RECORD,
     Record,
     record_codec,
@@ -38,6 +39,7 @@ __all__ = [
     "LIST",
     "MissingAttributeError",
     "OptionalAttribute",
+    "RawDict",
     "RECORD",
     "Record",
     "RequiredAttribute",

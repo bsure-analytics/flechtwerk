@@ -35,28 +35,28 @@ def test_subclasses_inherit_attribute():
 def test_codec_drives_validation():
     """The supplied codec asserts on type mismatch."""
     attr = RequiredAttribute("name", STR)
-    assert attr.decode("hello") == "hello"
+    assert attr.codec.decode("hello") == "hello"
     with pytest.raises(AssertionError):
-        attr.decode(42)
+        attr.codec.decode(42)
     with pytest.raises(AssertionError):
-        attr.encode(42)
+        attr.codec.encode(42)
 
 
 def test_int_codec_rejects_bool():
     """Exact-type check: bool is not int even though `isinstance(True, int)` is True."""
     attr = RequiredAttribute("count", INT)
     with pytest.raises(AssertionError):
-        attr.encode(True)
+        attr.codec.encode(True)
     with pytest.raises(AssertionError):
-        attr.decode(True)
+        attr.codec.decode(True)
 
 
 def test_datetime_codec_round_trip():
     attr = RequiredAttribute("ts", DATETIME)
     dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
-    encoded = attr.encode(dt)
+    encoded = attr.codec.encode(dt)
     assert encoded == "2024-06-15T14:30:00.000Z"
-    assert attr.decode(encoded) == dt
+    assert attr.codec.decode(encoded) == dt
 
 
 def test_name_attribute():
@@ -94,7 +94,7 @@ def test_optional_required_returns_required_with_same_name_and_codec():
     assert isinstance(req, RequiredAttribute)
     assert req.name == "count"
     assert req.codec is opt.codec
-    assert req.decode(42) == 42
+    assert req.codec.decode(42) == 42
 
 
 def test_required_optional_returns_optional_with_same_name_and_codec():
@@ -103,7 +103,7 @@ def test_required_optional_returns_optional_with_same_name_and_codec():
     assert isinstance(opt, OptionalAttribute)
     assert opt.name == "count"
     assert opt.codec is req.codec
-    assert opt.decode(42) == 42
+    assert opt.codec.decode(42) == 42
 
 
 def test_converted_attribute_round_trip_preserves_value_type():
@@ -141,8 +141,8 @@ def test_attribute_with_custom_codec():
             decode=lambda v: int(v.split(":")[1]),
         ),
     )
-    assert attr.encode(5) == "int:5"
-    assert attr.decode("int:5") == 5
+    assert attr.codec.encode(5) == "int:5"
+    assert attr.codec.decode("int:5") == 5
 
 
 def test_attribute_custom_codec_carries_through_kind_conversion():
@@ -153,8 +153,8 @@ def test_attribute_custom_codec_carries_through_kind_conversion():
     )
     opt = OptionalAttribute("count", codec)
     req = opt.required
-    assert req.encode(5) == "e:5"
-    assert req.decode("e:5") == 5
+    assert req.codec.encode(5) == "e:5"
+    assert req.codec.decode("e:5") == 5
 
 
 def test_attribute_custom_codec_used_via_dict_access():

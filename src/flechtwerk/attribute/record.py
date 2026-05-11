@@ -5,7 +5,7 @@ string keys serialize directly to JSON. All public access uses
 `Attribute` instances:
 
     event[CHANNEL_ID]              # RequiredAttribute → decoded V or raise
-    event[CHANNEL_ID] = value      # any Attribute → encodes via attr.encode
+    event[CHANNEL_ID] = value      # any Attribute → dispatches via attr.write_to
     event.get(STATUS, default)     # OptionalAttribute → decoded V or default
     event.pop(LAST_TIME, default)  # OptionalAttribute → decoded V or default
     del event[STATUS]              # OptionalAttribute → removes the entry
@@ -15,21 +15,31 @@ Indexing with a string raises `TypeError`. The `__getitem__` / `get` /
 `pop` signatures encode the schema intent: required fields use `[]`,
 optional fields use `.get()` / `.pop()`.
 
-Iteration yields the raw name strings of the wrapped dict — useful for
-inspection but not for re-indexing back into the `Record`.
+Iteration (`iter(record)`, `for attr in record`) yields the same
+synthesized `ViewAttribute` handles that `keys()` produces — aligning
+with the standard `Mapping` convention that `iter(d) == iter(d.keys())`.
+Use `record.raw` directly if you need the wire-form key strings.
+
+Dict-spread is supported (`Record({**other_record, NEW_ATTR: value})`):
+``keys()`` yields `ViewAttribute` handles that override `read_from`
+(raw passthrough, None-tolerant) and `write_to` (identity store) so the
+spread roundtrip flows through the standard Record paths without any
+special-casing in Record itself.
 """
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Final, Self, overload
 
-from .attribute import Attribute, OptionalAttribute, RequiredAttribute
+from .attribute import (
+    Attribute,
+    OptionalAttribute,
+    RawDict,
+    RequiredAttribute,
+    ViewAttribute,
+)
 from .codec import Codec
 from .codecs import DATETIME, DICT, LIST, SET, TUPLE
-
-
-class MissingAttributeError(KeyError):
-    """To raise by `Record.__getitem__` when a required attribute is missing or `None`."""
 
 
 def _encode_any(v: Any) -> Any:
@@ -65,9 +75,9 @@ def _encode_any(v: Any) -> Any:
 
 
 class Record:
-    """Wrapper around `dict[str, Any]` with `Attribute`-only access."""
+    """Wrapper around a `RawDict` with `Attribute`-only access."""
 
-    raw: dict[str, Any]
+    raw: RawDict
 
     # TODO(legacy-pickle-compat): once all changelog topics in every environment
     # have been fully replaced with new-format entries (the str-key __setitem__
@@ -85,17 +95,18 @@ class Record:
         if isinstance(source, Record):
             self.raw = source.raw.copy()
             return
-        # Top-level Attribute keys rekey to `attr.name` and run the
-        # attribute's encoder on the value; plain string keys pass
-        # through and the value goes through the recursive `_encode_any`
-        # walker. This is the only place in the framework that accepts
-        # mixed `Attribute | str` keys — every codec downstream is
-        # strict (`DICT(V)` rejects non-str keys).
-        self.raw = {
-            (k.name if isinstance(k, Attribute) else k):
-                (k.encode_or_null(v) if isinstance(k, Attribute) else _encode_any(v))
-            for k, v in source.items()
-        }
+        # Each entry is dispatched to the Attribute's own `write_to` (which
+        # encapsulates encoding, null-handling, and any subclass-specific
+        # short-circuits like `ViewAttribute`'s identity store). Plain
+        # string keys (legacy/pickle path) bypass the attribute API and
+        # go through the recursive `_encode_any` walker. This is the only
+        # place in the framework that accepts mixed `Attribute | str` keys —
+        # every codec downstream is strict (`DICT(V)` rejects non-str keys).
+        for k, v in source.items():
+            if isinstance(k, Attribute):
+                k.write_to(self.raw, v)
+            else:
+                self.raw[k] = _encode_any(v)
 
     def __reduce__(self) -> tuple:
         # Clean modern pickle format: (cls, (raw,)) → reconstruct via cls(raw).
@@ -106,10 +117,7 @@ class Record:
     # --- indexing ---
 
     def __getitem__[V](self, attr: RequiredAttribute[V]) -> V:
-        v = self.raw.get(attr.name)
-        if v is None:
-            raise MissingAttributeError(f"attribute {attr!r} is missing")
-        return attr.decode(v)
+        return attr.read_from(self.raw)
 
     @overload
     def __setitem__[V](self, attr: RequiredAttribute[V], value: V) -> None: ...
@@ -126,21 +134,31 @@ class Record:
             # rejects str keys; only pickle's SETITEMS opcode reaches this branch.
             self.raw[attr] = value
             return
-        self.raw[attr.name] = attr.encode_or_null(value)
+        attr.write_to(self.raw, value)
 
     def __delitem__(self, attr: OptionalAttribute) -> None:
-        del self.raw[attr.name]
+        attr.delete_from(self.raw)
 
     def __contains__(self, attr: OptionalAttribute) -> bool:
-        return attr.name in self.raw
+        return attr.present_in(self.raw)
 
     # --- container protocol ---
 
     def __len__(self) -> int:
         return len(self.raw)
 
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.raw)
+    def __iter__(self) -> Iterator[RequiredAttribute[Any]]:
+        return iter(self.keys())
+
+    def keys(self) -> Iterable[RequiredAttribute[Any]]:
+        """Yield a `ViewAttribute` per key in `raw`.
+
+        Enables dict-spread: ``Record({**other, NEW_ATTR: value})`` calls
+        ``other.keys()`` and then ``other[view_attr]`` for each — both
+        landing on the view's overridden read/write methods. The constructor
+        stores the values as-is via ``ViewAttribute.write_to``.
+        """
+        return [ViewAttribute(name) for name in self.raw]
 
     def __bool__(self) -> bool:
         return bool(self.raw)
@@ -170,22 +188,16 @@ class Record:
     def get[V](self, attr: OptionalAttribute[V], default: V) -> V: ...
     def get[V](self, attr: OptionalAttribute[V], default: V | None = None) -> V | None:
         """Return the decoded value, or `default` if missing or `None`."""
-        v = self.raw.get(attr.name)
-        return default if v is None else attr.decode(v)
+        return attr.get_from(self.raw, default)
 
     def pop[V](self, attr: OptionalAttribute[V], /, *default: V) -> V | None:
         """Remove and return the decoded value; raise KeyError if missing and no default given.
 
         A stored `None` is returned as `None` (no decode) and the key is removed —
-        mirroring `dict.pop` semantics and matching how `_encode_attr` allows
-        `None` writes for `OptionalAttribute`.
+        mirroring `dict.pop` semantics and matching how `OptionalAttribute.write_to`
+        allows `None` writes.
         """
-        if attr.name in self.raw:
-            v = self.raw.pop(attr.name)
-            return None if v is None else attr.decode(v)
-        if default:
-            return default[0]
-        raise KeyError(attr)
+        return attr.pop_from(self.raw, *default)
 
     def update(self, other: Record) -> None:
         """Merge another `Record` into this one."""

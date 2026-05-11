@@ -175,10 +175,16 @@ def test_len():
     assert len(d) == 3
 
 
-def test_iter_yields_name_strings():
-    """Iteration yields the raw string keys of the wrapped data dict."""
+def test_iter_yields_view_attributes_matching_raw_keys():
+    """Iteration aligns with `keys()` — yields ViewAttribute handles
+    whose `.name` matches the wire-form keys, in insertion order."""
+    from fretworx.attribute.attribute import ViewAttribute
     d = Record({"count": "42", "name": "x"})
-    assert list(d) == ["count", "name"]
+    attrs = list(d)
+    assert all(isinstance(a, ViewAttribute) for a in attrs)
+    assert [a.name for a in attrs] == ["count", "name"]
+    # round-trip read works — yielded handles are usable as keys
+    assert d[attrs[0]] == "42"
 
 
 def test_bool_empty_is_false():
@@ -381,3 +387,45 @@ def test_subclass_repr_uses_subclass_name():
     e = Event({"count": "42"})
     assert "Event" in repr(e)
     assert "Record(" not in repr(e)
+
+
+# --- dict-spread (`Record({**other, NEW_ATTR: value})`) ---
+
+
+def test_spread_into_record_preserves_keys_and_values():
+    r = Record({NAME: "alice", COUNT: 7})
+    merged = Record({**r, LABEL: "tag"})
+    assert merged.raw == {"name": "alice", "count": 7, "label": "tag"}
+
+
+def test_spread_into_record_preserves_stored_none():
+    """Spread must enumerate every key, including OptionalAttribute-stored None."""
+    r = Record({NAME: "alice", LABEL: None})
+    merged = Record({**r, COUNT: 1})
+    assert merged.raw == {"name": "alice", "label": None, "count": 1}
+
+
+def test_spread_later_attribute_overrides_earlier_view_value():
+    r = Record({NAME: "alice"})
+    merged = Record({**r, NAME: "bob"})
+    assert merged.raw == {"name": "bob"}
+
+
+def test_spread_into_subclass_yields_subclass_instance():
+    r = Record({NAME: "alice"})
+    e = Event({**r, COUNT: 3})
+    assert isinstance(e, Event)
+    assert e.raw == {"name": "alice", "count": 3}
+
+
+def test_view_attribute_read_returns_raw_including_stored_none():
+    from fretworx.attribute.attribute import ViewAttribute
+    r = Record({NAME: "alice", LABEL: None})
+    assert r[ViewAttribute("name")] == "alice"
+    assert r[ViewAttribute("label")] is None
+
+
+def test_view_attribute_not_exported_from_public_package():
+    """ViewAttribute is reachable via fully-qualified import only."""
+    import fretworx.attribute as pkg
+    assert not hasattr(pkg, "ViewAttribute")
