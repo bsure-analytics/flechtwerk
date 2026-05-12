@@ -321,6 +321,34 @@ def test_get_returns_none_default_when_missing():
     assert d.get(MAYBE_COUNT) is None
 
 
+# --- coalesce() — first non-None across multiple attributes ---
+
+
+def test_coalesce_returns_first_present_value():
+    A = OptionalAttribute("a", STR)
+    B = OptionalAttribute("b", STR)
+    C = OptionalAttribute("c", STR)
+    d = Record({B: "from-b", C: "from-c"})
+    assert d.coalesce(A, B, C) == "from-b"
+
+
+def test_coalesce_skips_null_values():
+    A = OptionalAttribute("a", STR)
+    B = OptionalAttribute("b", STR)
+    d = Record({A: None, B: "from-b"})
+    assert d.coalesce(A, B) == "from-b"
+
+
+def test_coalesce_returns_none_when_all_absent():
+    A = OptionalAttribute("a", STR)
+    B = OptionalAttribute("b", STR)
+    assert Record().coalesce(A, B) is None
+
+
+def test_coalesce_with_no_attrs_returns_none():
+    assert Record({"a": "x"}).coalesce() is None
+
+
 # --- pop() — OptionalAttribute only ---
 
 

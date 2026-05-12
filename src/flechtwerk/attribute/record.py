@@ -207,6 +207,21 @@ class Record:
         """
         return attr.pop_from(self.raw, *default)
 
+    def coalesce[V](self, *attrs: OptionalAttribute[V]) -> V | None:
+        """Return the first non-`None` decoded value among the given attributes.
+
+        Equivalent to a chain of `.get()` falls-through: returns
+        `.get(attrs[0])` if present, else `.get(attrs[1])`, ..., else
+        `None`. Useful for wire formats where the same logical field
+        appears under several names (e.g. pagination variants like
+        `pages` vs `total_page` vs `total_pages`).
+        """
+        for attr in attrs:
+            v = attr.get_from(self.raw)
+            if v is not None:
+                return v
+        return None
+
     def update(self, other: Record) -> None:
         """Merge another `Record` into this one."""
         self.raw.update(other.raw)
