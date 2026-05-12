@@ -9,7 +9,7 @@ from fretworx.attribute import BOOL, INT, LIST, OptionalAttribute, RECORD, Requi
 from fretworx.module import Fretworx
 from fretworx.transformer import Transformer
 from fretworx.types import Event, Message, State
-from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
+from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
 COUNT: Final = RequiredAttribute("count", INT)
 CURSOR: Final = RequiredAttribute("cursor", INT)

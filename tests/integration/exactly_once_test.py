@@ -12,7 +12,7 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
 from fretworx.observer import Observer
 from fretworx.state import ChangelogStateStore
-from testing import InMemoryStateStore
+from fretworx.testing import InMemoryStateStore
 from fretworx.transformer import TransformerRunner
 from fretworx.types import Message, State
 

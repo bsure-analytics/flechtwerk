@@ -8,8 +8,8 @@ import pytest
 from fretworx.attribute import BOOL, INT, OptionalAttribute, RequiredAttribute, STR
 from fretworx.extractor import ConfigEntry, Extractor
 from fretworx.module import Fretworx
+from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 from fretworx.types import Config, Message, State
-from testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
 API_KEY: Final = RequiredAttribute("api_key", STR)
 CURSOR: Final = RequiredAttribute("cursor", INT)

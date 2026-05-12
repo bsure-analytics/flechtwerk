@@ -5,7 +5,7 @@ from typing import Final
 
 from fretworx.attribute import ANY, DATETIME, DICT, INT, RequiredAttribute, SET, STR
 from fretworx.state import ChangelogStateStore, RocksDBStateStore
-from testing import FakeKafkaProducer, InMemoryStateStore
+from fretworx.testing import FakeKafkaProducer, InMemoryStateStore
 from fretworx.types import State
 
 
