@@ -28,14 +28,14 @@ def test_construct_empty():
 
 
 def test_construct_from_mapping():
-    d = Record({"count": "42"})
+    d = Record.wrap({"count": "42"})
     assert d.raw == {"count": "42"}
 
 
 def test_construct_copies_input():
     """The input mapping is shallow-copied so external mutation doesn't leak in."""
     raw = {"count": "42"}
-    d = Record(raw)
+    d = Record.wrap(raw)
     raw["count"] = "100"
     assert d.raw["count"] == "42"
 
@@ -43,7 +43,7 @@ def test_construct_copies_input():
 def test_construct_from_another_dict():
     """A Record can be constructed from another Record instance — the underlying
     `data` dicts are independent (shallow-copied)."""
-    a = Record({"count": "42"})
+    a = Record.wrap({"count": "42"})
     b = Record(a)
     assert b.raw == a.raw
     a.raw["count"] = "100"
@@ -58,7 +58,7 @@ def test_construct_from_subclass_to_subclass():
     class B(Record):
         pass
 
-    a = A({"x": 1})
+    a = A.wrap({"x": 1})
     b = B(a)
     assert isinstance(b, B)
     assert b.raw == {"x": 1}
@@ -68,13 +68,13 @@ def test_construct_from_subclass_to_subclass():
 
 
 def test_getitem_validates_and_returns():
-    d = Record({"count": 42})
+    d = Record.wrap({"count": 42})
     assert d[COUNT] == 42
 
 
 def test_getitem_raises_on_wire_type_mismatch():
     """If the wire value isn't an instance of V, the type-validating decoder asserts."""
-    d = Record({"count": "42"})  # wire is str but COUNT is RequiredAttribute[int]
+    d = Record.wrap({"count": "42"})  # wire is str but COUNT is RequiredAttribute[int]
     with pytest.raises(AssertionError):
         _ = d[COUNT]
 
@@ -86,7 +86,7 @@ def test_getitem_missing_raises():
 
 
 def test_getitem_null_raises():
-    d = Record({"count": None})
+    d = Record.wrap({"count": None})
     with pytest.raises(MissingAttributeError):
         _ = d[COUNT]
 
@@ -108,7 +108,7 @@ def test_setitem_raises_on_value_type_mismatch():
 
 
 def test_setitem_overwrites_existing():
-    d = Record({"count": 1})
+    d = Record.wrap({"count": 1})
     d[COUNT] = 99
     assert d.raw == {"count": 99}
 
@@ -143,7 +143,7 @@ def test_construct_required_attribute_with_none_raises():
 
 
 def test_delitem_removes_key():
-    d = Record({"count": 42, "name": "x"})
+    d = Record.wrap({"count": 42, "name": "x"})
     del d[COUNT.optional]
     assert d.raw == {"name": "x"}
 
@@ -158,7 +158,7 @@ def test_delitem_missing_raises_keyerror():
 
 
 def test_contains_true_when_present():
-    d = Record({"count": "42"})
+    d = Record.wrap({"count": "42"})
     assert COUNT in d
 
 
@@ -171,7 +171,7 @@ def test_contains_false_when_absent():
 
 
 def test_len():
-    d = Record({"a": 1, "b": 2, "c": 3})
+    d = Record.wrap({"a": 1, "b": 2, "c": 3})
     assert len(d) == 3
 
 
@@ -179,7 +179,7 @@ def test_iter_yields_view_attributes_matching_raw_keys():
     """Iteration aligns with `keys()` — yields ViewAttribute handles
     whose `.name` matches the wire-form keys, in insertion order."""
     from fretworx.attribute.attribute import ViewAttribute
-    d = Record({"count": "42", "name": "x"})
+    d = Record.wrap({"count": "42", "name": "x"})
     attrs = list(d)
     assert all(isinstance(a, ViewAttribute) for a in attrs)
     assert [a.name for a in attrs] == ["count", "name"]
@@ -192,23 +192,23 @@ def test_bool_empty_is_false():
 
 
 def test_bool_nonempty_is_true():
-    assert bool(Record({"a": 1})) is True
+    assert bool(Record.wrap({"a": 1})) is True
 
 
 # --- __eq__, __hash__, __repr__ ---
 
 
 def test_eq_same_data():
-    assert Record({"a": 1}) == Record({"a": 1})
+    assert Record.wrap({"a": 1}) == Record.wrap({"a": 1})
 
 
 def test_eq_different_data():
-    assert Record({"a": 1}) != Record({"a": 2})
+    assert Record.wrap({"a": 1}) != Record.wrap({"a": 2})
 
 
 def test_eq_to_plain_dict_is_not_equal():
     """A Record is its own type; not equal to a plain dict, even with same contents."""
-    assert Record({"a": 1}) != {"a": 1}
+    assert Record.wrap({"a": 1}) != {"a": 1}
 
 
 def test_eq_across_subclasses_is_not_equal():
@@ -220,8 +220,8 @@ def test_eq_across_subclasses_is_not_equal():
     class B(Record):
         pass
 
-    assert A({"x": 1}) != B({"x": 1})
-    assert A({"x": 1}) != Record({"x": 1})
+    assert A.wrap({"x": 1}) != B.wrap({"x": 1})
+    assert A.wrap({"x": 1}) != Record.wrap({"x": 1})
 
 
 def test_unhashable():
@@ -231,7 +231,7 @@ def test_unhashable():
 
 
 def test_repr_includes_data():
-    d = Record({"count": "42"})
+    d = Record.wrap({"count": "42"})
     assert "count" in repr(d)
     assert "Record" in repr(d)
 
@@ -240,14 +240,14 @@ def test_repr_includes_data():
 
 
 def test_copy_is_independent():
-    d = Record({"count": 42})
+    d = Record.wrap({"count": 42})
     c = copy.copy(d)
     c[COUNT] = 99
     assert d[COUNT] == 42
 
 
 def test_deepcopy_is_independent():
-    d = Record({"nested": {"a": 1}})
+    d = Record.wrap({"nested": {"a": 1}})
     c = copy.deepcopy(d)
     c.raw["nested"]["a"] = 99
     assert d.raw["nested"]["a"] == 1
@@ -257,7 +257,7 @@ def test_deepcopy_is_independent():
 
 
 def test_pickle_round_trip():
-    d = Record({"count": "42", "name": "x"})
+    d = Record.wrap({"count": "42", "name": "x"})
     restored = pickle.loads(pickle.dumps(d))
     assert restored == d
     assert restored.raw == d.raw
@@ -302,7 +302,7 @@ class LegacyEventDictSubclass(dict):
 
 
 def test_get_returns_decoded_value():
-    d = Record({"count": 42})
+    d = Record.wrap({"count": 42})
     assert d.get(MAYBE_COUNT) == 42
 
 
@@ -312,7 +312,7 @@ def test_get_returns_default_when_missing():
 
 
 def test_get_returns_default_when_null():
-    d = Record({"count": None})
+    d = Record.wrap({"count": None})
     assert d.get(MAYBE_COUNT, 0) == 0
 
 
@@ -346,14 +346,14 @@ def test_coalesce_returns_none_when_all_absent():
 
 
 def test_coalesce_with_no_attrs_returns_none():
-    assert Record({"a": "x"}).coalesce() is None
+    assert Record.wrap({"a": "x"}).coalesce() is None
 
 
 # --- pop() — OptionalAttribute only ---
 
 
 def test_pop_returns_decoded_and_removes():
-    d = Record({"count": 42, "name": "x"})
+    d = Record.wrap({"count": 42, "name": "x"})
     assert d.pop(MAYBE_COUNT) == 42
     assert d.raw == {"name": "x"}
 
@@ -371,7 +371,7 @@ def test_pop_missing_without_default_raises():
 
 def test_pop_returns_none_for_explicit_null_and_removes():
     """A stored `None` pops back as `None`, key is removed (decode is skipped)."""
-    d = Record({"count": None, "name": "x"})
+    d = Record.wrap({"count": None, "name": "x"})
     assert d.pop(MAYBE_COUNT) is None
     assert d.raw == {"name": "x"}
 
@@ -380,8 +380,8 @@ def test_pop_returns_none_for_explicit_null_and_removes():
 
 
 def test_update_merges_data_from_another_dict():
-    a = Record({"count": "1", "name": "x"})
-    b = Record({"count": "2", "label": "lbl"})
+    a = Record.wrap({"count": "1", "name": "x"})
+    b = Record.wrap({"count": "2", "label": "lbl"})
     a.update(b)
     assert a.raw == {"count": "2", "name": "x", "label": "lbl"}
 
@@ -394,25 +394,25 @@ class Event(Record):
 
 
 def test_subclass_preserves_type_via_copy():
-    e = Event({"count": "42"})
+    e = Event.wrap({"count": "42"})
     c = copy.copy(e)
     assert isinstance(c, Event)
 
 
 def test_subclass_preserves_type_via_deepcopy():
-    e = Event({"count": "42"})
+    e = Event.wrap({"count": "42"})
     c = copy.deepcopy(e)
     assert isinstance(c, Event)
 
 
 def test_subclass_preserves_type_via_pickle():
-    e = Event({"count": "42"})
+    e = Event.wrap({"count": "42"})
     restored = pickle.loads(pickle.dumps(e))
     assert isinstance(restored, Event)
 
 
 def test_subclass_repr_uses_subclass_name():
-    e = Event({"count": "42"})
+    e = Event.wrap({"count": "42"})
     assert "Event" in repr(e)
     assert "Record(" not in repr(e)
 

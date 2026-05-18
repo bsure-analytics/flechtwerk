@@ -28,7 +28,7 @@ def test_in_memory_get_missing_returns_none():
 def test_in_memory_put_and_get():
     async def run():
         store = InMemoryStateStore()
-        await store.put("key1", State({"cursor": "2024-01-01"}))
+        await store.put("key1", State.wrap({"cursor": "2024-01-01"}))
         result = await store.get("key1")
         assert result.raw == {"cursor": "2024-01-01"}
     asyncio.run(run())
@@ -37,7 +37,7 @@ def test_in_memory_put_and_get():
 def test_in_memory_delete():
     async def run():
         store = InMemoryStateStore()
-        await store.put("key1", State({"x": 1}))
+        await store.put("key1", State.wrap({"x": 1}))
         await store.delete("key1")
         assert await store.get("key1") is None
     asyncio.run(run())
@@ -83,7 +83,7 @@ def test_in_memory_nested_state():
             "last_ids": [1, 2, 3],
             "nested": {"a": 1, "b": [4, 5]},
         }
-        await store.put("key", State(raw))
+        await store.put("key", State.wrap(raw))
         result = await store.get("key")
         assert result.raw == raw
     asyncio.run(run())
@@ -94,7 +94,7 @@ def test_rocksdb_put_and_get(tmp_path):
         store = RocksDBStateStore()
         store.path = tmp_path / "test-db"
         try:
-            await store.put("key1", State({"cursor": "2024-01-01", "count": 42}))
+            await store.put("key1", State.wrap({"cursor": "2024-01-01", "count": 42}))
             result = await store.get("key1")
             assert result.raw == {"cursor": "2024-01-01", "count": 42}
         finally:
@@ -118,7 +118,7 @@ def test_rocksdb_delete(tmp_path):
         store = RocksDBStateStore()
         store.path = tmp_path / "test-db"
         try:
-            await store.put("key1", State({"x": 1}))
+            await store.put("key1", State.wrap({"x": 1}))
             await store.delete("key1")
             assert await store.get("key1") is None
         finally:
@@ -172,7 +172,7 @@ def test_changelog_put_writes_to_inner_and_producer():
         store.producer = producer
         store.topic = "test-changelog"
 
-        await store.put("k1", State({"cursor": 42}))
+        await store.put("k1", State.wrap({"cursor": 42}))
 
         result = await inner.get("k1")
         assert result.raw == {"cursor": 42}
@@ -194,7 +194,7 @@ def test_changelog_get_reads_from_inner():
         store.producer = producer
         store.topic = "test-changelog"
 
-        await inner.put("k1", State({"data": 1}))
+        await inner.put("k1", State.wrap({"data": 1}))
         result = await store.get("k1")
         assert result.raw == {"data": 1}
         assert len(producer.sent) == 0
@@ -211,7 +211,7 @@ def test_changelog_delete_writes_tombstone():
         store.producer = producer
         store.topic = "test-changelog"
 
-        await store.put("k1", State({"data": 1}))
+        await store.put("k1", State.wrap({"data": 1}))
         await store.delete("k1")
 
         assert await inner.get("k1") is None
@@ -229,9 +229,9 @@ def test_changelog_inner_store_rebuilt_via_put():
         inner = InMemoryStateStore()
 
         # Simulate changelog replay
-        await inner.put("k1", State({"cursor": 10}))
-        await inner.put("k2", State({"cursor": 20}))
-        await inner.put("k1", State({"cursor": 15}))  # update k1
+        await inner.put("k1", State.wrap({"cursor": 10}))
+        await inner.put("k2", State.wrap({"cursor": 20}))
+        await inner.put("k1", State.wrap({"cursor": 15}))  # update k1
 
         result_k1 = await inner.get("k1")
         result_k2 = await inner.get("k2")
@@ -246,7 +246,7 @@ def test_changelog_inner_store_tombstone_deletes():
     async def run():
         inner = InMemoryStateStore()
 
-        await inner.put("k1", State({"cursor": 10}))
+        await inner.put("k1", State.wrap({"cursor": 10}))
         await inner.delete("k1")  # tombstone
 
         assert await inner.get("k1") is None
@@ -268,7 +268,7 @@ def test_changelog_close_closes_inner():
         store.producer = producer
         store.topic = "test-changelog"
 
-        await store.put("k1", State({"data": 1}))
+        await store.put("k1", State.wrap({"data": 1}))
         await store.close()
 
         # Producer should NOT be stopped (module manages that)

@@ -50,9 +50,9 @@ async def test_restore_reconstructs_state_from_changelog(
 ) -> None:
     """put-only records → restore writes wire bytes for each record."""
     await _create_compacted_topic(kafka_bootstrap, unique_changelog_topic)
-    bytes1 = serialize(State({"cursor": "2024-01-01"}))
-    bytes2 = serialize(State({"cursor": "2024-02-01"}))
-    bytes3 = serialize(State({"cursor": "2024-03-01"}))
+    bytes1 = serialize(State.wrap({"cursor": "2024-01-01"}))
+    bytes2 = serialize(State.wrap({"cursor": "2024-02-01"}))
+    bytes3 = serialize(State.wrap({"cursor": "2024-03-01"}))
     await _produce(kafka_bootstrap, unique_changelog_topic, [
         (b"key1", bytes1),
         (b"key2", bytes2),
@@ -83,10 +83,10 @@ async def test_restore_applies_kafka_tombstones(
 ) -> None:
     """A value=None record (Kafka tombstone) removes the key from restored state."""
     await _create_compacted_topic(kafka_bootstrap, unique_changelog_topic)
-    alive_bytes = serialize(State({"n": 1}))
+    alive_bytes = serialize(State.wrap({"n": 1}))
     await _produce(kafka_bootstrap, unique_changelog_topic, [
         (b"alive", alive_bytes),
-        (b"gone", serialize(State({"n": 2}))),
+        (b"gone", serialize(State.wrap({"n": 2}))),
         (b"gone", None),  # Kafka compaction tombstone
     ])
 
@@ -116,8 +116,8 @@ async def test_restore_passes_legacy_pickle_bytes_through_unchanged(
     deserialization is deferred to the first `get()` for the key. TODO(legacy-pickle-state):
     remove once all changelog topics have rolled over."""
     await _create_compacted_topic(kafka_bootstrap, unique_changelog_topic)
-    legacy_bytes = pickle.dumps(State({"cursor": "from-the-past"}))
-    modern_bytes = serialize(State({"cursor": "current"}))
+    legacy_bytes = pickle.dumps(State.wrap({"cursor": "from-the-past"}))
+    modern_bytes = serialize(State.wrap({"cursor": "current"}))
     await _produce(kafka_bootstrap, unique_changelog_topic, [
         (b"legacy", legacy_bytes),
         (b"modern", modern_bytes),

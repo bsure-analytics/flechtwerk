@@ -108,7 +108,7 @@ async def test_successful_transaction_commits_output_state_and_offsets(
             messages=[Message(
                 topic=output_topic, key="out-key", value={"derived": "yes"}, timestamp=None,
             )],
-            state_changes={"k": State({"cursor": "done"})},
+            state_changes={"k": State.wrap({"cursor": "done"})},
             offsets={tp: 1},
         )
     finally:
@@ -173,7 +173,7 @@ async def test_aborted_transaction_materializes_nothing(
                 await txn_producer.send(
                     output_topic, key=b"k", value=b'{"phantom":true}',
                 )
-                await state_store.put("k", State({"phantom": True}))
+                await state_store.put("k", State.wrap({"phantom": True}))
                 await txn_producer.send_offsets_to_transaction({tp: 99}, unique_group_id)
                 raise BoomError("abort me")
     finally:

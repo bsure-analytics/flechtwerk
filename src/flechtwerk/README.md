@@ -33,7 +33,7 @@ That's it. There are no agents, no tables, no DSL, no `@app.topic` decorators, n
 async def transform(message, state):
     event = enrich(message.event, state)
     yield Message(topic="output", key=message.key, event=event)
-    yield State({"last_seen": event.timestamp})
+    yield State({LAST_SEEN: event.timestamp})
 ```
 
 Stateless stages simply never yield `State` and never open a RocksDB file.

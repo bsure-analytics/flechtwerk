@@ -59,14 +59,14 @@ def _encode_any(v: Any) -> Any:
         return v
     if isinstance(v, (str, int, float)):  # bool ⊂ int — passes through as bool
         return v
+    if isinstance(v, datetime):
+        return DATETIME.encode(v)
     if isinstance(v, Record):
         return RECORD.encode(v)
     if isinstance(v, dict):
         return _DICT_OF_ANY.encode(v)
     if isinstance(v, list):
         return _LIST_OF_ANY.encode(v)
-    if isinstance(v, datetime):
-        return DATETIME.encode(v)
     if isinstance(v, set):
         return _SET_OF_ANY.encode(v)
     if isinstance(v, tuple):
@@ -89,30 +89,27 @@ class Record:
         instance.raw = {}
         return instance
 
-    def __init__(self, source: dict[str | Attribute, Any] | Record | None = None, /) -> None:
+    def __init__(self, source: Record | dict[Attribute, Any] | None = None, /) -> None:
         if source is None:
-            return  # raw already {} from __new__
+            return
         if isinstance(source, Record):
             self.raw = source.raw.copy()
             return
-        # Each entry is dispatched to the Attribute's own `write_to` (which
-        # encapsulates encoding, null-handling, and any subclass-specific
-        # short-circuits like `ViewAttribute`'s identity store). Plain
-        # string keys (legacy/pickle path) bypass the attribute API and
-        # go through the recursive `_encode_any` walker. This is the only
-        # place in the framework that accepts mixed `Attribute | str` keys —
-        # every codec downstream is strict (`DICT(V)` rejects non-str keys).
         for k, v in source.items():
-            if isinstance(k, Attribute):
-                k.write_to(self.raw, v)
-            else:
-                self.raw[k] = _encode_any(v)
+            k.write_to(self.raw, v)
+
+    @classmethod
+    def wrap(cls, source: RawDict, /) -> Self:
+        self = cls()
+        for k, v in source.items():
+            self.raw[k] = _encode_any(v)
+        return self
 
     def __reduce__(self) -> tuple:
-        # Clean modern pickle format: (cls, (raw,)) → reconstruct via cls(raw).
+        # Clean modern pickle format: (cls.wrap, (raw,)) → reconstruct via cls.wrap(raw).
         # Legacy changelog entries (saved when Event/Config/State were dict
         # subclasses) are restored via the str-key path in __setitem__ below.
-        return self.__class__, (self.raw,)
+        return self.__class__.wrap, (self.raw,)
 
     # --- indexing ---
 
@@ -183,10 +180,12 @@ class Record:
         return f"{type(self).__name__}({self.raw!r})"
 
     def __copy__(self) -> Record:
-        return type(self)(self.raw)  # type: ignore[arg-type]
+        return type(self)(self)
 
     def __deepcopy__(self, memo: dict) -> Record:
-        return type(self)(deepcopy(self.raw, memo))  # type: ignore[arg-type]
+        new = type(self)()
+        new.raw = deepcopy(self.raw, memo)
+        return new
 
     # --- Pythonic helpers (Optional only) ---
 
@@ -237,7 +236,7 @@ def record_codec[T: Record](cls: type[T]) -> Codec[T]:
     contract.
     """
     return Codec(
-        decode=lambda raw: cls(raw),
+        decode=cls.wrap,
         encode=lambda r: r.raw.copy(),
     )
 

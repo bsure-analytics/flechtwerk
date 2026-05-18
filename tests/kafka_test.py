@@ -276,7 +276,7 @@ def test_restore_changelog_assigns_all_partitions_and_seeks_to_beginning():
 def test_restore_changelog_calls_put_bytes_for_truthy_value():
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
-        record = _make_record(key=b"k1", value=serialize(State({"cursor": 123})))
+        record = _make_record(key=b"k1", value=serialize(State.wrap({"cursor": 123})))
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
         put_bytes = AsyncMock()
         delete = AsyncMock()
@@ -284,7 +284,7 @@ def test_restore_changelog_calls_put_bytes_for_truthy_value():
         count = await restore_changelog(consumer, "cl", put_bytes, delete)
 
         assert count == 1
-        put_bytes.assert_awaited_once_with("k1", serialize(State({"cursor": 123})))
+        put_bytes.assert_awaited_once_with("k1", serialize(State.wrap({"cursor": 123})))
         delete.assert_not_called()
     asyncio.run(run())
 
@@ -326,14 +326,14 @@ def test_restore_changelog_calls_delete_on_empty_state():
 def test_restore_changelog_handles_none_key():
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
-        record = _make_record(key=None, value=serialize(State({"v": 1})))
+        record = _make_record(key=None, value=serialize(State.wrap({"v": 1})))
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
         put_bytes = AsyncMock()
 
         count = await restore_changelog(consumer, "cl", put_bytes, AsyncMock())
 
         assert count == 1
-        put_bytes.assert_awaited_once_with("", serialize(State({"v": 1})))
+        put_bytes.assert_awaited_once_with("", serialize(State.wrap({"v": 1})))
     asyncio.run(run())
 
 
@@ -345,11 +345,11 @@ def test_restore_changelog_passes_each_record_through_put_bytes():
         tp1 = aiokafka.TopicPartition("cl", 1)
         batch1 = {
             tp0: [
-                _make_record(key=b"a", value=serialize(State({"n": 1})), partition=0, offset=0),
-                _make_record(key=b"b", value=serialize(State({"n": 2})), partition=0, offset=1),
+                _make_record(key=b"a", value=serialize(State.wrap({"n": 1})), partition=0, offset=0),
+                _make_record(key=b"b", value=serialize(State.wrap({"n": 2})), partition=0, offset=1),
             ],
             tp1: [
-                _make_record(key=b"c", value=serialize(State({"n": 3})), partition=1, offset=0),
+                _make_record(key=b"c", value=serialize(State.wrap({"n": 3})), partition=1, offset=0),
             ],
         }
         batch2 = {
@@ -377,7 +377,7 @@ def test_restore_changelog_passes_legacy_pickle_bytes_through_unchanged():
     topics have rolled over to JSON."""
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
-        legacy_bytes = pickle.dumps(State({"cursor": 123}))
+        legacy_bytes = pickle.dumps(State.wrap({"cursor": 123}))
         record = _make_record(key=b"k1", value=legacy_bytes)
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
         put_bytes = AsyncMock()

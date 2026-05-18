@@ -106,7 +106,7 @@ def test_deserialize_legacy_pickle_with_nested_datetime_and_tuple():
 def test_deserialize_distinguishes_json_from_pickle():
     """JSON bytes always decode as JSON; pickle bytes hit the fallback. The
     chain-of-responsibility never tries pickle on JSON or vice versa."""
-    json_bytes = serialize(State({"x": 1}))
-    pickle_bytes = pickle.dumps(State({"x": 1}))
+    json_bytes = serialize(State.wrap({"x": 1}))
+    pickle_bytes = pickle.dumps(State.wrap({"x": 1}))
     assert deserialize(json_bytes).raw == {"x": 1}
     assert deserialize(pickle_bytes).raw == {"x": 1}

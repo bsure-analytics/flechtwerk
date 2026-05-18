@@ -53,7 +53,7 @@ def millis_to_datetime(millis: int | None) -> datetime | None:
 def parse_message(msg: ConsumerRecord[Any, Any]) -> IncomingMessage:
     """Parse an aiokafka ConsumerRecord into an IncomingMessage.
 
-    Malformed payloads fall back to ``Event({})`` rather than raising — a
+    Malformed payloads fall back to ``Event.wrap({})`` rather than raising — a
     single bad message must not crash the stage into an infinite
     CrashLoopBackOff on its own offset. Handles:
       - non-UTF-8 bytes in value
@@ -82,7 +82,7 @@ def parse_message(msg: ConsumerRecord[Any, Any]) -> IncomingMessage:
         partition=msg.partition,
         timestamp=millis_to_datetime(msg.timestamp),
         topic=msg.topic,
-        value=Event(parsed),
+        value=Event.wrap(parsed),
     )
 
 

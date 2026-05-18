@@ -37,12 +37,12 @@ def deserialize(b: bytes) -> State:
     so any native datetime/set/tuple inside the legacy state lands in
     JSON-native form before being returned."""
     try:
-        return State(json.loads(b))
+        return State.wrap(json.loads(b))
     except (json.JSONDecodeError, UnicodeDecodeError):
         # TODO(legacy-pickle-state): remove this branch once all changelog
         # topics in every environment have rolled over to JSON.
         legacy = pickle.loads(b)  # noqa: S301
-        return State(_DICT_OF_ANY.encode(legacy.raw))
+        return State.wrap(_DICT_OF_ANY.encode(legacy.raw))
 
 
 # --- Stores ---

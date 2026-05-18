@@ -33,7 +33,7 @@ class SimpleExtractor(Extractor):
             topic="test-output",
             value={"cursor": cursor, "data": "polled"},
         )
-        yield State({"cursor": cursor + 1})
+        yield State.wrap({"cursor": cursor + 1})
 
 
 class EnrichingExtractor(Extractor):
@@ -95,7 +95,7 @@ def test_simple_extractor_poll():
     async def run():
         ext = SimpleExtractor()
         state = State()
-        config = Config({"api_key": "test-key"})
+        config = Config.wrap({"api_key": "test-key"})
         items = [item async for item in ext.poll(config, state)]
         messages = [i for i in items if isinstance(i, Message)]
         states = [i for i in items if isinstance(i, State)]
@@ -189,11 +189,11 @@ def test_extractor_state_isolation_on_error():
 
     async def run():
         state_store = InMemoryStateStore()
-        await state_store.put("k", State({"original": True}))
+        await state_store.put("k", State.wrap({"original": True}))
 
         mod = make_module(FailingExtractor(), state_store=state_store)
         runner = mod.runner
-        entry = ConfigEntry(config=Config({"api_key": "k"}), state_key="k")
+        entry = ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k")
 
         with pytest.raises(RuntimeError, match="Simulated API failure"):
             await runner.poll_one(entry)
@@ -272,12 +272,12 @@ def test_extractor_runner_state_not_persisted_on_send_failure():
 
     async def run():
         state_store = InMemoryStateStore()
-        await state_store.put("k", State({"cursor": 5}))
+        await state_store.put("k", State.wrap({"cursor": 5}))
         producer = FailingProducer()
 
         mod = make_module(SimpleExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        entry = ConfigEntry(config=Config({"api_key": "k"}), state_key="k")
+        entry = ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k")
 
         with pytest.raises(ConnectionError):
             await runner.poll_one(entry)
@@ -350,7 +350,7 @@ def test_extractor_poll_yields_no_state():
 
         mod = make_module(EmptyExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
+        await runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
 
         assert len(producer.sent) == 0
         assert await state_store.get("k") is None
@@ -374,7 +374,7 @@ def test_extractor_poll_in_place_state_mutation_is_persisted():
 
         mod = make_module(InPlaceMutatingExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
+        await runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
 
         assert (await state_store.get("k"))[CURSOR] == 1
 
@@ -392,11 +392,11 @@ def test_extractor_poll_yielding_empty_state_deletes_existing_entry():
 
     async def run():
         state_store = InMemoryStateStore()
-        await state_store.put("k", State({"cursor": 5}))
+        await state_store.put("k", State.wrap({"cursor": 5}))
 
         mod = make_module(TombstoningExtractor(), state_store=state_store)
         runner = mod.runner
-        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
+        await runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
 
         assert await state_store.get("k") is None
 
@@ -423,7 +423,7 @@ def test_extractor_poll_yielding_empty_state_no_op_when_already_absent():
         state_store = SpyingStore()
         mod = make_module(TombstoningExtractor(), state_store=state_store)
         runner = mod.runner
-        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
+        await runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
 
         assert deleted == []  # baseline {} == yielded {}, no change
         assert await state_store.get("k") is None
@@ -448,7 +448,7 @@ def test_extractor_poll_mutation_without_yield_is_not_persisted():
 
         mod = make_module(MutateWithoutYieldExtractor(), producer=producer, state_store=state_store)
         runner = mod.runner
-        await runner.poll_one(ConfigEntry(config=Config({"api_key": "k"}), state_key="k"))
+        await runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
 
         assert await state_store.get("k") is None
 
@@ -467,7 +467,7 @@ def test_functional_extractor():
     ext = Extractor.of(input_topics=["cfg"], poll=my_poll)
 
     async def run():
-        config = Config({"api_key": "k"})
+        config = Config.wrap({"api_key": "k"})
         items = [item async for item in ext.poll(config, State())]
         assert len(items) == 1
         assert items[0].value == {"polled": True}
@@ -496,7 +496,7 @@ def test_functional_extractor_with_enrich_and_extract_key():
     )
 
     async def run():
-        enriched = await ext.enrich(Config({"api_key": "k"}))
+        enriched = await ext.enrich(Config.wrap({"api_key": "k"}))
         assert enriched[TAG] == "enriched"
 
         msg = json_record(key="ignored", value={"api_key": "a", "id": "custom"})
@@ -538,7 +538,7 @@ def test_functional_extractor_end_to_end_with_runner():
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
         cursor = state.get(CURSOR, 0)
         yield Message(key=config[API_KEY], topic="out", value={"cursor": cursor})
-        yield State({"cursor": cursor + 1})
+        yield State.wrap({"cursor": cursor + 1})
 
     async def run():
         record = json_record(key="t/c", value={"api_key": "k1"})

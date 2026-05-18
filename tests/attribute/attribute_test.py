@@ -125,7 +125,7 @@ def test_converted_attribute_works_with_dict_access():
     """An `OPT.required` is accepted by `Record.__getitem__`."""
     from fretworx.attribute import Record
     opt = OptionalAttribute("token", STR)
-    d = Record({"token": "abc"})
+    d = Record.wrap({"token": "abc"})
     assert d[opt.required] == "abc"
 
 

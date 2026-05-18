@@ -60,9 +60,9 @@ class StatefulCounterTransformer(Transformer):
         yield Message(
             key=msg.key,
             topic="output",
-            value=Event({"count": count}),
+            value=Event.wrap({"count": count}),
         )
-        yield State({"count": count})
+        yield State.wrap({"count": count})
 
 
 def json_record(key="k", value=None, topic="input-topic", offset=0, partition=0):
@@ -479,8 +479,8 @@ def test_transformer_runner_functional_stateful():
 
     async def my_transform(msg, state):
         count = state.get(COUNT, 0) + 1
-        yield Message(key=msg.key, topic="out", value=Event({"count": count}))
-        yield State({"count": count})
+        yield Message(key=msg.key, topic="out", value=Event.wrap({"count": count}))
+        yield State.wrap({"count": count})
 
     def my_extract_key(msg):
         return msg.value.raw.get("form_id", msg.key)
@@ -597,8 +597,8 @@ def test_transformer_runner_same_key_in_batch_sees_overlay():
     async def counter(msg, state):
         seen_states.append(dict(state.raw))
         count = state.get(COUNT, 0) + 1
-        yield Message(key=msg.key, topic="out", value=Event({"count": count}))
-        yield State({"count": count})
+        yield Message(key=msg.key, topic="out", value=Event.wrap({"count": count}))
+        yield State.wrap({"count": count})
 
     t = Transformer.of(input_topics=["in"], transform=counter)
 
