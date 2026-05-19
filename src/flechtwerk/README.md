@@ -34,16 +34,25 @@ async def transform(message, state):
     event = enrich(message.event, state)
     yield Message(topic="output", key=message.key, event=event)
     yield State({LAST_SEEN: event.timestamp})
+
+stage = Transformer.of(input_topics=["input"], transform=transform)
 ```
 
-Stateless stages simply never yield `State` and never open a RocksDB file.
+`Extractor` and `Transformer` are ABCs. Use the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management (HTTP clients, dedup instances, etc.) via `__aenter__` / `__aexit__`. Stateless stages simply never yield `State` and never open a RocksDB file.
+
+### Typed records, not bare dicts
+
+`Message`, `State`, and `Event` are `Record` subclasses — dict-like containers indexed by typed `Attribute` handles rather than string keys. Each `Attribute[V]` carries an explicit `Codec[V]` that runs on every write, so the underlying `.raw` payload stays JSON-native by construction; wire encoding becomes a straight `json.dumps`, and decode is a straight `Record.wrap(raw)`. Codecs compose: atoms (`STR`, `INT`, `BOOL`, `FLOAT`, `DATETIME`, `RECORD`, `ANY`) plus constructors (`LIST`, `SET`, `TUPLE`, `DICT`). `RequiredAttribute` rejects `None`; `OptionalAttribute` accepts it. Dict-spread (`Record({**other, NEW: value})`) is supported via polymorphic Attribute dispatch — no isinstance branches in the Record dict-ops.
+
+The point isn't ceremony; it's that the boundary between "Python object graph" and "JSON on the wire" is enforced at assignment time, once per Attribute declaration, rather than re-derived on every serialize/deserialize.
 
 ## Operational model
 
 - **Consumer groups** drive partition assignment and rebalancing — standard Kafka semantics, no custom coordination.
 - **Changelog topics** (compacted) are the durable state of record. RocksDB is a local cache rebuilt by replay on startup. Pods are ephemeral; no PVCs.
 - **Kafka transactions** span all output messages, all state changelog writes, and offset commits for a single processing batch. A single transactional producer is shared between the runner and the changelog state store via DI — closing the gap that lets duplicates leak in frameworks that treat these as separate concerns.
-- **"Let it crash"** error strategy: transient failures propagate. Recovery is infrastructure (Kubernetes restart, changelog replay, transaction abort) rather than in-process retry loops.
+- **Per-batch parallelism by state key.** Within a `getmany()` batch, records are bucketed by state key. Buckets run concurrently via `asyncio.gather` so I/O-bound `transform` calls overlap, while records sharing a key run serially inside their bucket — each one sees the previous one's yielded state. Each `transform` call receives a defensive deepcopy of the running state, so in-place mutation without a `yield State(...)` can't leak. Cross-key ordering is not preserved; within a bucket, records appear in `input_topics` order then Kafka offset order.
+- **"Let it crash"** error strategy. The line is recoverable vs non-recoverable, not transient vs persistent: catch only when the handler can actually *remedy* the problem (refresh an expired token, skip a 400 on an endpoint that doesn't exist for this tenant). Timeouts and 5xx crash — sleeping and retrying in-process is reimplementing `CrashLoopBackOff` poorly. Never catch-and-skip data errors; that's silent data loss. Recovery is infrastructure: Kubernetes restart, changelog replay, transaction abort.
 
 ## Architecture
 
