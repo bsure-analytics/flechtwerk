@@ -25,7 +25,7 @@ EnrichFn = Callable[[Config], Awaitable[Config]]
 ExtractKeyFn = Callable[[IncomingMessage], str]
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ConfigEntry:
     """Paired Config and state key — always created, updated, and deleted together."""
     config: Config
