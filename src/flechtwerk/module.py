@@ -14,7 +14,7 @@ import logging
 import tempfile
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Never
+from typing import Any, Literal, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
@@ -28,6 +28,9 @@ from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topi
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
+
+CompressionType = Literal["gzip", "snappy", "lz4", "zstd"]
+"""Kafka producer compression codec — closed set matching aiokafka's accepted values."""
 
 
 @module(CachingStrategy.NOT_THREAD_SAFE)
@@ -56,6 +59,7 @@ class Fretworx:
     application_id: lookup[str]
     bootstrap_servers: lookup[str]
     client_id: lookup[str]
+    compression_type: lookup[CompressionType | None]
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
     metrics: Metrics
@@ -77,19 +81,24 @@ class Fretworx:
         client_id: str,
         poll_interval_seconds: int,
         stage: Extractor | Transformer,
+        compression_type: CompressionType | None = "zstd",
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
     ) -> Fretworx:
         """Build a fully-configured top-level application container.
 
         Use this when running Fretworx as the program's entry point.
-        ``metrics_labels`` defaults to an empty dict and ``metrics_port``
-        defaults to 0 (Prometheus disabled); everything else is required.
+        ``compression_type`` defaults to ``"zstd"`` because Fretworx
+        outputs JSON everywhere (encode_json) and JSON compresses ~13×;
+        pass ``None`` to disable. ``metrics_labels`` defaults to an empty
+        dict and ``metrics_port`` defaults to 0 (Prometheus disabled);
+        everything else is required.
         """
         instance = cls()
         instance.application_id = application_id
         instance.bootstrap_servers = bootstrap_servers
         instance.client_id = client_id
+        instance.compression_type = compression_type
         instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
         instance.metrics_port = metrics_port
         instance.poll_interval_seconds = poll_interval_seconds
@@ -126,6 +135,8 @@ class Fretworx:
             "bootstrap_servers": self.bootstrap_servers,
             "client_id": self.client_id,
         }
+        if self.compression_type:
+            kwargs["compression_type"] = self.compression_type
         if isinstance(self.stage, Transformer):
             kwargs["transactional_id"] = self.client_id
         return AIOKafkaProducer(**kwargs)

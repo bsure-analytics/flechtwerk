@@ -297,6 +297,7 @@ def test_module_wires_changelog_state_store():
         mod.application_id = "test-app"
         mod.bootstrap_servers = "localhost:9092"
         mod.client_id = "test-app"
+        mod.compression_type = None
         mod.stage = StubExtractor()
 
         store = mod.state_store
@@ -410,6 +411,7 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
         "application_id",
         "bootstrap_servers",
         "client_id",
+        "compression_type",
         "metrics_labels",
         "metrics_port",
         "poll_interval_seconds",
