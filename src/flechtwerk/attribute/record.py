@@ -28,7 +28,7 @@ special-casing in Record itself.
 """
 from collections.abc import Iterable, Iterator
 from copy import deepcopy
-from datetime import datetime, time as _time
+from datetime import datetime, time as time_
 from typing import Any, Final, Self, overload
 
 from .attribute import (
@@ -39,7 +39,7 @@ from .attribute import (
     ViewAttribute,
 )
 from .codec import Codec
-from .codecs import DATETIME, DICT, LIST, SET, TUPLE
+from .codecs import DATETIME, DICT, LIST, SET, TUPLE, TIME
 
 
 def _encode_any(v: Any) -> Any:
@@ -62,8 +62,8 @@ def _encode_any(v: Any) -> Any:
         return v
     if isinstance(v, datetime):
         return DATETIME.encode(v)
-    if isinstance(v, _time):
-        return v.isoformat()
+    if isinstance(v, time_):
+        return TIME.encode(v)
     if isinstance(v, Record):
         return RECORD.encode(v)
     if isinstance(v, dict):
@@ -120,9 +120,13 @@ class Record:
         return attr.read_from(self.raw)
 
     @overload
-    def __setitem__[V](self, attr: RequiredAttribute[V], value: V) -> None: ...
+    def __setitem__[V](self, attr: RequiredAttribute[V], value: V) -> None:
+        ...
+
     @overload
-    def __setitem__[V](self, attr: OptionalAttribute[V], value: V | None) -> None: ...
+    def __setitem__[V](self, attr: OptionalAttribute[V], value: V | None) -> None:
+        ...
+
     def __setitem__[V](self, attr: Attribute[V], value: V | None) -> None:
         # TODO(legacy-pickle-compat): once all changelog topics in every
         # environment have been fully replaced with new-format entries, remove
@@ -193,9 +197,13 @@ class Record:
     # --- Pythonic helpers (Optional only) ---
 
     @overload
-    def get[V](self, attr: OptionalAttribute[V]) -> V | None: ...
+    def get[V](self, attr: OptionalAttribute[V]) -> V | None:
+        ...
+
     @overload
-    def get[V](self, attr: OptionalAttribute[V], default: V) -> V: ...
+    def get[V](self, attr: OptionalAttribute[V], default: V) -> V:
+        ...
+
     def get[V](self, attr: OptionalAttribute[V], default: V | None = None) -> V | None:
         """Return the decoded value, or `default` if missing or `None`."""
         return attr.get_from(self.raw, default)
