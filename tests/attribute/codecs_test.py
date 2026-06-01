@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
-from fretworx.attribute import DATETIME
+from fretworx.attribute import ANY, DATETIME
 
 
 def test_datetime_to_iso_utc():
@@ -22,3 +22,12 @@ def test_datetime_from_iso_round_trip():
 def test_datetime_from_iso_with_offset():
     decoded = DATETIME.decode("2024-01-01T02:00:00+02:00")
     assert decoded == datetime(2024, 1, 1, 2, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+
+
+def test_any_encodes_time_as_iso_string():
+    """Regression: BA-3033 — pandas reads time-only Excel cells as datetime.time,
+    and the ANY codec used to raise TypeError on those, blocking every
+    Promoterstunden import. Encoded form is JSON-native ISO 8601."""
+    assert ANY.encode(time(13, 30)) == "13:30:00"
+    assert ANY.encode(time(0, 0, 0)) == "00:00:00"
+    assert ANY.encode(time(23, 59, 59, 123456)) == "23:59:59.123456"
