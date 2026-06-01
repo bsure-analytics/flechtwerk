@@ -1,7 +1,7 @@
 """Built-in codec atoms and constructors.
 
 The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `FLOAT`,
-`DATETIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
+`DATETIME`, `TIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
 `DICT`) take an inner codec and return a parameterized container codec.
 Element validation is uniform — `LIST(STR).encode([1, 2, 3])` rejects
 non-strings (each element runs through `STR.encode`).
@@ -12,7 +12,7 @@ class and the recursive `_encode_any` walker, respectively.
 Naming convention: all atoms and constructors use uppercase identifiers
 matching the ALL_CAPS style of the typed-attribute call sites.
 """
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any, Final
 
 from .codec import Codec, Decoder
@@ -42,6 +42,14 @@ def _datetime_to_iso(dt: datetime) -> str:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _time_from_iso(s: str) -> time:
+    return time.fromisoformat(s)
+
+
+def _time_to_iso(t: time) -> str:
+    return t.isoformat()
+
+
 # --- atoms ---
 
 
@@ -50,6 +58,7 @@ INT: Final = Codec[int](_validate(int), _validate(int))
 BOOL: Final = Codec[bool](_validate(bool), _validate(bool))
 FLOAT: Final = Codec[float](_validate(float), _validate(float))
 DATETIME: Final = Codec[datetime](_datetime_from_iso, _datetime_to_iso)
+TIME: Final = Codec[time](_time_from_iso, _time_to_iso)
 
 
 # --- constructors ---
@@ -124,5 +133,6 @@ __all__ = [
     "LIST",
     "SET",
     "STR",
+    "TIME",
     "TUPLE",
 ]

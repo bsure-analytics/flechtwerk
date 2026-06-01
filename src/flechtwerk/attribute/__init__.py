@@ -16,6 +16,7 @@ from .codecs import (
     LIST,
     SET,
     STR,
+    TIME,
     TUPLE,
 )
 from .record import (
@@ -45,6 +46,7 @@ __all__ = [
     "RequiredAttribute",
     "SET",
     "STR",
+    "TIME",
     "TUPLE",
     "record_codec",
 ]

@@ -262,8 +262,8 @@ ANY: Final = Codec[Any](
 Decode is identity (the wire value passes through unchanged — JSON load
 already produced JSON-native shape). Encode runs the recursive
 `_encode_any` walker, which dispatches on runtime type and handles
-`Record`, `dict`, `list`, `set`, `tuple`, `datetime`, and the JSON-native
-primitives.
+`Record`, `dict`, `list`, `set`, `tuple`, `datetime`, `time`, and the
+JSON-native primitives.
 
 Compose with the container constructors for typed-but-heterogeneous
 fields: `LIST(DICT(ANY))` for `list[dict[str, Any]]`, `DICT(ANY)` for

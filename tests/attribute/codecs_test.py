@@ -1,6 +1,6 @@
 from datetime import datetime, time, timedelta, timezone
 
-from fretworx.attribute import ANY, DATETIME
+from fretworx.attribute import ANY, DATETIME, TIME
 
 
 def test_datetime_to_iso_utc():
@@ -24,10 +24,25 @@ def test_datetime_from_iso_with_offset():
     assert decoded == datetime(2024, 1, 1, 2, 0, 0, tzinfo=timezone(timedelta(hours=2)))
 
 
+def test_time_to_iso_string():
+    assert TIME.encode(time(13, 30)) == "13:30:00"
+    assert TIME.encode(time(0, 0, 0)) == "00:00:00"
+    assert TIME.encode(time(23, 59, 59, 123456)) == "23:59:59.123456"
+
+
+def test_time_from_iso_string():
+    assert TIME.decode("13:30:00") == time(13, 30)
+    assert TIME.decode("00:00:00") == time(0, 0, 0)
+    assert TIME.decode("23:59:59.123456") == time(23, 59, 59, 123456)
+
+
+def test_time_round_trip():
+    original = time(13, 30, 45, 123456)
+    assert TIME.decode(TIME.encode(original)) == original
+
+
 def test_any_encodes_time_as_iso_string():
-    """Regression: BA-3033 — pandas reads time-only Excel cells as datetime.time,
-    and the ANY codec used to raise TypeError on those, blocking every
-    Promoterstunden import. Encoded form is JSON-native ISO 8601."""
+    """ANY still handles datetime.time for fields that mix types (e.g. BREAK_START/END)."""
     assert ANY.encode(time(13, 30)) == "13:30:00"
     assert ANY.encode(time(0, 0, 0)) == "00:00:00"
     assert ANY.encode(time(23, 59, 59, 123456)) == "23:59:59.123456"
