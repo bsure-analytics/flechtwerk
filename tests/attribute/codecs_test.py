@@ -46,3 +46,23 @@ def test_any_encodes_time_as_iso_string():
     assert ANY.encode(time(13, 30)) == "13:30:00"
     assert ANY.encode(time(0, 0, 0)) == "00:00:00"
     assert ANY.encode(time(23, 59, 59, 123456)) == "23:59:59.123456"
+
+
+def test_time_encodes_timedelta_as_time_of_day():
+    """Pandas reads some Excel time cells as `datetime.timedelta` rather than `datetime.time`.
+    The TIME codec wraps them into a wall-clock time-of-day (modulo 24h)."""
+    from datetime import timedelta
+
+    assert TIME.encode(timedelta(hours=13, minutes=30)) == "13:30:00"
+    assert TIME.encode(timedelta(hours=0)) == "00:00:00"
+    # > 24h wraps — midnight crossings are recovered downstream by the
+    # `if data_end < data_start: data_end += 86400000` branch.
+    assert TIME.encode(timedelta(hours=25, minutes=30)) == "01:30:00"
+
+
+def test_any_encodes_timedelta_as_time_of_day():
+    """Mirror coverage for the ANY codepath (BREAK_START/END columns)."""
+    from datetime import timedelta
+
+    assert ANY.encode(timedelta(hours=13, minutes=30)) == "13:30:00"
+    assert ANY.encode(timedelta(hours=25, minutes=30)) == "01:30:00"

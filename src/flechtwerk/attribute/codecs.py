@@ -12,7 +12,7 @@ class and the recursive `_encode_any` walker, respectively.
 Naming convention: all atoms and constructors use uppercase identifiers
 matching the ALL_CAPS style of the typed-attribute call sites.
 """
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Any, Final
 
 from .codec import Codec, Decoder
@@ -46,7 +46,25 @@ def _time_from_iso(s: str) -> time:
     return time.fromisoformat(s)
 
 
-def _time_to_iso(t: time) -> str:
+def _timedelta_to_time(td: timedelta) -> time:
+    """Wrap a duration into a wall-clock time-of-day (modulo 24h).
+
+    Pandas reads some Excel time cells as `datetime.timedelta` instead of
+    `datetime.time` — depends on the cell format. Promoterstunden break /
+    work-time columns are wall-clock by intent; midnight crossings are
+    already recovered downstream in `expand_modules_and_transform` (the
+    `if data_end < data_start: data_end += 86400000` branch), so wrapping
+    here is safe.
+    """
+    seconds = int(td.total_seconds()) % 86_400
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return time(h, m, s)
+
+
+def _time_to_iso(t: time | timedelta) -> str:
+    if isinstance(t, timedelta):
+        t = _timedelta_to_time(t)
     return t.isoformat()
 
 
