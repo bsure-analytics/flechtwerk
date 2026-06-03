@@ -28,7 +28,7 @@ special-casing in Record itself.
 """
 from collections.abc import Iterable, Iterator
 from copy import deepcopy
-from datetime import datetime, time as time_, timedelta as timedelta_
+from datetime import datetime, time as time_
 from typing import Any, Final, Self, overload
 
 from .attribute import (
@@ -46,13 +46,12 @@ def _encode_any(v: Any) -> Any:
     """Recursively encode any value to JSON-native form via isinstance dispatch.
 
     Walks dicts/lists/sets/tuples through their `(ANY)` codecs; converts
-    `datetime` to ISO 8601, `time` / `timedelta` to ISO 8601 time-of-day
-    (`HH:MM:SS[.ffffff]` — `timedelta` is wrapped modulo 24h, see
-    `_timedelta_to_time`), `Record` to a shallow copy of its `raw`. The
-    JSON-native primitives (`str`, `int`, `float`, `bool`, `None`) pass
-    through unchanged. Raises `TypeError` on any other type — silent
-    passthrough would let non-JSON-native values land in `Record.raw`
-    and crash later in `json.dumps`.
+    `datetime` to ISO 8601, `time` to ISO 8601 (`HH:MM:SS[.ffffff]`),
+    `Record` to a shallow copy of its `raw`. The JSON-native primitives
+    (`str`, `int`, `float`, `bool`, `None`) pass through unchanged.
+    Raises `TypeError` on any other type — silent passthrough would let
+    non-JSON-native values land in `Record.raw` and crash later in
+    `json.dumps`.
 
     This is the implementation of `ANY.encode` and the runtime-dispatch
     layer that container codecs delegate into when their inner is `ANY`.
@@ -63,7 +62,7 @@ def _encode_any(v: Any) -> Any:
         return v
     if isinstance(v, datetime):
         return DATETIME.encode(v)
-    if isinstance(v, (time_, timedelta_)):
+    if isinstance(v, time_):
         return TIME.encode(v)
     if isinstance(v, Record):
         return RECORD.encode(v)

@@ -42,27 +42,27 @@ def test_time_round_trip():
 
 
 def test_any_encodes_time_as_iso_string():
-    """ANY still handles datetime.time for fields that mix types (e.g. BREAK_START/END)."""
+    """ANY routes datetime.time through TIME.encode."""
     assert ANY.encode(time(13, 30)) == "13:30:00"
     assert ANY.encode(time(0, 0, 0)) == "00:00:00"
     assert ANY.encode(time(23, 59, 59, 123456)) == "23:59:59.123456"
 
 
-def test_time_encodes_timedelta_as_time_of_day():
-    """Pandas reads some Excel time cells as `datetime.timedelta` rather than `datetime.time`.
-    The TIME codec wraps them into a wall-clock time-of-day (modulo 24h)."""
-    from datetime import timedelta
+def test_time_rejects_timedelta():
+    """TIME is strict — `datetime.timedelta` is a duration, not a time of day.
+    Callers that need wall-clock semantics must convert at the application
+    boundary (see ds/excel_import/parsers/promoter_time.py)."""
+    import pytest
 
-    assert TIME.encode(timedelta(hours=13, minutes=30)) == "13:30:00"
-    assert TIME.encode(timedelta(hours=0)) == "00:00:00"
-    # > 24h wraps — midnight crossings are recovered downstream by the
-    # `if data_end < data_start: data_end += 86400000` branch.
-    assert TIME.encode(timedelta(hours=25, minutes=30)) == "01:30:00"
+    with pytest.raises((AttributeError, TypeError)):
+        TIME.encode(timedelta(hours=13, minutes=30))
 
 
-def test_any_encodes_timedelta_as_time_of_day():
-    """Mirror coverage for the ANY codepath (BREAK_START/END columns)."""
-    from datetime import timedelta
+def test_any_rejects_timedelta():
+    """ANY similarly does not magically dispatch timedelta — the framework
+    stays strict so a domain-specific shape doesn't silently get treated as
+    time-of-day. Callers convert at their own boundary."""
+    import pytest
 
-    assert ANY.encode(timedelta(hours=13, minutes=30)) == "13:30:00"
-    assert ANY.encode(timedelta(hours=25, minutes=30)) == "01:30:00"
+    with pytest.raises(TypeError, match="no encoder for timedelta"):
+        ANY.encode(timedelta(hours=13, minutes=30))
