@@ -27,6 +27,12 @@ class RecordingObserver(Observer):
     def active_configs(self, n: int) -> None:
         self.calls.append(("active_configs", n))
 
+    def state_restored(self, partition: int, entries: int) -> None:
+        self.calls.append(("state_restored", partition, entries))
+
+    def tasks_assigned(self, n: int) -> None:
+        self.calls.append(("tasks_assigned", n))
+
     @contextmanager
     def dispatch_scope(self):
         self.calls.append(("dispatch_enter",))
@@ -103,9 +109,13 @@ class FakeKafkaConsumer:
     """Test double implementing the subset of aiokafka.AIOKafkaConsumer used by runners."""
 
     def __init__(self, records: list[ConsumerRecord[Any, Any]] | None = None):
-        self.records = list(records or [])
+        self.assigned: set[TopicPartition] = set()
         self.committed = False
+        self.listener: Any = None
+        self.paused: set[TopicPartition] = set()
+        self.records = list(records or [])
         self.started = False
+        self.subscribed: list[str] = []
 
     async def start(self) -> None:
         self.started = True
@@ -113,7 +123,7 @@ class FakeKafkaConsumer:
     async def stop(self) -> None:
         pass
 
-    async def getmany(self, timeout_ms: int = 0) -> dict:
+    async def getmany(self, *partitions: TopicPartition, timeout_ms: int = 0) -> dict:
         if not self.records:
             return {}
         # Group records by TopicPartition like aiokafka does
@@ -127,36 +137,54 @@ class FakeKafkaConsumer:
     async def commit(self, offsets: dict | None = None) -> None:
         self.committed = True
 
-    def subscribe(self, topics: list[str]) -> None:
-        pass
+    def subscribe(self, topics: list[str], listener: Any = None) -> None:
+        self.listener = listener
+        self.subscribed = list(topics)
 
-    async def seek_to_beginning(self) -> None:
+    async def seek_to_beginning(self, *tps: TopicPartition) -> None:
         pass
 
     async def position(self, tp: Any) -> int:
         return 0
 
     def assignment(self) -> set:
-        return set()
+        return set(self.assigned)
+
+    def pause(self, *tps: TopicPartition) -> None:
+        self.paused |= set(tps)
+
+    def resume(self, *tps: TopicPartition) -> None:
+        self.paused -= set(tps)
 
 
 class FakeKafkaProducer:
     """Test double implementing the subset of aiokafka.AIOKafkaProducer used by runners."""
 
     def __init__(self):
-        self.sent: list[tuple[str, dict]] = []
         self.flushed = False
+        self.offsets_sent: list[tuple[dict, str]] = []
+        self.sent: list[tuple[str, dict]] = []
+        self.started = False
+        self.stopped = False
         self.transaction_active = False
         self.transaction_count = 0
 
     async def start(self) -> None:
-        pass
+        self.started = True
 
     async def stop(self) -> None:
         self.stopped = True
 
-    async def send(self, topic: str, *, key: Any = None, value: Any = None, timestamp_ms: int | None = None) -> None:
-        self.sent.append((topic, {"key": key, "value": value, "timestamp_ms": timestamp_ms}))
+    async def send(
+        self,
+        topic: str,
+        *,
+        key: Any = None,
+        value: Any = None,
+        partition: int | None = None,
+        timestamp_ms: int | None = None,
+    ) -> None:
+        self.sent.append((topic, {"key": key, "partition": partition, "value": value, "timestamp_ms": timestamp_ms}))
 
     async def flush(self) -> None:
         self.flushed = True
@@ -166,7 +194,7 @@ class FakeKafkaProducer:
         return FakeTransaction(self)
 
     async def send_offsets_to_transaction(self, offsets: dict, group_id: str) -> None:
-        pass
+        self.offsets_sent.append((dict(offsets), group_id))
 
 
 class FakeTransaction:

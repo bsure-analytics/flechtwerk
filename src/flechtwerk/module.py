@@ -5,10 +5,13 @@ consumer, producer, state store) are created and shared. The module uses
 reactor-di for lazy dependency resolution and provides an async context
 manager for lifecycle management (start/stop).
 
-Key design: a single transactional producer is shared between the runner
-and the ChangelogStateStore. For transformers, this closes the transactional
-gap — state changelog writes participate in the same Kafka transaction as
-output messages and offset commits.
+Key design: each transformer task (input partition) owns one transactional
+producer, shared between the runner and that task's ChangelogStateStore.
+This closes the transactional gap — state changelog writes participate in
+the same Kafka transaction as output messages and offset commits — and the
+static per-task transactional ID fences any previous owner of the task
+(Kafka Streams EOS-v1), which is what makes running multiple transformer
+instances safe. Extractors keep a single shared non-transactional producer.
 """
 import logging
 import tempfile
@@ -18,13 +21,14 @@ from typing import Any, Literal, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
+from aiokafka.coordinator.assignors.range import RangePartitionAssignor
 from prometheus_client import REGISTRY, CollectorRegistry
 from reactor_di import CachingStrategy, module, lookup
 
 from .extractor import Extractor, ExtractorRunner
 from .metrics import Metrics
 from .observer import Observer, PrometheusObserver
-from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
+from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic, partition_counts
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -111,49 +115,21 @@ class Fretworx:
 
     @cached_property
     def consumer(self) -> AIOKafkaConsumer:
+        # read_committed everywhere: identical to read_uncommitted on
+        # non-transactional topics, and required for EOS chaining — records
+        # from aborted upstream transactions must never be (re-)processed.
+        # The Range assignor (not aiokafka's RoundRobin default) co-assigns
+        # partition p of every input topic to the same member, which is what
+        # makes a task span all input topics.
         return AIOKafkaConsumer(
             bootstrap_servers=self.bootstrap_servers,
             auto_offset_reset="earliest",
             client_id=self.client_id,
             enable_auto_commit=False,
             group_id=self.application_id if isinstance(self.stage, Transformer) else None,
+            isolation_level="read_committed",
+            partition_assignment_strategy=(RangePartitionAssignor,),  # noqa: aiokafka's docstring says list, but its own default is a tuple
         )
-
-    @cached_property
-    def path(self) -> Path:
-        return Path(tempfile.mkdtemp()) / "state"
-
-    @cached_property
-    def producer(self) -> AIOKafkaProducer:
-        """Single shared producer — no serializers.
-
-        Runners encode output to bytes via encode_json().
-        ChangelogStateStore sends pickle bytes directly. No serializers
-        avoids the conflict between str-encoded output and bytes-encoded state.
-        """
-        kwargs: dict = {
-            "bootstrap_servers": self.bootstrap_servers,
-            "client_id": self.client_id,
-        }
-        if self.compression_type:
-            kwargs["compression_type"] = self.compression_type
-        if isinstance(self.stage, Transformer):
-            kwargs["transactional_id"] = self.client_id
-        return AIOKafkaProducer(**kwargs)
-
-    @cached_property
-    def runner(self) -> ExtractorRunner | TransformerRunner:
-        """Select the correct runner based on stage type.
-
-        Each runner type is wired lazily by reactor-di via lookup annotations.
-        This factory only handles the conditional selection.
-        """
-        return self.extractor_runner if isinstance(self.stage, Extractor) else self.transformer_runner
-
-    @cached_property
-    def observer(self) -> Observer:
-        """No-op when metrics are disabled, PrometheusObserver otherwise."""
-        return self.prometheus_observer if self.metrics_port > 0 else Observer()
 
     @cached_property
     def metrics_server(self) -> tuple[Any, Any] | None:
@@ -168,6 +144,88 @@ class Fretworx:
         from prometheus_client import start_http_server
         return start_http_server(addr="0.0.0.0", port=self.metrics_port, registry=self.registry)
 
+    @cached_property
+    def observer(self) -> Observer:
+        """No-op when metrics are disabled, PrometheusObserver otherwise."""
+        return self.prometheus_observer if self.metrics_port > 0 else Observer()
+
+    @cached_property
+    def path(self) -> Path:
+        return Path(tempfile.mkdtemp()) / "state"
+
+    @cached_property
+    def producer(self) -> AIOKafkaProducer:
+        """Shared non-transactional producer (extractor stages only) — no serializers.
+
+        Runners encode output to bytes via encode_json().
+        ChangelogStateStore sends pickle bytes directly. No serializers
+        avoids the conflict between str-encoded output and bytes-encoded state.
+        Transformers don't use this — they build one transactional producer
+        per task via ``task_producer_factory``.
+        """
+        kwargs: dict = {
+            "bootstrap_servers": self.bootstrap_servers,
+            "client_id": self.client_id,
+        }
+        if self.compression_type:
+            kwargs["compression_type"] = self.compression_type
+        return AIOKafkaProducer(**kwargs)
+
+    def restore_consumer_factory(self) -> AIOKafkaConsumer:
+        """Builds throwaway consumers for per-task changelog restore.
+
+        read_committed so a restore stops at the last stable offset and never
+        sees writes of in-flight (or fenced-and-aborted) transactions.
+        """
+        return AIOKafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            client_id=self.client_id,
+            group_id=None,
+            isolation_level="read_committed",
+        )
+
+    @cached_property
+    def runner(self) -> ExtractorRunner | TransformerRunner:
+        """Select the correct runner based on stage type.
+
+        Each runner type is wired lazily by reactor-di via lookup annotations.
+        This factory only handles the conditional selection.
+        """
+        return self.extractor_runner if isinstance(self.stage, Extractor) else self.transformer_runner
+
+    def task_producer_factory(self, partition: int) -> AIOKafkaProducer:
+        """Builds one transactional producer per task (input partition).
+
+        The transactional ID is static per task — ``{application_id}-{p}`` —
+        so whichever instance is assigned partition p fences the previous
+        owner via InitProducerId (Kafka Streams EOS-v1; aiokafka has no
+        KIP-447 generation fencing).
+        """
+        kwargs: dict = {
+            "bootstrap_servers": self.bootstrap_servers,
+            "client_id": f"{self.client_id}-{partition}",
+            "transactional_id": f"{self.application_id}-{partition}",
+        }
+        if self.compression_type:
+            kwargs["compression_type"] = self.compression_type
+        return AIOKafkaProducer(**kwargs)
+
+    def task_store_factory(self, partition: int, producer: AIOKafkaProducer) -> ChangelogStateStore:
+        """Builds one partition-scoped changelog-backed store per task.
+
+        The store shares the task's transactional producer (state writes join
+        the task's transaction) and pins changelog writes to the task's
+        partition, so state lands where the task's restore reads it.
+        """
+        inner = RocksDBStateStore()
+        inner.path = self.path / str(partition)
+        store = ChangelogStateStore()
+        store.inner = inner
+        store.partition = partition
+        store.producer = producer
+        store.topic = self.changelog_topic
+        return store
+
     async def __aenter__(self) -> Fretworx:
         # Bring up the scrape endpoint first so health probes see it as
         # soon as the process is up.
@@ -176,30 +234,57 @@ class Fretworx:
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         await admin.start()
         try:
-            await ensure_changelog_topic(admin, self.changelog_topic)
+            num_partitions = -1
+            if isinstance(self.stage, Transformer):
+                # Tasks are identified by partition number across all input
+                # topics, and a task's explicit-partition changelog write must
+                # have somewhere to land — so all input topics must share one
+                # partition count (Range only co-assigns same-numbered
+                # partitions when counts match) and the changelog must match it.
+                counts = await partition_counts(admin, self.stage.input_topics)
+                if len(set(counts.values())) != 1:
+                    raise ValueError(f"input topics of {self.application_id} must have equal partition counts, got {counts}")
+                num_partitions = next(iter(counts.values()))
+            await ensure_changelog_topic(admin, self.changelog_topic, num_partitions)
+            if isinstance(self.stage, Transformer):
+                changelog_count = (await partition_counts(admin, [self.changelog_topic]))[self.changelog_topic]
+                if changelog_count != num_partitions:
+                    raise ValueError(
+                        f"changelog topic {self.changelog_topic} has {changelog_count} partitions, "
+                        f"input topics have {num_partitions} — repartitioning requires a state migration"
+                    )
         finally:
             await admin.close()
 
-        restore = AIOKafkaConsumer(bootstrap_servers=self.bootstrap_servers, group_id=None)
-        await restore.start()
-        try:
-            await self.state_store.restore(restore)
-        finally:
-            await restore.stop()
+        if isinstance(self.stage, Extractor):
+            # Transformers restore per task on partition assignment instead.
+            restore = AIOKafkaConsumer(
+                bootstrap_servers=self.bootstrap_servers,
+                group_id=None,
+                isolation_level="read_committed",
+            )
+            await restore.start()
+            try:
+                await self.state_store.restore(restore)
+            finally:
+                await restore.stop()
 
         try:
             await self.consumer.start()
-            await self.producer.start()
+            if isinstance(self.stage, Extractor):
+                await self.producer.start()
         except BaseException:
             await self.consumer.stop()
-            await self.state_store.close()
+            if isinstance(self.stage, Extractor):
+                await self.state_store.close()
             raise
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.consumer.stop()
-        await self.producer.stop()
-        await self.state_store.close()
+        if isinstance(self.stage, Extractor):
+            await self.producer.stop()
+            await self.state_store.close()
         # Stop the scrape server last so a final scrape can land mid-shutdown.
         # Access via __dict__ to avoid triggering the cached_property if the
         # endpoint was never started.

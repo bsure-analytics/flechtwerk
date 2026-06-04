@@ -97,3 +97,21 @@ class Metrics:
             self._label_names,
             registry=self.registry,
         )
+
+    @cached_property
+    def state_restored_entries_total(self) -> Counter:
+        return Counter(
+            "fretworx_state_restored_entries_total",
+            "Changelog records replayed into the local state store on task initialization",
+            self._label_names + ["partition"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def tasks_assigned(self) -> Gauge:
+        return Gauge(
+            "fretworx_tasks_assigned",
+            "Tasks (input partitions) currently owned and initialized by this instance",
+            self._label_names,
+            registry=self.registry,
+        )

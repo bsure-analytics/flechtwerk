@@ -149,9 +149,16 @@ class ChangelogStateStore(StateStore):
     Attributes are set by the DI container (reactor-di) or directly in tests.
     The producer is shared with the runner — for transformers, put() calls
     participate in the runner's open transaction automatically.
+
+    ``partition`` pins every changelog write to one explicit partition —
+    transformers use one store per task (input partition) so state lands in
+    the changelog partition matching the records that produced it, regardless
+    of what the state key hashes to. ``None`` (extractors) leaves routing to
+    the default key-hash partitioner.
     """
 
     inner: lookup[StateStore, "inner_store"]  # noqa: PyUnresolvedReferences
+    partition: int | None = None
     producer: AIOKafkaProducer
     topic: lookup[str, "changelog_topic"]  # noqa: PyUnresolvedReferences
 
@@ -164,6 +171,7 @@ class ChangelogStateStore(StateStore):
             self.topic,
             key=key.encode("utf-8"),
             value=raw,
+            partition=self.partition,
         )
 
     async def delete(self, key: str) -> None:
@@ -172,30 +180,61 @@ class ChangelogStateStore(StateStore):
             self.topic,
             key=key.encode("utf-8"),
             value=b"",
+            partition=self.partition,
         )
 
     async def close(self) -> None:
         await self.inner.close()
 
-    async def restore(self, consumer: Any) -> None:
+    async def restore(self, consumer: Any, partitions: set[int] | None = None) -> int:
         """Rebuild the inner store from the changelog topic.
 
         Args:
             consumer: An already-started AIOKafkaConsumer (group_id=None).
+            partitions: Restrict the restore to these changelog partitions
+                (transformer task restore). None restores all partitions.
+
+        Returns:
+            Number of records processed.
         """
-        await restore_changelog(consumer, self.topic, self.inner.put_bytes, self.inner.delete)
+        return await restore_changelog(
+            consumer, self.topic, self.inner.put_bytes, self.inner.delete, partitions,
+        )
 
 
-async def ensure_changelog_topic(admin: Any, topic: str) -> None:
+async def partition_counts(admin: Any, topics: list[str]) -> dict[str, int]:
+    """Partition count per topic, from broker metadata.
+
+    Raises the broker's error (e.g. UnknownTopicOrPartitionError) when a
+    topic doesn't exist — transformer input topics must exist before the
+    stage starts, since the changelog partition count derives from them.
+
+    Args:
+        admin: An already-started AIOKafkaAdminClient.
+        topics: Topic names to describe.
+    """
+    from aiokafka.errors import for_code
+
+    response = await admin.describe_topics(topics)
+    for t in response:
+        if t["error_code"]:
+            raise for_code(t["error_code"])(t["topic"])
+    return {t["topic"]: len(t["partitions"]) for t in response}
+
+
+async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -1) -> None:
     """Create the changelog topic if it doesn't exist.
 
-    Uses broker defaults for partition count and replication factor.
     Uses the Kafka AdminClient API (CreateTopicsRequest), which works even
     when auto.create.topics.enable=false on the broker.
 
     Args:
         admin: An already-started AIOKafkaAdminClient.
         topic: Changelog topic name.
+        num_partitions: Partition count for a newly created topic.
+            Transformers pass their (validated) input topic partition count
+            so task p's explicit-partition state writes have somewhere to
+            land; -1 (extractors) uses the broker default.
     """
     from aiokafka.admin import NewTopic
     from aiokafka.errors import TopicAlreadyExistsError, for_code
@@ -203,7 +242,7 @@ async def ensure_changelog_topic(admin: Any, topic: str) -> None:
     response = await admin.create_topics([
         NewTopic(
             name=topic,
-            num_partitions=-1,
+            num_partitions=num_partitions,
             replication_factor=-1,
             replica_assignments={},
             topic_configs={"cleanup.policy": "compact"},

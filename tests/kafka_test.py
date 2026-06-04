@@ -215,12 +215,36 @@ def _make_record(key, value, partition=0, offset=0):
 def _make_restore_consumer(batches, partitions=(0,)):
     """Build a MagicMock consumer that restore_changelog can drive.
 
+    End offsets are derived from the supplied batches (max offset + 1 per
+    partition) and the fetch position advances as batches are consumed —
+    matching the position-vs-end-offset end-detection of restore_changelog.
+
     Args:
         batches: Sequence of dicts {tp: [record, ...]} — one returned per getmany call.
-                 An empty dict is appended to signal end-of-stream.
         partitions: Partition numbers to report from partitions_for_topic().
                     Pass an empty set/None to simulate a missing topic.
     """
+    remaining = list(batches)
+    positions: dict = {}
+    end_offsets: dict = {}
+    for batch in batches:
+        for tp, records in batch.items():
+            end_offsets[tp] = max(end_offsets.get(tp, 0), max(r.offset for r in records) + 1)
+
+    async def end_offsets_fn(tps):
+        return {tp: end_offsets.get(tp, 0) for tp in tps}
+
+    async def getmany(*tps, timeout_ms=0):
+        if not remaining:
+            return {}
+        batch = remaining.pop(0)
+        for tp, records in batch.items():
+            positions[tp] = max(positions.get(tp, 0), max(r.offset for r in records) + 1)
+        return batch
+
+    async def position(tp):
+        return positions.get(tp, 0)
+
     consumer = MagicMock()
     consumer._client = MagicMock()
     consumer._client.set_topics = AsyncMock()
@@ -229,7 +253,9 @@ def _make_restore_consumer(batches, partitions=(0,)):
     )
     consumer.assign = MagicMock()
     consumer.seek_to_beginning = AsyncMock()
-    consumer.getmany = AsyncMock(side_effect=[*batches, {}])
+    consumer.end_offsets = end_offsets_fn
+    consumer.getmany = getmany
+    consumer.position = position
     return consumer
 
 
@@ -367,6 +393,41 @@ def test_restore_changelog_passes_each_record_through_put_bytes():
         assert count == 4
         assert put_bytes.await_count == 3
         delete.assert_awaited_once_with("a")
+    asyncio.run(run())
+
+
+def test_restore_changelog_restricted_to_explicit_partitions():
+    """An explicit partition subset skips discovery and assigns only those partitions."""
+    async def run():
+        tp1 = aiokafka.TopicPartition("cl", 1)
+        record = _make_record(key=b"k", value=serialize(State.wrap({"n": 1})), partition=1)
+        consumer = _make_restore_consumer(batches=[{tp1: [record]}])
+        put_bytes = AsyncMock()
+
+        count = await restore_changelog(consumer, "cl", put_bytes, AsyncMock(), partitions={1})
+
+        assert count == 1
+        consumer._client.set_topics.assert_not_awaited()
+        consumer.partitions_for_topic.assert_not_called()
+        (assigned_tps,), _ = consumer.assign.call_args
+        assert list(assigned_tps) == [tp1]
+    asyncio.run(run())
+
+
+def test_restore_changelog_survives_empty_polls_until_end_offset():
+    """Empty getmany() results don't terminate the restore — only the fetch
+    position reaching the end offset captured at entry does. The previous
+    empty-poll heuristic silently truncated restores on any broker stall."""
+    async def run():
+        tp = aiokafka.TopicPartition("cl", 0)
+        record = _make_record(key=b"k", value=serialize(State.wrap({"n": 1})))
+        consumer = _make_restore_consumer(batches=[{}, {tp: [record]}])
+        put_bytes = AsyncMock()
+
+        count = await restore_changelog(consumer, "cl", put_bytes, AsyncMock())
+
+        assert count == 1
+        put_bytes.assert_awaited_once()
     asyncio.run(run())
 
 

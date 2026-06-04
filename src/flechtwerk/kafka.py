@@ -94,11 +94,18 @@ async def restore_changelog(
     topic: str,
     put_raw: Callable[[str, bytes], Awaitable[None]],
     delete: Callable[[str], Awaitable[None]],
+    partitions: set[int] | None = None,
 ) -> int:
-    """Read an entire compacted changelog topic to rebuild state.
+    """Read a compacted changelog topic (or a subset of its partitions) to rebuild state.
 
     Uses manual partition assignment (no consumer group). The consumer
-    must already be started with group_id=None.
+    must already be started with group_id=None. Reads to the end offsets
+    captured at entry — under isolation_level="read_committed" that is the
+    last stable offset, so records of in-flight transactions are never
+    restored. Callers restoring a task partition must fence the previous
+    owner (InitProducerId via producer.start()) *before* calling this, so
+    that owner's pending transaction is aborted and the captured end offset
+    is final.
 
     Args:
         consumer: An already-started AIOKafkaConsumer (group_id=None).
@@ -111,34 +118,38 @@ async def restore_changelog(
             key — keys that are never read by the running stage never pay
             the deserialize cost.
         delete: async callable(key) to remove a state entry.
+        partitions: Restrict the restore to these partition numbers.
+            None restores every partition of the topic.
 
     Returns:
         Number of records processed.
     """
-    # Prime the consumer's internal cluster metadata for this topic so
-    # partitions_for_topic() returns data. No fully public API achieves this:
-    # consumer.topics() / fetch_all_metadata() returns a *separate* ClusterMetadata
-    # object that doesn't update the consumer's own cache, and assign() requires
-    # the partition set we're about to fetch. `_client.set_topics()` is a public
-    # method on AIOKafkaClient (the `_client` attribute is the only underscore).
-    # The integration tests under test/fretworx/integration/ lock down this
-    # coupling against aiokafka upgrades.
-    await consumer._client.set_topics([topic])
-    partitions = consumer.partitions_for_topic(topic)
-    if not partitions:
-        log.info("No partitions found for changelog topic %s", topic)
-        return 0
+    subset = partitions is not None
+    if partitions is None:
+        # Prime the consumer's internal cluster metadata for this topic so
+        # partitions_for_topic() returns data. No fully public API achieves this:
+        # consumer.topics() / fetch_all_metadata() returns a *separate* ClusterMetadata
+        # object that doesn't update the consumer's own cache, and assign() requires
+        # the partition set we're about to fetch. `_client.set_topics()` is a public
+        # method on AIOKafkaClient (the `_client` attribute is the only underscore).
+        # The integration tests under test/fretworx/integration/ lock down this
+        # coupling against aiokafka upgrades.
+        await consumer._client.set_topics([topic])
+        partitions = consumer.partitions_for_topic(topic)
+        if not partitions:
+            log.info("No partitions found for changelog topic %s", topic)
+            return 0
 
-    tps = [aiokafka.TopicPartition(topic, p) for p in partitions]
+    tps = [aiokafka.TopicPartition(topic, p) for p in sorted(partitions)]
     consumer.assign(tps)
-    await consumer.seek_to_beginning()
+    await consumer.seek_to_beginning(*tps)
+    end_offsets = await consumer.end_offsets(tps)
 
     count = 0
-    while True:
-        records = await consumer.getmany(timeout_ms=2000)
-        if not records:
-            break
-        for tp, msgs in records.items():
+    pending = {tp for tp in tps if end_offsets[tp] > 0}
+    while pending:
+        records = await consumer.getmany(*pending, timeout_ms=2000)
+        for msgs in records.values():
             for msg in msgs:
                 key = msg.key.decode("utf-8") if msg.key else ""
                 raw = msg.value
@@ -150,6 +161,11 @@ async def restore_changelog(
                 else:
                     await put_raw(key, raw)
                 count += 1
+        # An empty poll is not end-of-log — broker stalls and fetch backoff
+        # yield empty results too. Only the fetch position reaching the end
+        # offset captured at entry terminates a partition's restore.
+        pending = {tp for tp in pending if await consumer.position(tp) < end_offsets[tp]}
 
-    log.info("Restored %d state entries from %s", count, topic)
+    log.info("Restored %d state entries from %s%s", count, topic,
+             f" partitions {sorted(partitions)}" if subset else "")
     return count

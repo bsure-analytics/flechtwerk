@@ -7,7 +7,7 @@ import pytest
 
 from fretworx.attribute import BOOL, INT, LIST, OptionalAttribute, RECORD, RequiredAttribute, STR
 from fretworx.module import Fretworx
-from fretworx.transformer import Transformer
+from fretworx.transformer import Task, Transformer
 from fretworx.types import Event, Message, State
 from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
@@ -78,7 +78,12 @@ def make_incoming(key="k", value=None, topic="input-topic"):
 
 
 def make_module(transformer, consumer=None, producer=None, state_store=None):
-    """Create a Fretworx with monkey-patched fake resources."""
+    """Create a Fretworx with monkey-patched fake resources.
+
+    The fake producer and state store are pre-wired as task 0 on the runner —
+    records built by ``json_record`` default to partition 0, so single-task
+    tests work unchanged. Multi-task tests register further tasks themselves.
+    """
     mod = Fretworx()
     mod.application_id = "test-group"
     mod.client_id = "test-group"
@@ -87,8 +92,7 @@ def make_module(transformer, consumer=None, producer=None, state_store=None):
     mod.metrics_port = 0
     mod.stage = transformer
     mod.consumer = consumer or FakeKafkaConsumer()
-    mod.producer = producer or FakeKafkaProducer()
-    mod.state_store = state_store or InMemoryStateStore()
+    mod.runner.tasks[0] = Task(0, producer or FakeKafkaProducer(), state_store or InMemoryStateStore())
     return mod
 
 
@@ -707,5 +711,237 @@ def test_transformer_runner_offsets_are_max_per_partition():
         assert len(captured_offsets) == 1
         from aiokafka import TopicPartition
         assert captured_offsets[0] == {TopicPartition("in", 0): 13}
+
+    asyncio.run(run())
+
+
+# --- Task / rebalance tests ---
+
+
+class FakeTaskStore(InMemoryStateStore):
+    """InMemoryStateStore that also records the restore/close calls a task makes."""
+
+    def __init__(self):
+        super().__init__()
+        self.closed = False
+        self.restored: list[set[int] | None] = []
+
+    async def restore(self, consumer, partitions=None):
+        self.restored.append(partitions)
+        return 0
+
+    async def close(self):
+        self.closed = True
+
+
+def test_transformer_runner_same_key_on_different_partitions_uses_separate_tasks():
+    """State identity is (task, extract_key) — the same key on two partitions
+    yields two independent state entries and two independent transactions."""
+
+    async def counter(msg, state):
+        count = state.get(COUNT, 0) + 1
+        yield Message(key=msg.key, topic="out", value=Event.wrap({"count": count}))
+        yield State.wrap({"count": count})
+
+    t = Transformer.of(input_topics=["in"], transform=counter)
+
+    async def run():
+        from aiokafka import TopicPartition
+        recs = [
+            json_record(key="k", topic="in", offset=5, partition=0),
+            json_record(key="k", topic="in", offset=9, partition=1),
+        ]
+        consumer = FakeKafkaConsumer(recs)
+        producer0 = FakeKafkaProducer()
+        store0 = InMemoryStateStore()
+        mod = make_module(t, consumer, producer0, store0)
+        runner = mod.runner
+        producer1 = FakeKafkaProducer()
+        store1 = InMemoryStateStore()
+        runner.tasks[1] = Task(1, producer1, store1)
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        # Independent per-task state — no cross-partition sharing for "k".
+        assert (await store0.get("k")).raw == {"count": 1}
+        assert (await store1.get("k")).raw == {"count": 1}
+        # One transaction per task, offsets routed to the owning producer.
+        assert producer0.transaction_count == 1
+        assert producer1.transaction_count == 1
+        assert producer0.offsets_sent == [({TopicPartition("in", 0): 6}, "test-group")]
+        assert producer1.offsets_sent == [({TopicPartition("in", 1): 10}, "test-group")]
+        # Outputs routed to the producer of the record's task.
+        assert len(producer0.sent) == 1
+        assert len(producer1.sent) == 1
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_outputs_routed_to_owning_task_producer():
+    """Each task's outputs go through that task's producer only."""
+
+    async def passthrough(msg, _):
+        yield Message(key=msg.key, topic="out", value=msg.value)
+
+    t = Transformer.of(input_topics=["in"], transform=passthrough)
+
+    async def run():
+        recs = [
+            json_record(key="a", topic="in", offset=0, partition=0),
+            json_record(key="b", topic="in", offset=0, partition=1),
+            json_record(key="c", topic="in", offset=1, partition=1),
+        ]
+        consumer = FakeKafkaConsumer(recs)
+        producer0 = FakeKafkaProducer()
+        mod = make_module(t, consumer, producer0, InMemoryStateStore())
+        runner = mod.runner
+        producer1 = FakeKafkaProducer()
+        runner.tasks[1] = Task(1, producer1, InMemoryStateStore())
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        assert [v["key"] for _, v in producer0.sent] == [b"a"]
+        assert sorted(v["key"] for _, v in producer1.sent) == [b"b", b"c"]
+
+    asyncio.run(run())
+
+
+def test_rebalance_listener_assign_pauses_and_marks_pending():
+    from aiokafka import TopicPartition
+    from fretworx.transformer import TaskRebalanceListener
+
+    async def run():
+        consumer = FakeKafkaConsumer()
+        mod = make_module(PassthroughTransformer(), consumer)
+        runner = mod.runner
+        listener = TaskRebalanceListener(runner)
+
+        assigned = {TopicPartition("in", 0), TopicPartition("in", 2)}
+        listener.on_partitions_assigned(assigned)
+
+        assert consumer.paused == assigned
+        assert runner.pending == {0, 2}
+
+    asyncio.run(run())
+
+
+def test_rebalance_listener_revoke_tears_down_all_tasks():
+    from fretworx.transformer import TaskRebalanceListener
+
+    async def run():
+        producer = FakeKafkaProducer()
+        store = FakeTaskStore()
+        mod = make_module(PassthroughTransformer(), FakeKafkaConsumer(), producer, store)
+        runner = mod.runner
+        listener = TaskRebalanceListener(runner)
+
+        await listener.on_partitions_revoked(set())
+
+        assert runner.tasks == {}
+        assert producer.stopped
+        assert store.closed
+        assert runner.fatal is None
+
+    asyncio.run(run())
+
+
+def test_rebalance_listener_revoke_waits_for_batch_lock():
+    """Revocation must not tear down tasks while a batch is in flight."""
+    from fretworx.transformer import TaskRebalanceListener
+
+    async def run():
+        producer = FakeKafkaProducer()
+        mod = make_module(PassthroughTransformer(), FakeKafkaConsumer(), producer, FakeTaskStore())
+        runner = mod.runner
+        listener = TaskRebalanceListener(runner)
+
+        async with runner.batch_lock:  # simulate a batch in flight
+            revoke = asyncio.create_task(listener.on_partitions_revoked(set()))
+            await asyncio.sleep(0.01)
+            assert not revoke.done()
+            assert runner.tasks != {}
+        await revoke
+        assert runner.tasks == {}
+
+    asyncio.run(run())
+
+
+def test_rebalance_listener_records_fatal_instead_of_raising():
+    """aiokafka swallows listener exceptions — failures must land on runner.fatal."""
+    from fretworx.transformer import TaskRebalanceListener
+
+    class FailingProducer(FakeKafkaProducer):
+        async def stop(self):
+            raise RuntimeError("stop failed")
+
+    async def run():
+        mod = make_module(PassthroughTransformer(), FakeKafkaConsumer(), FailingProducer(), FakeTaskStore())
+        runner = mod.runner
+        listener = TaskRebalanceListener(runner)
+
+        await listener.on_partitions_revoked(set())  # must not raise
+
+        assert isinstance(runner.fatal, RuntimeError)
+
+    asyncio.run(run())
+
+
+def test_transformer_runner_run_reraises_fatal():
+    async def run():
+        mod = make_module(PassthroughTransformer(), FakeKafkaConsumer())
+        runner = mod.runner
+        runner.fatal = RuntimeError("from listener")
+
+        with pytest.raises(RuntimeError, match="from listener"):
+            await runner.run()
+
+    asyncio.run(run())
+
+
+def test_start_pending_tasks_fences_then_restores_then_resumes():
+    """Task init order: producer.start() (fencing point) → restore → resume."""
+    from aiokafka import TopicPartition
+
+    calls: list = []
+
+    class OrderedProducer(FakeKafkaProducer):
+        async def start(self):
+            calls.append("producer.start")
+            await super().start()
+
+    class OrderedStore(FakeTaskStore):
+        async def restore(self, consumer, partitions=None):
+            calls.append(("restore", partitions))
+            return 7
+
+    class OrderedRestoreConsumer(FakeKafkaConsumer):
+        async def start(self):
+            calls.append("restore_consumer.start")
+            await super().start()
+
+    async def run():
+        tp = TopicPartition("in", 3)
+        consumer = FakeKafkaConsumer()
+        consumer.assigned = {tp}
+        consumer.paused = {tp}
+        mod = make_module(PassthroughTransformer(), consumer)
+        runner = mod.runner
+        runner.tasks.clear()
+        producer = OrderedProducer()
+        store = OrderedStore()
+        runner.task_producer_factory = lambda p: producer
+        runner.task_store_factory = lambda p, prod: store
+        runner.restore_consumer_factory = OrderedRestoreConsumer
+        runner.pending = {3}
+
+        await runner.start_pending_tasks()
+
+        assert calls == ["producer.start", "restore_consumer.start", ("restore", {3})]
+        assert runner.pending == set()
+        assert runner.tasks[3].producer is producer
+        assert runner.tasks[3].store is store
+        assert consumer.paused == set()  # resumed after restore
 
     asyncio.run(run())

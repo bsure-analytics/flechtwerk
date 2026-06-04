@@ -223,6 +223,41 @@ def test_changelog_delete_writes_tombstone():
     asyncio.run(run())
 
 
+def test_changelog_partition_pins_every_send():
+    """A partition-scoped store (transformer task) sends puts and tombstones
+    to its explicit changelog partition, bypassing key hashing."""
+    async def run():
+        producer = FakeKafkaProducer()
+        store = ChangelogStateStore()
+        store.inner = InMemoryStateStore()
+        store.partition = 3
+        store.producer = producer
+        store.topic = "test-changelog"
+
+        await store.put("k1", State.wrap({"data": 1}))
+        await store.delete("k1")
+
+        assert [payload["partition"] for _, payload in producer.sent] == [3, 3]
+
+    asyncio.run(run())
+
+
+def test_changelog_partition_defaults_to_key_hashing():
+    """Without a partition (extractor path), routing is left to the producer."""
+    async def run():
+        producer = FakeKafkaProducer()
+        store = ChangelogStateStore()
+        store.inner = InMemoryStateStore()
+        store.producer = producer
+        store.topic = "test-changelog"
+
+        await store.put("k1", State.wrap({"data": 1}))
+
+        assert producer.sent[0][1]["partition"] is None
+
+    asyncio.run(run())
+
+
 def test_changelog_inner_store_rebuilt_via_put():
     """Simulates what restore_changelog does: put/delete on the inner store."""
     async def run():

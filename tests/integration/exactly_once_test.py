@@ -13,7 +13,7 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from fretworx.observer import Observer
 from fretworx.state import ChangelogStateStore
 from fretworx.testing import InMemoryStateStore
-from fretworx.transformer import TransformerRunner
+from fretworx.transformer import Task, TransformerRunner
 from fretworx.types import Message, State
 
 pytestmark = pytest.mark.integration
@@ -94,17 +94,17 @@ async def test_successful_transaction_commits_output_state_and_offsets(
     try:
         state_store = ChangelogStateStore()
         state_store.inner = InMemoryStateStore()
+        state_store.partition = 0
         state_store.producer = txn_producer
         state_store.topic = unique_changelog_topic
 
         runner = TransformerRunner()
-        runner.producer = txn_producer
-        runner.state_store = state_store
         runner.application_id = unique_group_id
         runner.observer = Observer()
 
         tp = TopicPartition(input_topic, 0)
         await runner.send_transactional(
+            Task(0, txn_producer, state_store),
             messages=[Message(
                 topic=output_topic, key="out-key", value={"derived": "yes"}, timestamp=None,
             )],

@@ -7,13 +7,14 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import AsyncIterator, Never
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
+from aiokafka.abc import ConsumerRebalanceListener
 
 from reactor_di import lookup
 
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
-from .state import StateStore
+from .state import ChangelogStateStore, StateStore
 from .types import IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
@@ -128,84 +129,220 @@ class _FunctionalTransformer(Transformer):
     transform = None  # type: ignore[assignment]
 
 
+@dataclass(slots=True)
+class Task:
+    """Per-input-partition processing context.
+
+    A task owns partition ``partition`` of every input topic, a transactional
+    producer whose static transactional ID fences any previous owner of the
+    same task (Kafka Streams EOS-v1 — aiokafka has no KIP-447 generation
+    fencing), and a partition-scoped state store restored from the matching
+    changelog partition. State identity is *(partition, extract_key)* — the
+    framework makes no assumptions about what ``extract_key()`` returns.
+    """
+    partition: int
+    producer: AIOKafkaProducer
+    store: ChangelogStateStore
+
+
+class TaskRebalanceListener(ConsumerRebalanceListener):
+    """Bridges aiokafka's eager rebalance protocol to the runner's task lifecycle.
+
+    aiokafka logs-and-swallows exceptions raised inside these callbacks, so
+    "let it crash" cannot fire from here — failures are recorded on the
+    runner's ``fatal`` slot and re-raised by the main loop instead.
+    """
+
+    def __init__(self, runner: TransformerRunner) -> None:
+        self.runner = runner
+
+    async def on_partitions_revoked(self, revoked: set[TopicPartition]) -> None:
+        try:
+            # The batch lock guarantees no transaction is in flight while
+            # tasks are torn down; the rebalance blocks until the current
+            # batch (if any) commits. Heartbeats keep flowing meanwhile —
+            # aiokafka runs this callback before it rejoins the group.
+            async with self.runner.batch_lock:
+                await self.runner.close_tasks()
+        except Exception as e:
+            self.runner.fatal = e
+
+    def on_partitions_assigned(self, assigned: set[TopicPartition]) -> None:
+        try:
+            # Bookkeeping only — no I/O. Restoring state here would stall the
+            # whole group past rebalance_timeout_ms. The paused partitions are
+            # resumed one task at a time as the main loop initializes them.
+            self.runner.consumer.pause(*assigned)
+            self.runner.pending = {tp.partition for tp in assigned}
+        except Exception as e:
+            self.runner.fatal = e
+
+
 class TransformerRunner:
     """Runs a Transformer as a Kafka consumer-producer loop with exactly-once semantics.
 
-    One Kafka transaction per ``getmany()`` batch — output messages, state
-    changelog writes, and the consumer offset commit are all atomic.
-    A small in-memory state overlay scoped to the batch ensures that
-    records sharing a state key see each other's yielded mutations within
-    the batch; only the final state per key is written to the changelog
-    at commit time.
+    Work is partitioned into per-input-partition tasks (see ``Task``). Each
+    ``getmany()`` batch commits one Kafka transaction per task — that task's
+    output messages, state changelog writes, and consumer offset commits are
+    atomic. Tasks are torn down on partition revocation and rebuilt from
+    scratch on assignment (fresh producer fences any previous owner, state
+    re-restored from the task's changelog partition) — retaining either
+    across a rebalance is unsafe once a rebalance has been missed.
+
+    A small in-memory state overlay scoped to the batch ensures that records
+    sharing a (task, state key) bucket see each other's yielded mutations
+    within the batch; only the final state per key is written to the
+    changelog at commit time.
 
     Attributes are set by the DI container (reactor-di) or directly in tests.
-    The producer is shared with the ChangelogStateStore — state writes inside
+    Each task's store shares that task's producer — state writes inside
     send_transactional() participate in the same Kafka transaction.
     """
 
     application_id: str
     consumer: AIOKafkaConsumer
     observer: Observer
-    producer: AIOKafkaProducer
-    state_store: StateStore
+    restore_consumer_factory: Callable[[], AIOKafkaConsumer]
+    task_producer_factory: Callable[[int], AIOKafkaProducer]
+    task_store_factory: Callable[[int, AIOKafkaProducer], ChangelogStateStore]
     transformer: lookup[Transformer, "stage"]  # noqa: PyUnresolvedReferences
+
+    def __init__(self) -> None:
+        self.batch_lock = asyncio.Lock()
+        self.fatal: BaseException | None = None
+        self.pending: set[int] = set()
+        self.tasks: dict[int, Task] = {}
 
     async def run(self) -> Never:
         """Main event loop. Consumes batches and processes each transactionally.
 
-        Resource lifecycle (consumer/producer start/stop) is managed by
-        Fretworx, not the runner.
+        The batch lock covers task initialization and batch processing, and
+        the revoke callback acquires it before tearing tasks down — so a
+        rebalance can never interleave with an open transaction. The fetch
+        itself MUST stay outside the lock: getmany() blocks until an active
+        rebalance completes, and the rebalance waits for the revoke callback,
+        so fetching under the lock deadlocks the consumer. The price is that
+        a rebalance can strike between fetch and processing — records whose
+        task was torn down are dropped (their offsets were never committed;
+        the new owner reprocesses them).
+
+        Resource lifecycle (consumer start/stop) is managed by Fretworx, not
+        the runner; per-task producers and stores are owned by the runner.
         """
-        self.consumer.subscribe(self.transformer.input_topics)
-        async with self.transformer:
-            while True:
-                records = await self.consumer.getmany(timeout_ms=1000)
-                if not records:
-                    continue
-                await self.process_batch(records)
+        self.consumer.subscribe(self.transformer.input_topics, listener=TaskRebalanceListener(self))
+        try:
+            async with self.transformer:
+                while True:
+                    if self.fatal is not None:
+                        raise self.fatal
+                    async with self.batch_lock:
+                        await self.start_pending_tasks()
+                    records = await self.consumer.getmany(timeout_ms=1000)
+                    if not records:
+                        continue
+                    async with self.batch_lock:
+                        records = {tp: msgs for tp, msgs in records.items() if tp.partition in self.tasks}
+                        if records:
+                            await self.process_batch(records)
+        finally:
+            # The rebalance listener is NOT invoked on consumer.stop() —
+            # live tasks must be torn down explicitly on the way out.
+            await self.close_tasks()
+
+    async def start_pending_tasks(self) -> None:
+        """Initialize every task marked pending by the rebalance listener."""
+        pending, self.pending = self.pending, set()
+        if not pending:
+            return
+        await asyncio.gather(*(self.start_task(p) for p in sorted(pending)))
+        self.observer.tasks_assigned(len(self.tasks))
+        log.info("Initialized tasks %s (now running %d)", sorted(pending), len(self.tasks))
+
+    async def start_task(self, partition: int) -> None:
+        """Fence the previous owner, restore state, resume fetching — in that order.
+
+        ``producer.start()`` issues InitProducerId, which bumps the producer
+        epoch for this task's static transactional ID: any previous owner's
+        in-flight transaction is aborted and its producer fenced. Only then
+        is the changelog end offset final, so the restore MUST come after.
+        """
+        producer = self.task_producer_factory(partition)
+        await producer.start()
+        store = self.task_store_factory(partition, producer)
+        consumer = self.restore_consumer_factory()
+        await consumer.start()
+        try:
+            entries = await store.restore(consumer, partitions={partition})
+        finally:
+            await consumer.stop()
+        self.tasks[partition] = Task(partition, producer, store)
+        self.observer.state_restored(partition, entries)
+        self.consumer.resume(*(tp for tp in self.consumer.assignment() if tp.partition == partition))
+
+    async def close_tasks(self) -> None:
+        """Tear down every live task: producers stopped, stores closed and deleted."""
+        tasks, self.tasks = self.tasks, {}
+        if not tasks:
+            return
+        await asyncio.gather(*(task.producer.stop() for task in tasks.values()))
+        await asyncio.gather(*(task.store.close() for task in tasks.values()))
+        self.observer.tasks_assigned(0)
+        log.info("Closed tasks %s", sorted(tasks))
 
     async def process_batch(self, records: dict) -> None:
-        """Process all records in a getmany batch under a single transaction.
+        """Process all records in a getmany batch, one transaction per task.
 
-        Records are bucketed by state key. Same-key records are processed
-        serially inside their bucket (so each one sees the previous one's
-        yielded state); buckets run concurrently via ``asyncio.gather``,
-        which lets I/O-bound ``transform()`` calls overlap. Cross-key
-        ordering is not preserved. Within a bucket, records appear in
-        ``input_topics`` order then Kafka offset order.
+        Records are bucketed by (task, state key). Same-bucket records are
+        processed serially (so each one sees the previous one's yielded
+        state); buckets run concurrently via ``asyncio.gather``, which lets
+        I/O-bound ``transform()`` calls overlap. Cross-bucket ordering is not
+        preserved. Within a bucket, records appear in ``input_topics`` order
+        then Kafka offset order. Task transactions commit independently and
+        concurrently — each covers exactly one task's outputs, state changes,
+        and offsets.
         """
         topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
         ordered_tps = sorted(records, key=lambda p: topic_order[p.topic])
 
         total = sum(len(msgs) for msgs in records.values())
 
-        buckets: dict[str, list] = {}
-        offsets: dict = {}
+        buckets: dict[tuple[int, str], list] = {}
+        offsets: dict[int, dict[TopicPartition, int]] = {}
 
         for tp in ordered_tps:
+            task_offsets = offsets.setdefault(tp.partition, {})
             for raw_msg in records[tp]:
                 msg = parse_message(raw_msg)
                 key = self.transformer.extract_key(msg)
-                buckets.setdefault(key, []).append(msg)
-                offsets[tp] = max(offsets.get(tp, 0), msg.offset + 1)
+                buckets.setdefault((tp.partition, key), []).append(msg)
+                task_offsets[tp] = max(task_offsets.get(tp, 0), msg.offset + 1)
 
         with self.observer.batch_scope(total):
             results = await asyncio.gather(*(
-                self._process_key_bucket(key, msgs) for key, msgs in buckets.items()
+                self._process_key_bucket(self.tasks[partition].store, key, msgs)
+                for (partition, key), msgs in buckets.items()
             ))
 
-            output: list[Message] = []
-            state_changes: dict[str, State] = {}
-            for key, result in zip(buckets, results):
-                output.extend(result.outputs)
+            output: dict[int, list[Message]] = {}
+            state_changes: dict[int, dict[str, State]] = {}
+            for (partition, key), result in zip(buckets, results):
+                output.setdefault(partition, []).extend(result.outputs)
                 if result.state_change is not None:
-                    state_changes[key] = result.state_change
+                    state_changes.setdefault(partition, {})[key] = result.state_change
 
-            await self.send_transactional(output, state_changes, offsets)
+            await asyncio.gather(*(
+                self.send_transactional(
+                    self.tasks[partition],
+                    output.get(partition, []),
+                    state_changes.get(partition, {}),
+                    task_offsets,
+                )
+                for partition, task_offsets in offsets.items()
+            ))
 
-    async def _process_key_bucket(self, key: str, msgs: list) -> BucketResult:
-        """Process all records sharing one state key, serially."""
-        baseline = State(await self.state_store.get(key) or {})
+    async def _process_key_bucket(self, store: StateStore, key: str, msgs: list) -> BucketResult:
+        """Process all records sharing one (task, state key) bucket, serially."""
+        baseline = State(await store.get(key) or {})
         current = baseline
         final_state: State | None = None
         outputs: list[Message] = []
@@ -233,20 +370,21 @@ class TransformerRunner:
 
     async def send_transactional(
             self,
+            task: Task,
             messages: list[Message],
             state_changes: dict[str, State],
             offsets: dict,
     ) -> None:
-        """Send messages, persist state, and commit offsets in a single Kafka transaction.
+        """Send one task's messages, state, and offsets in a single Kafka transaction.
 
         ``state_changes`` is the per-key final state for keys whose value
         differs from baseline (already filtered by the caller). A truthy
         value is ``put``; a falsy value is ``delete`` (writing a Kafka
         tombstone via the same transactional producer).
         """
-        async with self.producer.transaction():
+        async with task.producer.transaction():
             for msg in messages:
-                await self.producer.send(
+                await task.producer.send(
                     msg.topic,
                     key=encode_json(msg.key),
                     value=encode_json(msg.value),
@@ -254,11 +392,11 @@ class TransformerRunner:
                 )
             for key, new_state in state_changes.items():
                 if new_state:
-                    await self.state_store.put(key, new_state)
+                    await task.store.put(key, new_state)
                 else:
-                    await self.state_store.delete(key)
-            await self.producer.send_offsets_to_transaction(offsets, self.application_id)
+                    await task.store.delete(key)
+            await task.producer.send_offsets_to_transaction(offsets, self.application_id)
 
         self.observer.transaction_committed()
-        log.debug("Transaction committed: %d messages, %d state changes",
-                  len(messages), len(state_changes))
+        log.debug("Task %d transaction committed: %d messages, %d state changes",
+                  task.partition, len(messages), len(state_changes))

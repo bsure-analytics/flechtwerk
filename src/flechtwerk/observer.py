@@ -22,6 +22,8 @@ class Observer:
     def message_out(self, topic: str) -> None: pass
     def transaction_committed(self) -> None: pass
     def active_configs(self, n: int) -> None: pass
+    def state_restored(self, partition: int, entries: int) -> None: pass
+    def tasks_assigned(self, n: int) -> None: pass
 
     def dispatch_scope(self) -> AbstractContextManager[None]: return nullcontext()
     def batch_scope(self, size: int) -> AbstractContextManager[None]: return nullcontext()
@@ -50,6 +52,12 @@ class PrometheusObserver(Observer):
 
     def active_configs(self, n: int) -> None:
         self.metrics.active_configs.labels(**self.metrics_labels).set(n)
+
+    def state_restored(self, partition: int, entries: int) -> None:
+        self.metrics.state_restored_entries_total.labels(**self.metrics_labels, partition=str(partition)).inc(entries)
+
+    def tasks_assigned(self, n: int) -> None:
+        self.metrics.tasks_assigned.labels(**self.metrics_labels).set(n)
 
     def dispatch_scope(self) -> AbstractContextManager[None]:
         return self.metrics.message_processing_seconds.labels(**self.metrics_labels).time()
