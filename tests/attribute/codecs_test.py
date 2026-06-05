@@ -1,6 +1,6 @@
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
-from fretworx.attribute import ANY, DATETIME, TIME
+from fretworx.attribute import ANY, DATE, DATETIME, TIME
 
 
 def test_datetime_to_iso_utc():
@@ -22,6 +22,30 @@ def test_datetime_from_iso_round_trip():
 def test_datetime_from_iso_with_offset():
     decoded = DATETIME.decode("2024-01-01T02:00:00+02:00")
     assert decoded == datetime(2024, 1, 1, 2, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+
+
+def test_date_to_iso_string():
+    assert DATE.encode(date(2026, 3, 15)) == "2026-03-15"
+
+
+def test_date_from_iso_string():
+    assert DATE.decode("2026-03-15") == date(2026, 3, 15)
+
+
+def test_date_round_trip():
+    original = date(2026, 3, 15)
+    assert DATE.decode(DATE.encode(original)) == original
+
+
+def test_any_encodes_date_as_iso_string():
+    """ANY routes datetime.date through DATE.encode."""
+    assert ANY.encode(date(2026, 3, 15)) == "2026-03-15"
+
+
+def test_any_dispatches_datetime_before_date():
+    """datetime ⊂ date — ANY must route datetime through DATETIME, not DATE."""
+    dt = datetime(2026, 3, 15, 10, 30, tzinfo=timezone.utc)
+    assert ANY.encode(dt) == "2026-03-15T10:30:00.000Z"
 
 
 def test_time_to_iso_string():

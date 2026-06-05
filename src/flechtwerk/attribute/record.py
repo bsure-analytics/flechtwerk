@@ -28,7 +28,7 @@ special-casing in Record itself.
 """
 from collections.abc import Iterable, Iterator
 from copy import deepcopy
-from datetime import datetime, time as time_
+from datetime import date, datetime, time
 from typing import Any, Final, Self, overload
 
 from .attribute import (
@@ -39,15 +39,16 @@ from .attribute import (
     ViewAttribute,
 )
 from .codec import Codec
-from .codecs import DATETIME, DICT, LIST, SET, TUPLE, TIME
+from .codecs import DATE, DATETIME, DICT, LIST, SET, TIME, TUPLE
 
 
 def _encode_any(v: Any) -> Any:
     """Recursively encode any value to JSON-native form via isinstance dispatch.
 
     Walks dicts/lists/sets/tuples through their `(ANY)` codecs; converts
-    `datetime` to ISO 8601, `time` to ISO 8601 (`HH:MM:SS[.ffffff]`),
-    `Record` to a shallow copy of its `raw`. The JSON-native primitives
+    `datetime` to ISO 8601, `date` to ISO 8601 (`YYYY-MM-DD`), `time` to
+    ISO 8601 (`HH:MM:SS[.ffffff]`), `Record` to a shallow copy of its
+    `raw`. The JSON-native primitives
     (`str`, `int`, `float`, `bool`, `None`) pass through unchanged.
     Raises `TypeError` on any other type — silent passthrough would let
     non-JSON-native values land in `Record.raw` and crash later in
@@ -62,7 +63,9 @@ def _encode_any(v: Any) -> Any:
         return v
     if isinstance(v, datetime):
         return DATETIME.encode(v)
-    if isinstance(v, time_):
+    if isinstance(v, date):  # datetime ⊂ date — must come after the datetime check
+        return DATE.encode(v)
+    if isinstance(v, time):
         return TIME.encode(v)
     if isinstance(v, Record):
         return RECORD.encode(v)
@@ -270,8 +273,8 @@ ANY: Final = Codec[Any](
 Decode is identity (the wire value passes through unchanged — JSON load
 already produced JSON-native shape). Encode runs the recursive
 `_encode_any` walker, which dispatches on runtime type and handles
-`Record`, `dict`, `list`, `set`, `tuple`, `datetime`, `time`, and the
-JSON-native primitives.
+`Record`, `dict`, `list`, `set`, `tuple`, `datetime`, `date`, `time`,
+and the JSON-native primitives.
 
 Compose with the container constructors for typed-but-heterogeneous
 fields: `LIST(DICT(ANY))` for `list[dict[str, Any]]`, `DICT(ANY)` for

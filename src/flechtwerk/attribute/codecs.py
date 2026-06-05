@@ -1,6 +1,6 @@
 """Built-in codec atoms and constructors.
 
-The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `FLOAT`,
+The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `DATE`, `FLOAT`,
 `DATETIME`, `TIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
 `DICT`) take an inner codec and return a parameterized container codec.
 Element validation is uniform — `LIST(STR).encode([1, 2, 3])` rejects
@@ -12,7 +12,7 @@ class and the recursive `_encode_any` walker, respectively.
 Naming convention: all atoms and constructors use uppercase identifiers
 matching the ALL_CAPS style of the typed-attribute call sites.
 """
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any, Final
 
 from .codec import Codec, Decoder
@@ -34,31 +34,17 @@ def _validate[T](t: type[T]) -> Decoder[T]:
     return check
 
 
-def _datetime_from_iso(s: str) -> datetime:
-    return datetime.fromisoformat(s)
-
-
-def _datetime_to_iso(dt: datetime) -> str:
-    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def _time_from_iso(s: str) -> time:
-    return time.fromisoformat(s)
-
-
-def _time_to_iso(t: time) -> str:
-    return t.isoformat()
-
-
 # --- atoms ---
 
 
 STR: Final = Codec[str](_validate(str), _validate(str))
 INT: Final = Codec[int](_validate(int), _validate(int))
 BOOL: Final = Codec[bool](_validate(bool), _validate(bool))
+DATE: Final = Codec[date](date.fromisoformat, date.isoformat)
 FLOAT: Final = Codec[float](_validate(float), _validate(float))
-DATETIME: Final = Codec[datetime](_datetime_from_iso, _datetime_to_iso)
-TIME: Final = Codec[time](_time_from_iso, _time_to_iso)
+DATETIME: Final = Codec[datetime](datetime.fromisoformat,
+                                  lambda dt: dt.isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+TIME: Final = Codec[time](time.fromisoformat, time.isoformat)
 
 
 # --- constructors ---
