@@ -3,38 +3,55 @@ from datetime import date, datetime, time, timedelta, timezone
 from fretworx.attribute import ANY, DATE, DATETIME, TIME
 
 
-def test_datetime_to_iso_utc():
-    dt = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    assert DATETIME.encode(dt) == "2024-01-01T00:00:00.000Z"
+def test_datetime_from_iso_utc_round_trip():
+    original = "2024-06-15T14:30:45.123Z"
+    decoded = DATETIME.decode(original)
+    assert decoded == datetime(2024, 6, 15, 14, 30, 45, 123000, tzinfo=timezone.utc)
+    encoded = DATETIME.encode(decoded)
+    assert encoded == original
 
 
-def test_datetime_to_iso_preserves_offset():
-    dt = datetime(2024, 1, 1, 2, 0, 0, tzinfo=timezone(timedelta(hours=2)))
-    assert DATETIME.encode(dt) == "2024-01-01T02:00:00.000+02:00"
+def test_datetime_from_iso_whole_second_round_trip():
+    """Whole seconds still render `.000` — millisecond precision is fixed, not elided."""
+    original = "2024-01-01T00:00:00.000Z"
+    decoded = DATETIME.decode(original)
+    assert decoded == datetime(2024, 1, 1, tzinfo=timezone.utc)
+    encoded = DATETIME.encode(decoded)
+    assert encoded == original
 
 
-def test_datetime_from_iso_round_trip():
-    original = datetime(2024, 6, 15, 14, 30, 45, 123000, tzinfo=timezone.utc)
-    encoded = DATETIME.encode(original)
-    assert DATETIME.decode(encoded) == original
+def test_datetime_from_iso_with_offset_round_trip():
+    original = "2024-01-01T02:00:00.123+02:00"
+    decoded = DATETIME.decode(original)
+    assert decoded == datetime(2024, 1, 1, 2, 0, 0, 123000, tzinfo=timezone(timedelta(hours=2)))
+    encoded = DATETIME.encode(decoded)
+    assert encoded == original
 
 
-def test_datetime_from_iso_with_offset():
-    decoded = DATETIME.decode("2024-01-01T02:00:00+02:00")
+def test_datetime_from_iso_without_offset_round_trip():
+    original = "2024-01-01T02:00:00.123"
+    decoded = DATETIME.decode(original)
+    assert decoded == datetime(2024, 1, 1, 2, 0, 0, 123000)
+    encoded = DATETIME.encode(decoded)
+    assert encoded == original
+
+
+def test_datetime_from_space_separated_with_offset():
+    decoded = DATETIME.decode("2024-01-01 02:00:00+02:00")
     assert decoded == datetime(2024, 1, 1, 2, 0, 0, tzinfo=timezone(timedelta(hours=2)))
 
 
-def test_date_to_iso_string():
-    assert DATE.encode(date(2026, 3, 15)) == "2026-03-15"
+def test_datetime_from_space_separated_without_offset():
+    decoded = DATETIME.decode("2024-01-01 02:00:00")
+    assert decoded == datetime(2024, 1, 1, 2, 0, 0)
 
 
-def test_date_from_iso_string():
-    assert DATE.decode("2026-03-15") == date(2026, 3, 15)
-
-
-def test_date_round_trip():
-    original = date(2026, 3, 15)
-    assert DATE.decode(DATE.encode(original)) == original
+def test_date_from_iso_round_trip():
+    original = "2026-03-15"
+    decoded = DATE.decode(original)
+    assert decoded == date(2026, 3, 15)
+    encoded = DATE.encode(decoded)
+    assert encoded == original
 
 
 def test_any_encodes_date_as_iso_string():
@@ -48,21 +65,47 @@ def test_any_dispatches_datetime_before_date():
     assert ANY.encode(dt) == "2026-03-15T10:30:00.000Z"
 
 
-def test_time_to_iso_string():
-    assert TIME.encode(time(13, 30)) == "13:30:00"
-    assert TIME.encode(time(0, 0, 0)) == "00:00:00"
-    assert TIME.encode(time(23, 59, 59, 123456)) == "23:59:59.123456"
+def test_time_from_iso_round_trip():
+    original = "13:30:00"
+    decoded = TIME.decode(original)
+    assert decoded == time(13, 30)
+    encoded = TIME.encode(decoded)
+    assert encoded == original
 
 
-def test_time_from_iso_string():
-    assert TIME.decode("13:30:00") == time(13, 30)
-    assert TIME.decode("00:00:00") == time(0, 0, 0)
-    assert TIME.decode("23:59:59.123456") == time(23, 59, 59, 123456)
+def test_time_from_iso_midnight_round_trip():
+    original = "00:00:00"
+    decoded = TIME.decode(original)
+    assert decoded == time(0, 0, 0)
+    encoded = TIME.encode(decoded)
+    assert encoded == original
 
 
-def test_time_round_trip():
-    original = time(13, 30, 45, 123456)
-    assert TIME.decode(TIME.encode(original)) == original
+def test_time_from_iso_with_offset_round_trip():
+    original = "13:30:00+02:00"
+    decoded = TIME.decode(original)
+    assert decoded == time(13, 30, tzinfo=timezone(timedelta(hours=2)))
+    encoded = TIME.encode(decoded)
+    assert encoded == original
+
+
+def test_time_from_iso_utc_round_trip():
+    """Unlike DATETIME, TIME does not map `+00:00` to `Z` — the offset survives verbatim."""
+    original = "13:30:00+00:00"
+    decoded = TIME.decode(original)
+    assert decoded == time(13, 30, tzinfo=timezone.utc)
+    encoded = TIME.encode(decoded)
+    assert encoded == original
+
+
+def test_time_from_iso_with_microseconds_round_trip():
+    """Unlike DATETIME's fixed milliseconds, TIME keeps full microseconds and
+    elides the fraction entirely when zero (`isoformat` timespec defaults)."""
+    original = "23:59:59.123456"
+    decoded = TIME.decode(original)
+    assert decoded == time(23, 59, 59, 123456)
+    encoded = TIME.encode(decoded)
+    assert encoded == original
 
 
 def test_any_encodes_time_as_iso_string():
