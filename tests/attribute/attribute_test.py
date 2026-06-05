@@ -113,6 +113,24 @@ def test_converted_attribute_round_trip_preserves_value_type():
     assert req.optional.required == req
 
 
+# --- sealed hierarchy ---
+
+
+def test_attribute_cannot_be_subclassed_directly():
+    """The hierarchy is sealed — every Attribute kind lives in the framework module."""
+    with pytest.raises(TypeError, match="sealed Attribute hierarchy"):
+        class Rogue(Attribute):  # noqa
+            def write_to(self, raw, value):
+                ...
+
+
+def test_attribute_kinds_cannot_be_subclassed_either():
+    """The seal covers the whole hierarchy, not just the abstract base."""
+    with pytest.raises(TypeError, match="sealed Attribute hierarchy"):
+        class Marker(RequiredAttribute):  # noqa
+            ...
+
+
 def test_converted_attribute_is_cached():
     """`required` / `optional` cache the converted view on the source instance."""
     opt = OptionalAttribute("name", STR)

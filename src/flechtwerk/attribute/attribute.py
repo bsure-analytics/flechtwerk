@@ -4,10 +4,10 @@
 `OptionalAttribute` to declare schema intent. `Record.__getitem__` only
 accepts `RequiredAttribute`; `Record.get` and `Record.pop` only accept
 `OptionalAttribute`. `OptionalAttribute[V].required` and
-`RequiredAttribute[V].optional` are `cached_property`s returning the
-other-kind view of the same attribute (same name and codec); use them at
-sites where the runtime presence semantic doesn't match the declared
-schema kind (e.g. `state[OPT.required]` immediately after writing).
+`RequiredAttribute[V].optional` return the other-kind view of the same
+attribute (same name and codec); use them at sites where the runtime
+presence semantic doesn't match the declared schema kind (e.g.
+`state[OPT.required]` immediately after writing).
 
 Each `Attribute` carries a `Codec[V]` that drives both the static type
 parameter and the runtime encode/decode. The type checker infers the
@@ -52,17 +52,21 @@ class Attribute[V](ABC):
         self.name = name
         self.codec = codec
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Reject subclasses outside this module — the Attribute hierarchy is sealed."""
+        super().__init_subclass__(**kwargs)
+        if cls.__module__ != Attribute.__module__:
+            raise TypeError(f"{cls.__qualname__} cannot extend the sealed Attribute hierarchy")
+
     def read_from(self, raw: RawDict) -> V:
         """Look up this attribute in `raw` and return the decoded value.
 
         Raises `MissingAttributeError` if the key is absent or the stored
         value is `None`. Both `RequiredAttribute` and `OptionalAttribute`
-        share this semantic at the `__getitem__` call site — Optional's
-        null-tolerance lives in `Record.get` / `Record.pop`. Subclasses
-        with different read semantics (e.g. `ViewAttribute`
-        synthesized for dict-spread) override this method directly rather
-        than forcing `Record.__getitem__` to branch on attribute type.
+        share this semantic — Optional's null-tolerance lives in
+        `Record.get` / `Record.pop`.
         """
+        # Null ≡ missing is duplicated in get_from and pop_from — change all in lockstep.
         v = raw.get(self.name)
         if v is None:
             raise MissingAttributeError(f"attribute {self!r} is missing")
@@ -73,19 +77,11 @@ class Attribute[V](ABC):
         """Encode `value` and store it under this attribute's name in `raw`.
 
         Kind-specific: `RequiredAttribute` rejects `None`,
-        `OptionalAttribute` stores `None` as JSON null, `ViewAttribute`
-        skips encoding entirely. This is the single point of dispatch for
-        all writes — `Record.__init__` and `Record.__setitem__` both
-        route through it, so new Attribute kinds can change write
-        semantics without touching Record.
+        `OptionalAttribute` stores `None` as JSON null.
         """
 
     def present_in(self, raw: RawDict) -> bool:
-        """Whether this attribute is present in `raw` (key exists, value may be `None`).
-
-        Default checks for key existence. Subclasses override only if
-        "present" means something more than "key in dict."
-        """
+        """Whether this attribute is present in `raw` (key exists, value may be `None`)."""
         return self.name in raw
 
     def delete_from(self, raw: RawDict) -> None:
@@ -93,34 +89,26 @@ class Attribute[V](ABC):
         del raw[self.name]
 
     def get_from(self, raw: RawDict, default: V | None = None) -> V | None:
-        """Return the decoded value, or `default` if missing or `None`.
-
-        Default composes `read_from` with a `MissingAttributeError` catch.
-        Subclasses that override `read_from` get the right `get_from`
-        behavior for free.
-        """
-        try:
-            return self.read_from(raw)
-        except MissingAttributeError:
+        """Return the decoded value, or `default` if missing or `None`."""
+        v = raw.get(self.name)
+        if v is None:
             return default
+        return self.codec.decode(v)
 
     def pop_from(self, raw: RawDict, *default: V) -> V | None:
         """Remove and return the decoded value; raise `KeyError` if missing and no default.
 
-        A stored `None` is returned as `None` (no decode) and the key is
+        A stored `None` is returned as `None` (no decode), and the key is
         removed — mirroring `dict.pop` semantics for `OptionalAttribute`
-        writes of `None`. Default composes `present_in`, `read_from`, and
-        `delete_from`; subclasses that override the primitives get the
-        right `pop_from` for free.
+        writes of `None`.
         """
         if not self.present_in(raw):
             if default:
                 return default[0]
             raise KeyError(self)
-        try:
-            v = self.read_from(raw)
-        except MissingAttributeError:
-            v = None  # stored as JSON null
+        v = raw.get(self.name)
+        if v is not None:
+            v = self.codec.decode(v)
         self.delete_from(raw)
         return v
 
@@ -138,14 +126,14 @@ class OptionalAttribute[V](Attribute[V]):
     """An attribute that may be absent or `None`."""
 
     def write_to(self, raw: RawDict, value: V | None) -> None:
-        """`None` is stored as JSON `null` (codec encoder bypassed)."""
+        """`None` is stored as JSON `null`."""
         raw[self.name] = None if value is None else self.codec.encode(value)
 
     @cached_property
     def required(self) -> RequiredAttribute[V]:
         """The required view of this attribute (same name and codec).
 
-        Use at sites where the value is known to be present (e.g. immediately
+        Use at sites where the value is known to be present (e.g., immediately
         after writing it) so `Record.__getitem__` accepts it without a checker
         downgrade.
         """
@@ -156,13 +144,7 @@ class RequiredAttribute[V](Attribute[V]):
     """An attribute that must be present and non-`None`."""
 
     def write_to(self, raw: RawDict, value: V) -> None:
-        """`None` is rejected at the write site so it can't land silently as `null`.
-
-        The explicit check fires regardless of optimization level; the
-        codec's type assertion would catch it under normal Python but is
-        stripped under ``python -O``, so we don't rely on it for the
-        Required-vs-None invariant.
-        """
+        """`None` is rejected at the write-site so it can't land silently as `null`."""
         if value is None:
             raise ValueError(f"cannot assign None to required {self!r}")
         raw[self.name] = self.codec.encode(value)
@@ -172,7 +154,7 @@ class RequiredAttribute[V](Attribute[V]):
         """The optional view of this attribute (same name and codec).
 
         Use at sites where you want `.get()` / `.pop()` semantics on a
-        normally-required field (e.g. presence-checked reads, defaults).
+        normally required field (e.g., presence-checked reads, defaults).
         """
         return OptionalAttribute(self.name, self.codec)
 
@@ -181,16 +163,16 @@ class ViewAttribute(RequiredAttribute[Any]):
     """Synthesized view onto a `Record` key, produced by `Record.keys()`.
 
     Overrides `read_from` (raw passthrough, None-tolerant) and `write_to`
-    (identity store, no encoding) — the spread roundtrip must enumerate
-    every key including stored JSON ``null``, and the value coming back
-    in is already in wire form. Same dispatch protocol as every other
+    (identity store, no encoding) — the spread roundtrip must list
+    every key including stored JSON "null", and the value coming back
+    in is already in wire form. The same dispatch protocol as every other
     Attribute kind, just with no-op codec behavior.
 
     Public class but deliberately not re-exported from `fretworx.attribute`:
     application code constructs Attributes via `RequiredAttribute` /
     `OptionalAttribute`; `ViewAttribute` is a framework-internal mechanism
     that powers `Record`'s dict-spread support. Reaching it requires the
-    fully-qualified import, which serves as the "you know what you're
+    fully qualified import, which serves as the "you know what you're
     doing" signal in lieu of the leading underscore.
     """
 
