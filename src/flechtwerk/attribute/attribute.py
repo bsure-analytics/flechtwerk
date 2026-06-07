@@ -91,9 +91,7 @@ class Attribute[V](ABC):
     def get_from(self, raw: RawDict, default: V | None = None) -> V | None:
         """Return the decoded value, or `default` if missing or `None`."""
         v = raw.get(self.name)
-        if v is None:
-            return default
-        return self.codec.decode(v)
+        return self.codec.decode(v) if v is not None else default
 
     def pop_from(self, raw: RawDict, *default: V) -> V | None:
         """Remove and return the decoded value; raise `KeyError` if missing and no default.
