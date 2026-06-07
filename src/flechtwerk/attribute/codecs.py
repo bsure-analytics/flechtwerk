@@ -19,7 +19,11 @@ from .codec import Codec, Decoder
 
 
 def _encode_datetime(dt: datetime) -> str:
-    """Encoder for `DATETIME` — fixed millisecond precision, `Z` for UTC.
+    """Encoder for `DATETIME` — lossless `isoformat` defaults, `Z` for UTC.
+
+    Default `isoformat` precision (full microseconds when nonzero, no
+    fraction when zero) keeps the encoder lossless — a fixed `timespec`
+    would silently truncate sub-millisecond values and break round-trips.
 
     The `Z` suffix replaces `+00:00` only when the zone *is* UTC
     (`tzname() == "UTC"` — matches `timezone.utc`, `ZoneInfo("UTC")` and
@@ -27,7 +31,7 @@ def _encode_datetime(dt: datetime) -> str:
     (e.g. `Europe/London` in winter, `tzname() == "GMT"`) keeps its
     `+00:00` offset — `Z` asserts UTC, not a zero offset.
     """
-    encoded = dt.isoformat(timespec="milliseconds")
+    encoded = dt.isoformat()
     return encoded.replace("+00:00", "Z") if dt.tzname() == "UTC" else encoded
 
 

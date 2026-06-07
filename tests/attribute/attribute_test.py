@@ -55,7 +55,7 @@ def test_datetime_codec_round_trip():
     attr = RequiredAttribute("ts", DATETIME)
     dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
     encoded = attr.codec.encode(dt)
-    assert encoded == "2024-06-15T14:30:00.000Z"
+    assert encoded == "2024-06-15T14:30:00Z"
     assert attr.codec.decode(encoded) == dt
 
 

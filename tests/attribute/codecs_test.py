@@ -5,34 +5,43 @@ from fretworx.attribute import ANY, DATE, DATETIME, TIME
 
 
 def test_datetime_from_iso_utc_round_trip():
-    original = "2024-06-15T14:30:45.123Z"
+    original = "2024-06-15T14:30:45.123456Z"
     decoded = DATETIME.decode(original)
-    assert decoded == datetime(2024, 6, 15, 14, 30, 45, 123000, tzinfo=timezone.utc)
+    assert decoded == datetime(2024, 6, 15, 14, 30, 45, 123456, tzinfo=timezone.utc)
     encoded = DATETIME.encode(decoded)
     assert encoded == original
 
 
 def test_datetime_from_iso_whole_second_round_trip():
-    """Whole seconds still render `.000` — millisecond precision is fixed, not elided."""
-    original = "2024-01-01T00:00:00.000Z"
+    """Whole seconds elide the fraction entirely (`isoformat` defaults)."""
+    original = "2024-01-01T00:00:00Z"
     decoded = DATETIME.decode(original)
     assert decoded == datetime(2024, 1, 1, tzinfo=timezone.utc)
     encoded = DATETIME.encode(decoded)
     assert encoded == original
 
 
+def test_datetime_millisecond_input_normalizes_to_microseconds():
+    """Legacy 3-digit fractions decode fine but re-encode at full microsecond
+    width — the canonical wire form is `isoformat` defaults, not a fixed
+    millisecond `timespec`."""
+    decoded = DATETIME.decode("2024-06-15T14:30:45.123Z")
+    assert decoded == datetime(2024, 6, 15, 14, 30, 45, 123000, tzinfo=timezone.utc)
+    assert DATETIME.encode(decoded) == "2024-06-15T14:30:45.123000Z"
+
+
 def test_datetime_from_iso_with_offset_round_trip():
-    original = "2024-01-01T02:00:00.123+02:00"
+    original = "2024-01-01T02:00:00.123456+02:00"
     decoded = DATETIME.decode(original)
-    assert decoded == datetime(2024, 1, 1, 2, 0, 0, 123000, tzinfo=timezone(timedelta(hours=2)))
+    assert decoded == datetime(2024, 1, 1, 2, 0, 0, 123456, tzinfo=timezone(timedelta(hours=2)))
     encoded = DATETIME.encode(decoded)
     assert encoded == original
 
 
 def test_datetime_from_iso_without_offset_round_trip():
-    original = "2024-01-01T02:00:00.123"
+    original = "2024-01-01T02:00:00.123456"
     decoded = DATETIME.decode(original)
-    assert decoded == datetime(2024, 1, 1, 2, 0, 0, 123000)
+    assert decoded == datetime(2024, 1, 1, 2, 0, 0, 123456)
     encoded = DATETIME.encode(decoded)
     assert encoded == original
 
@@ -41,21 +50,21 @@ def test_datetime_zoneinfo_utc_encodes_z():
     """`Z` keys off the zone being UTC, not the concrete tzinfo class —
     `ZoneInfo("UTC")` qualifies just like `timezone.utc`."""
     encoded = DATETIME.encode(datetime(2024, 1, 1, tzinfo=ZoneInfo("UTC")))
-    assert encoded == "2024-01-01T00:00:00.000Z"
+    assert encoded == "2024-01-01T00:00:00Z"
 
 
 def test_datetime_zero_offset_zone_keeps_offset():
     """Europe/London in winter has a zero offset but is not UTC (it names
     itself GMT) — `Z` asserts UTC, so `+00:00` survives verbatim."""
     encoded = DATETIME.encode(datetime(2024, 1, 1, tzinfo=ZoneInfo("Europe/London")))
-    assert encoded == "2024-01-01T00:00:00.000+00:00"
+    assert encoded == "2024-01-01T00:00:00+00:00"
 
 
 def test_datetime_named_fixed_zero_offset_keeps_offset():
     """Same for a fixed zero offset under a non-UTC name — the discriminator
     is `tzname()`, not the offset."""
     encoded = DATETIME.encode(datetime(2024, 1, 1, tzinfo=timezone(timedelta(0), "GMT")))
-    assert encoded == "2024-01-01T00:00:00.000+00:00"
+    assert encoded == "2024-01-01T00:00:00+00:00"
 
 
 def test_datetime_from_space_separated_with_offset():
@@ -84,7 +93,7 @@ def test_any_encodes_date_as_iso_string():
 def test_any_dispatches_datetime_before_date():
     """datetime ⊂ date — ANY must route datetime through DATETIME, not DATE."""
     dt = datetime(2026, 3, 15, 10, 30, tzinfo=timezone.utc)
-    assert ANY.encode(dt) == "2026-03-15T10:30:00.000Z"
+    assert ANY.encode(dt) == "2026-03-15T10:30:00Z"
 
 
 def test_time_from_iso_round_trip():
@@ -121,8 +130,8 @@ def test_time_from_iso_utc_round_trip():
 
 
 def test_time_from_iso_with_microseconds_round_trip():
-    """Unlike DATETIME's fixed milliseconds, TIME keeps full microseconds and
-    elides the fraction entirely when zero (`isoformat` timespec defaults)."""
+    """Like DATETIME, TIME keeps full microseconds and elides the fraction
+    entirely when zero (`isoformat` timespec defaults)."""
     original = "23:59:59.123456"
     decoded = TIME.decode(original)
     assert decoded == time(23, 59, 59, 123456)

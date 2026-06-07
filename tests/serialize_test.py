@@ -36,7 +36,7 @@ def test_json_round_trip_datetime():
     dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
     state[LAST_TIME] = dt
     bytes_ = serialize(state)
-    assert bytes_ == b'{"last_time":"2024-06-15T14:30:00.000Z"}'
+    assert bytes_ == b'{"last_time":"2024-06-15T14:30:00Z"}'
     restored = deserialize(bytes_)
     assert restored[LAST_TIME] == dt
 
@@ -69,7 +69,7 @@ def test_deserialize_legacy_pickle_with_native_datetime():
     legacy_state.raw = {"last_time": datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)}
     bytes_ = pickle.dumps(legacy_state)
     restored = deserialize(bytes_)
-    assert restored.raw == {"last_time": "2024-06-15T14:30:00.000Z"}
+    assert restored.raw == {"last_time": "2024-06-15T14:30:00Z"}
     assert restored[LAST_TIME] == datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
 
 
@@ -97,8 +97,8 @@ def test_deserialize_legacy_pickle_with_nested_datetime_and_tuple():
     restored = deserialize(bytes_)
     assert restored.raw == {
         "operation_state": {
-            "op1": {"last_release_time": "2024-06-15T14:30:00.000Z", "result_ids": [1, 2]},
-            "op2": {"last_release_time": "2024-06-15T14:30:00.000Z", "result_ids": [3]},
+            "op1": {"last_release_time": "2024-06-15T14:30:00Z", "result_ids": [1, 2]},
+            "op2": {"last_release_time": "2024-06-15T14:30:00Z", "result_ids": [3]},
         }
     }
 
