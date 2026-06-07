@@ -144,9 +144,14 @@ class Record:
         attr.write_to(self.raw, value)
 
     def __delitem__(self, attr: OptionalAttribute) -> None:
+        """Remove the key — optional-only, like `pop`: deletion creates the
+        absence a `RequiredAttribute` promises readers can't exist, so a
+        required field must be downgraded via `.optional` at the call site."""
         attr.delete_from(self.raw)
 
-    def __contains__(self, attr: OptionalAttribute) -> bool:
+    def __contains__(self, attr: Attribute) -> bool:
+        """Check key presence — kind-agnostic, since a question neither decodes
+        a value nor mutates the absence contract."""
         return attr.present_in(self.raw)
 
     # --- container protocol ---
