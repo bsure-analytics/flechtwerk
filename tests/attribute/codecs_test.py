@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fretworx.attribute import ANY, DATE, DATETIME, TIME
 
@@ -34,6 +35,27 @@ def test_datetime_from_iso_without_offset_round_trip():
     assert decoded == datetime(2024, 1, 1, 2, 0, 0, 123000)
     encoded = DATETIME.encode(decoded)
     assert encoded == original
+
+
+def test_datetime_zoneinfo_utc_encodes_z():
+    """`Z` keys off the zone being UTC, not the concrete tzinfo class —
+    `ZoneInfo("UTC")` qualifies just like `timezone.utc`."""
+    encoded = DATETIME.encode(datetime(2024, 1, 1, tzinfo=ZoneInfo("UTC")))
+    assert encoded == "2024-01-01T00:00:00.000Z"
+
+
+def test_datetime_zero_offset_zone_keeps_offset():
+    """Europe/London in winter has a zero offset but is not UTC (it names
+    itself GMT) — `Z` asserts UTC, so `+00:00` survives verbatim."""
+    encoded = DATETIME.encode(datetime(2024, 1, 1, tzinfo=ZoneInfo("Europe/London")))
+    assert encoded == "2024-01-01T00:00:00.000+00:00"
+
+
+def test_datetime_named_fixed_zero_offset_keeps_offset():
+    """Same for a fixed zero offset under a non-UTC name — the discriminator
+    is `tzname()`, not the offset."""
+    encoded = DATETIME.encode(datetime(2024, 1, 1, tzinfo=timezone(timedelta(0), "GMT")))
+    assert encoded == "2024-01-01T00:00:00.000+00:00"
 
 
 def test_datetime_from_space_separated_with_offset():

@@ -18,6 +18,19 @@ from typing import Any, Final
 from .codec import Codec, Decoder
 
 
+def _encode_datetime(dt: datetime) -> str:
+    """Encoder for `DATETIME` — fixed millisecond precision, `Z` for UTC.
+
+    The `Z` suffix replaces `+00:00` only when the zone *is* UTC
+    (`tzname() == "UTC"` — matches `timezone.utc`, `ZoneInfo("UTC")` and
+    plain `timezone(timedelta(0))`). A zone that merely coincides with UTC
+    (e.g. `Europe/London` in winter, `tzname() == "GMT"`) keeps its
+    `+00:00` offset — `Z` asserts UTC, not a zero offset.
+    """
+    encoded = dt.isoformat(timespec="milliseconds")
+    return encoded.replace("+00:00", "Z") if dt.tzname() == "UTC" else encoded
+
+
 def _validate[T](t: type[T]) -> Decoder[T]:
     """Codec helper that asserts `type(x) is t`.
 
@@ -42,8 +55,7 @@ INT: Final = Codec[int](_validate(int), _validate(int))
 BOOL: Final = Codec[bool](_validate(bool), _validate(bool))
 DATE: Final = Codec[date](date.fromisoformat, date.isoformat)
 FLOAT: Final = Codec[float](_validate(float), _validate(float))
-DATETIME: Final = Codec[datetime](datetime.fromisoformat,
-                                  lambda dt: dt.isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+DATETIME: Final = Codec[datetime](datetime.fromisoformat, _encode_datetime)
 TIME: Final = Codec[time](time.fromisoformat, time.isoformat)
 
 
