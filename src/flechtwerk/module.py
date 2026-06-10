@@ -25,6 +25,7 @@ from aiokafka.coordinator.assignors.range import RangePartitionAssignor
 from prometheus_client import REGISTRY, CollectorRegistry
 from reactor_di import CachingStrategy, module, lookup
 
+from .configs import ConfigStore
 from .extractor import Extractor, ExtractorRunner
 from .metrics import Metrics
 from .observer import Observer, PrometheusObserver
@@ -35,6 +36,23 @@ log = logging.getLogger(__name__)
 
 CompressionType = Literal["gzip", "snappy", "lz4", "zstd"]
 """Kafka producer compression codec — closed set matching aiokafka's accepted values."""
+
+
+def validate_topics(stage: Extractor | Transformer) -> None:
+    """Structural checks on a stage's topic declarations — broker-free.
+
+    A transformer's task model hangs off its partitioned input topics, so at
+    least one is required; an extractor consumes only config topics. A topic
+    can't be both input and config — config consumption bypasses the task
+    model entirely.
+    """
+    if isinstance(stage, Transformer):
+        if not stage.input_topics:
+            raise ValueError("a transformer needs at least one (partitioned) input topic")
+        if overlap := set(stage.input_topics) & set(stage.config_topics):
+            raise ValueError(f"topics declared both input and config: {sorted(overlap)}")
+    elif not stage.config_topics:
+        raise ValueError("an extractor needs at least one config topic")
 
 
 @module(CachingStrategy.NOT_THREAD_SAFE)
@@ -193,6 +211,28 @@ class Fretworx:
         """
         return self.extractor_runner if isinstance(self.stage, Extractor) else self.transformer_runner
 
+    @cached_property
+    def config_consumer(self) -> AIOKafkaConsumer | None:
+        """Consumer feeding a transformer's config store (None without config topics).
+
+        Group-less and read_committed, like the restore consumers. Extractors
+        don't need one — their main consumer is already group-less and IS the
+        config consumer.
+        """
+        if not (isinstance(self.stage, Transformer) and self.stage.config_topics):
+            return None
+        return AIOKafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            client_id=self.client_id + "-config",
+            group_id=None,
+            isolation_level="read_committed",
+        )
+
+    @cached_property
+    def config_store(self) -> ConfigStore:
+        """The stage's per-process config store, fed by the runner."""
+        return ConfigStore()
+
     def task_producer_factory(self, partition: int) -> AIOKafkaProducer:
         """Builds one transactional producer per task (input partition).
 
@@ -231,9 +271,17 @@ class Fretworx:
         # soon as the process is up.
         _ = self.metrics_server
 
+        validate_topics(self.stage)
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         await admin.start()
         try:
+            if self.stage.config_topics:
+                # Existence check only — a missing config topic must fail
+                # fast: the assign-based bootstrap would otherwise yield a
+                # silently empty store and never discover a topic created
+                # later. Partition counts are unconstrained — config topics
+                # are exempt from co-partitioning.
+                await partition_counts(admin, self.stage.config_topics)
             num_partitions = -1
             if isinstance(self.stage, Transformer):
                 # Tasks are identified by partition number across all input
@@ -271,10 +319,14 @@ class Fretworx:
 
         try:
             await self.consumer.start()
+            if self.config_consumer is not None:
+                await self.config_consumer.start()
             if isinstance(self.stage, Extractor):
                 await self.producer.start()
         except BaseException:
             await self.consumer.stop()
+            if self.config_consumer is not None:
+                await self.config_consumer.stop()
             if isinstance(self.stage, Extractor):
                 await self.state_store.close()
             raise
@@ -282,6 +334,8 @@ class Fretworx:
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.consumer.stop()
+        if self.__dict__.get("config_consumer") is not None:
+            await self.config_consumer.stop()
         if isinstance(self.stage, Extractor):
             await self.producer.stop()
             await self.state_store.close()

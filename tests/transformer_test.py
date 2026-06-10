@@ -945,3 +945,119 @@ def test_start_pending_tasks_fences_then_restores_then_resumes():
         assert consumer.paused == set()  # resumed after restore
 
     asyncio.run(run())
+
+
+# --- Config topics ---
+
+
+class ConfigLookupTransformer(Transformer):
+    input_topics = ["input-topic"]
+    config_topics = ["cfg-topic"]
+    entered_with = None
+
+    async def __aenter__(self):
+        self.entered_with = self.configs
+        return self
+
+    async def transform(self, msg, state) -> AsyncIterator[Message]:
+        config = self.configs.get(msg.key)
+        if config is not None:
+            yield Message(key=msg.key, topic="out", value=config)
+
+
+def test_configs_unseeded_access_raises_attribute_error():
+    with pytest.raises(AttributeError):
+        ConfigLookupTransformer().configs
+
+
+def test_configs_lookup_with_seeded_store():
+    async def run():
+        from fretworx.configs import ConfigStore
+        from fretworx.types import Config
+
+        t = ConfigLookupTransformer()
+        t.configs = ConfigStore.of({"k": Config.wrap({"a": 1})})
+        result = [m async for m in t.transform(make_incoming(value={"data": "x"}), State())]
+        assert result[0].value == Config.wrap({"a": 1})
+
+    asyncio.run(run())
+
+
+def test_run_bootstraps_config_store_and_subscribes_input_topics_only():
+    """Bootstrap fills the store BEFORE injection and __aenter__; the group
+    consumer never subscribes to config topics."""
+
+    async def run():
+        from fretworx.types import Config
+
+        t = ConfigLookupTransformer()
+        consumer = FakeKafkaConsumer()
+        mod = make_module(t, consumer)
+        mod.config_consumer = FakeKafkaConsumer([
+            make_record(topic="cfg-topic", key=b"k", value=b'{"a":1}'),
+        ])
+        runner = mod.runner
+        runner.fatal = RuntimeError("stop the loop")
+
+        with pytest.raises(RuntimeError, match="stop the loop"):
+            await runner.run()
+
+        assert consumer.subscribed == ["input-topic"]
+        assert t.entered_with is not None
+        assert t.entered_with.get("k") == Config.wrap({"a": 1})
+
+    asyncio.run(run())
+
+
+def test_check_config_updates_applies_enriches_and_observes():
+    async def run():
+        from fretworx.testing import RecordingObserver
+        from fretworx.types import Config
+
+        class EnrichingLookup(ConfigLookupTransformer):
+            async def enrich(self, config):
+                config.raw["enriched"] = True
+                return config
+
+        t = EnrichingLookup()
+        mod = make_module(t)
+        mod.observer = RecordingObserver()
+        mod.config_consumer = FakeKafkaConsumer([
+            make_record(topic="cfg-topic", key=b"k", value=b'{"a":1}'),
+        ])
+        runner = mod.runner
+
+        await runner.check_config_updates()
+
+        assert runner.config_store.get("k") == Config.wrap({"a": 1, "enriched": True})
+        assert ("config_message_in", "cfg-topic") in mod.observer.calls
+        assert ("config_store_entries", 1) in mod.observer.calls
+
+    asyncio.run(run())
+
+
+def test_check_config_updates_noop_without_config_consumer():
+    async def run():
+        mod = make_module(PassthroughTransformer())
+        await mod.runner.check_config_updates()
+
+    asyncio.run(run())
+
+
+def test_functional_transformer_with_enrich():
+    async def my_transform(msg, state) -> AsyncIterator[Message]:
+        return
+        yield  # pragma: no cover
+
+    async def my_enrich(config):
+        config.raw["enriched"] = True
+        return config
+
+    t = Transformer.of(input_topics=["in"], transform=my_transform, enrich=my_enrich)
+
+    async def run():
+        from fretworx.types import Config
+        enriched = await t.enrich(Config.wrap({"a": 1}))
+        assert enriched.raw == {"a": 1, "enriched": True}
+
+    asyncio.run(run())

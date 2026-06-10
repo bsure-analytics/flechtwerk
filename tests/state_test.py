@@ -321,7 +321,7 @@ def test_module_wires_changelog_state_store():
     from fretworx.module import Fretworx
 
     class StubExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state):
             return
@@ -365,7 +365,7 @@ def test_module_lookups_resolve_from_parent():
     from reactor_di import CachingStrategy, module
 
     class StubExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state):
             return
@@ -417,7 +417,7 @@ def test_app_factory_defaults_metrics_when_omitted():
     from fretworx.module import Fretworx
 
     class StubExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state):
             return

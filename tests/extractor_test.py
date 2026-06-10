@@ -24,7 +24,7 @@ TAG: Final = OptionalAttribute("tag", STR)
 
 
 class SimpleExtractor(Extractor):
-    input_topics = ["test-config"]
+    config_topics = ["test-config"]
 
     async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
         cursor = state.get(CURSOR, 0)
@@ -37,7 +37,7 @@ class SimpleExtractor(Extractor):
 
 
 class EnrichingExtractor(Extractor):
-    input_topics = ["test-config"]
+    config_topics = ["test-config"]
 
     async def enrich(self, config):
         config[ENRICHED] = True
@@ -52,7 +52,7 @@ class EnrichingExtractor(Extractor):
 
 
 class ContextManagerExtractor(Extractor):
-    input_topics = ["test-config"]
+    config_topics = ["test-config"]
     entered = False
     exited = False
 
@@ -181,7 +181,7 @@ def test_extractor_state_isolation_on_error():
     """Test that state is NOT persisted when poll raises."""
 
     class FailingExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
             raise RuntimeError("Simulated API failure")
@@ -226,7 +226,7 @@ def test_extractor_runner_wraps_config_in_config_type():
     """Runner wraps raw msg.value in Config() when applying configs."""
 
     async def run():
-        record = json_record(key="k", value={"api_key": "test"}, topic="cfg")
+        record = json_record(key="k", value={"api_key": "test"})
         consumer = FakeKafkaConsumer([record])
 
         mod = make_module(SimpleExtractor(), consumer)
@@ -243,8 +243,8 @@ def test_extractor_runner_suspended_configs_not_polled():
 
     async def run():
         consumer = FakeKafkaConsumer([
-            json_record(key="active", value={"api_key": "a"}, offset=0, topic="cfg"),
-            json_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1, topic="cfg"),
+            json_record(key="active", value={"api_key": "a"}, offset=0),
+            json_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1),
         ])
         producer = FakeKafkaProducer()
 
@@ -292,7 +292,7 @@ def test_extractor_runner_error_propagates_from_run():
     """Errors from poll propagate out of run()."""
 
     class AlwaysFailExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
             raise RuntimeError("fatal")
@@ -315,7 +315,7 @@ def test_extractor_runner_config_update_during_operation():
     """Config updates are applied between poll cycles."""
 
     async def run():
-        initial = json_record(key="k", value={"api_key": "v1"}, topic="cfg")
+        initial = json_record(key="k", value={"api_key": "v1"})
         consumer = FakeKafkaConsumer([initial])
 
         mod = make_module(SimpleExtractor(), consumer)
@@ -325,7 +325,7 @@ def test_extractor_runner_config_update_during_operation():
         assert runner.configs["k"].config[API_KEY] == "v1"
 
         consumer.records = [
-            json_record(key="k", value={"api_key": "v2"}, offset=1, topic="cfg"),
+            json_record(key="k", value={"api_key": "v2"}, offset=1),
         ]
         await runner.check_config_updates()
 
@@ -338,7 +338,7 @@ def test_extractor_poll_yields_no_state():
     """Poll that yields no State does not persist."""
 
     class EmptyExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
             return
@@ -362,7 +362,7 @@ def test_extractor_poll_in_place_state_mutation_is_persisted():
     """A poll that mutates `state` in place and yields it must still be persisted."""
 
     class InPlaceMutatingExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
             state[CURSOR] = state.get(CURSOR, 0) + 1
@@ -385,7 +385,7 @@ def test_extractor_poll_yielding_empty_state_deletes_existing_entry():
     """Yielding an empty/falsy State deletes the entry from the state store."""
 
     class TombstoningExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
             yield State()
@@ -407,7 +407,7 @@ def test_extractor_poll_yielding_empty_state_no_op_when_already_absent():
     """Yielding empty State when no baseline state exists is a no-op (no delete call)."""
 
     class TombstoningExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
             yield State()
@@ -435,7 +435,7 @@ def test_extractor_poll_mutation_without_yield_is_not_persisted():
     """Mutating `state` without yielding must not be persisted (contract)."""
 
     class MutateWithoutYieldExtractor(Extractor):
-        input_topics = ["cfg"]
+        config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
             state[CURSOR] = 42
@@ -464,7 +464,7 @@ def test_functional_extractor():
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
         yield Message(key=config[API_KEY], topic="out", value={"polled": True})
 
-    ext = Extractor.of(input_topics=["cfg"], poll=my_poll)
+    ext = Extractor.of(config_topics=["cfg"], poll=my_poll)
 
     async def run():
         config = Config.wrap({"api_key": "k"})
@@ -489,7 +489,7 @@ def test_functional_extractor_with_enrich_and_extract_key():
         return msg.value.get(ID, msg.value.get(API_KEY))
 
     ext = Extractor.of(
-        input_topics=["cfg"],
+        config_topics=["cfg"],
         poll=my_poll,
         enrich=my_enrich,
         extract_key=my_extract_key,
@@ -513,7 +513,7 @@ def test_functional_extractor_default_extract_key():
         return
         yield  # pragma: no cover
 
-    ext = Extractor.of(input_topics=["cfg"], poll=my_poll)
+    ext = Extractor.of(config_topics=["cfg"], poll=my_poll)
 
     from fretworx.kafka import parse_message
     msg = parse_message(json_record(key="tenant/channel", value={"api_key": "a"}))
@@ -529,7 +529,7 @@ def test_extractor_is_abstract():
 def test_subclass_defaults_not_overridden_by_init():
     """Subclass class attributes are not overridden by __init__ defaults."""
     ext = SimpleExtractor()
-    assert ext.input_topics == ["test-config"]
+    assert ext.config_topics == ["test-config"]
 
 
 def test_functional_extractor_end_to_end_with_runner():
@@ -546,7 +546,7 @@ def test_functional_extractor_end_to_end_with_runner():
         producer = FakeKafkaProducer()
         state_store = InMemoryStateStore()
 
-        ext = Extractor.of(input_topics=["test-config"], poll=my_poll)
+        ext = Extractor.of(config_topics=["test-config"], poll=my_poll)
         mod = make_module(ext, consumer, producer, state_store)
         runner = mod.runner
 

@@ -46,6 +46,27 @@ stage = Transformer.of(input_topics=["input"], transform=transform)
 
 The point isn't ceremony; it's that the boundary between "Python object graph" and "JSON on the wire" is enforced at assignment time, once per Attribute declaration, rather than re-derived on every serialize/deserialize.
 
+### Config topics — shared lookup tables
+
+A stage declares two kinds of topics. `input_topics` (transformers only) are partitioned: their records drive `transform()` and define the task model. `config_topics` are read **in full by every instance** into one per-process `ConfigStore` keyed by wire key — Kafka Streams' GlobalKTable, specialized to configuration:
+
+```python
+class MyExtractor(Extractor):
+    config_topics = ["my-config"]          # an extractor's inputs ARE config topics
+
+class RequestDriven(Transformer):
+    input_topics = ["my-requests"]         # partitioned, keyed stream
+    config_topics = ["my-config"]          # config table, joined by key
+
+    async def transform(self, msg, state):
+        config = self.configs.get(msg.key)
+        ...
+```
+
+For extractors this is simply how config handling has always worked, named. For transformers it is the escape hatch from the co-partitioning requirement: a config topic's partition placement and count are irrelevant, so any producer (Kafka UI included) can write configs without routing them to the "right" partition. The source topics are their own changelog — compacted, small, re-read on every startup — and lookups are eventually consistent, outside the task transaction (the GlobalKTable caveat).
+
+`Stage.enrich(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it once per config record — never per poll tick or lookup — and both stage kinds inherit it. Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation; Fretworx re-reads the topics through the same enrich path on every startup, so the enriched store cannot diverge.
+
 ## Operational model
 
 - **Consumer groups** drive partition assignment and rebalancing — standard Kafka semantics, no custom coordination.
@@ -73,7 +94,7 @@ This is a property of the model, not a feature of the framework — building a s
 - **Event-time windowing with watermarks** — if you need this, use Flink. Fretworx targets the much larger class of problems where processing-time semantics are sufficient.
 - **Stream-stream joins, complex topologies** — operators compose by writing to and reading from intermediate Kafka topics, not by chaining method calls.
 - **Savepoints / state migrations** — recovery is changelog replay; schema evolution is the application's responsibility.
-- **A DSL** — the API surface is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`. That's the full vocabulary.
+- **A DSL** — the API surface is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`, `ConfigStore`. That's the full vocabulary.
 
 ## Status
 

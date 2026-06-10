@@ -22,6 +22,9 @@ class Observer:
     def message_out(self, topic: str) -> None: pass
     def transaction_committed(self) -> None: pass
     def active_configs(self, n: int) -> None: pass
+    def config_message_in(self, topic: str) -> None: pass
+    def config_store_entries(self, n: int) -> None: pass
+    def config_store_restored(self, entries: int) -> None: pass
     def state_restored(self, partition: int, entries: int) -> None: pass
     def tasks_assigned(self, n: int) -> None: pass
 
@@ -52,6 +55,15 @@ class PrometheusObserver(Observer):
 
     def active_configs(self, n: int) -> None:
         self.metrics.active_configs.labels(**self.metrics_labels).set(n)
+
+    def config_message_in(self, topic: str) -> None:
+        self.metrics.config_messages_in_total.labels(**self.metrics_labels, topic=topic).inc()
+
+    def config_store_entries(self, n: int) -> None:
+        self.metrics.config_store_entries.labels(**self.metrics_labels).set(n)
+
+    def config_store_restored(self, entries: int) -> None:
+        self.metrics.config_store_restored_entries_total.labels(**self.metrics_labels).inc(entries)
 
     def state_restored(self, partition: int, entries: int) -> None:
         self.metrics.state_restored_entries_total.labels(**self.metrics_labels, partition=str(partition)).inc(entries)

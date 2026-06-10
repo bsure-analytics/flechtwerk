@@ -50,40 +50,95 @@ def millis_to_datetime(millis: int | None) -> datetime | None:
     return datetime.fromtimestamp(millis / 1000, tz=timezone.utc)
 
 
-def parse_message(msg: ConsumerRecord[Any, Any]) -> IncomingMessage:
-    """Parse an aiokafka ConsumerRecord into an IncomingMessage.
+def decode_key(key: bytes | str | None) -> str:
+    """Decode a Kafka message key to a string; missing keys become ``""``."""
+    return (key.decode("utf-8", errors="replace") if isinstance(key, bytes) else key) or ""
+
+
+def decode_event(value: bytes | str | None, context: str) -> Event:
+    """Decode a Kafka message value into an Event.
 
     Malformed payloads fall back to ``Event.wrap({})`` rather than raising — a
     single bad message must not crash the stage into an infinite
-    CrashLoopBackOff on its own offset. Handles:
+    CrashLoopBackOff on its own offset. ``context`` identifies the message in
+    the warning (e.g. ``"topic/offset"``). Handles:
       - non-UTF-8 bytes in value
       - invalid JSON
       - valid JSON that decodes to a non-dict (e.g. scalar or array)
     """
-    key = (msg.key.decode("utf-8", errors="replace") if isinstance(msg.key, bytes) else msg.key) or ""
     try:
-        raw_value = msg.value.decode("utf-8") if isinstance(msg.value, bytes) else msg.value
+        raw_value = value.decode("utf-8") if isinstance(value, bytes) else value
         parsed = json.loads(raw_value) if raw_value else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        log.warning(
-            "Malformed message at %s/%d (%s), using {}",
-            msg.topic, msg.offset, type(e).__name__,
-        )
+        log.warning("Malformed message at %s (%s), using {}", context, type(e).__name__)
         parsed = {}
     if not isinstance(parsed, dict):
-        log.warning(
-            "Non-dict JSON payload at %s/%d (%s), using {}",
-            msg.topic, msg.offset, type(parsed).__name__,
-        )
+        log.warning("Non-dict JSON payload at %s (%s), using {}", context, type(parsed).__name__)
         parsed = {}
+    return Event.wrap(parsed)
+
+
+def parse_message(msg: ConsumerRecord[Any, Any]) -> IncomingMessage:
+    """Parse an aiokafka ConsumerRecord into an IncomingMessage.
+
+    Value decoding is lenient — see `decode_event`.
+    """
     return IncomingMessage(
-        key=key,
+        key=decode_key(msg.key),
         offset=msg.offset,
         partition=msg.partition,
         timestamp=millis_to_datetime(msg.timestamp),
         topic=msg.topic,
-        value=Event.wrap(parsed),
+        value=decode_event(msg.value, f"{msg.topic}/{msg.offset}"),
     )
+
+
+# --- Reading topics to their end ---
+
+
+def is_tombstone(raw: bytes | str | None) -> bool:
+    """True for an empty Kafka value or a serialized falsy record.
+
+    Covers ``b""``/``None`` (a real Kafka tombstone) and ``b"{}"`` (a falsy
+    Record serialized to JSON). Accepts ``str`` like the decode helpers —
+    aiokafka delivers bytes, test doubles may carry strings.
+    """
+    return not raw or raw in (b"{}", "{}")
+
+
+async def read_to_end(
+    consumer: aiokafka.AIOKafkaConsumer,
+    tps: list[aiokafka.TopicPartition],
+    apply: Callable[[ConsumerRecord[Any, Any]], Awaitable[None]],
+) -> int:
+    """Read the given partitions from the beginning to their current end.
+
+    Uses manual partition assignment (no consumer group) on an
+    already-started consumer. Reads to the end offsets captured at entry —
+    under isolation_level="read_committed" that is the last stable offset,
+    so records of in-flight transactions are never applied. Leaves the
+    consumer assigned to ``tps`` and positioned at the captured end offsets,
+    so the caller can keep polling for later records seamlessly.
+
+    Returns the number of records passed to ``apply``.
+    """
+    consumer.assign(tps)
+    await consumer.seek_to_beginning(*tps)
+    end_offsets = await consumer.end_offsets(tps)
+
+    count = 0
+    pending = {tp for tp in tps if end_offsets[tp] > 0}
+    while pending:
+        records = await consumer.getmany(*pending, timeout_ms=2000)
+        for msgs in records.values():
+            for msg in msgs:
+                await apply(msg)
+                count += 1
+        # An empty poll is not end-of-log — broker stalls and fetch backoff
+        # yield empty results too. Only the fetch position reaching the end
+        # offset captured at entry terminates a partition's read.
+        pending = {tp for tp in pending if await consumer.position(tp) < end_offsets[tp]}
+    return count
 
 
 # --- Changelog restore ---
@@ -140,31 +195,17 @@ async def restore_changelog(
             log.info("No partitions found for changelog topic %s", topic)
             return 0
 
-    tps = [aiokafka.TopicPartition(topic, p) for p in sorted(partitions)]
-    consumer.assign(tps)
-    await consumer.seek_to_beginning(*tps)
-    end_offsets = await consumer.end_offsets(tps)
+    async def apply(msg: ConsumerRecord[Any, Any]) -> None:
+        # Tombstones delete; anything else is wire bytes — pass through to
+        # the inner store.
+        key = decode_key(msg.key)
+        if is_tombstone(msg.value):
+            await delete(key)
+        else:
+            await put_raw(key, msg.value)
 
-    count = 0
-    pending = {tp for tp in tps if end_offsets[tp] > 0}
-    while pending:
-        records = await consumer.getmany(*pending, timeout_ms=2000)
-        for msgs in records.values():
-            for msg in msgs:
-                key = msg.key.decode("utf-8") if msg.key else ""
-                raw = msg.value
-                # Tombstones: empty Kafka value, or a serialized falsy state
-                # (`{}` from the JSON path, `b""` from older code). Anything
-                # else is wire bytes — pass through to the inner store.
-                if not raw or raw == b"{}":
-                    await delete(key)
-                else:
-                    await put_raw(key, raw)
-                count += 1
-        # An empty poll is not end-of-log — broker stalls and fetch backoff
-        # yield empty results too. Only the fetch position reaching the end
-        # offset captured at entry terminates a partition's restore.
-        pending = {tp for tp in pending if await consumer.position(tp) < end_offsets[tp]}
+    tps = [aiokafka.TopicPartition(topic, p) for p in sorted(partitions)]
+    count = await read_to_end(consumer, tps, apply)
 
     log.info("Restored %d state entries from %s%s", count, topic,
              f" partitions {sorted(partitions)}" if subset else "")

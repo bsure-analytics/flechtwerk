@@ -26,6 +26,7 @@ from aiokafka.errors import ProducerFenced
 from fretworx.attribute import INT, RequiredAttribute
 from fretworx.kafka import restore_changelog
 from fretworx.observer import Observer
+from fretworx.configs import ConfigStore
 from fretworx.state import ChangelogStateStore
 from fretworx.testing import InMemoryStateStore
 from fretworx.transformer import Transformer, TransformerRunner
@@ -190,6 +191,8 @@ def _make_runner(bootstrap: str, group_id: str, input_topic: str, changelog_topi
     )
     runner.observer = Observer()
     runner.restore_consumer_factory = make_restore_consumer
+    runner.config_consumer = None
+    runner.config_store = ConfigStore()
     runner.task_producer_factory = make_producer
     runner.task_store_factory = make_store
     runner.transformer = transform

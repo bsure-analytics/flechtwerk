@@ -79,6 +79,35 @@ def test_active_configs_sets_gauge():
     ) == 3
 
 
+def test_config_message_in_increments_counter():
+    observer, registry = make_observer()
+    observer.config_message_in("cfg")
+    observer.config_message_in("cfg")
+    assert registry.get_sample_value(
+        "fretworx_config_messages_in_total",
+        {"datasource": "ds1", "stage": "extractor", "topic": "cfg"},
+    ) == 2
+
+
+def test_config_store_entries_sets_gauge():
+    observer, registry = make_observer()
+    observer.config_store_entries(9)
+    observer.config_store_entries(4)
+    assert registry.get_sample_value(
+        "fretworx_config_store_entries",
+        {"datasource": "ds1", "stage": "extractor"},
+    ) == 4
+
+
+def test_config_store_restored_increments_counter_by_entries():
+    observer, registry = make_observer()
+    observer.config_store_restored(5)
+    assert registry.get_sample_value(
+        "fretworx_config_store_restored_entries_total",
+        {"datasource": "ds1", "stage": "extractor"},
+    ) == 5
+
+
 def test_dispatch_scope_records_histogram():
     observer, registry = make_observer()
     with observer.dispatch_scope():

@@ -99,6 +99,33 @@ class Metrics:
         )
 
     @cached_property
+    def config_messages_in_total(self) -> Counter:
+        return Counter(
+            "fretworx_config_messages_in_total",
+            "Records consumed from config topics into the per-process config store",
+            self._label_names + ["topic"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def config_store_entries(self) -> Gauge:
+        return Gauge(
+            "fretworx_config_store_entries",
+            "Entries currently held in the config store (latest config per wire key)",
+            self._label_names,
+            registry=self.registry,
+        )
+
+    @cached_property
+    def config_store_restored_entries_total(self) -> Counter:
+        return Counter(
+            "fretworx_config_store_restored_entries_total",
+            "Entries surviving the startup bootstrap of the config store",
+            self._label_names,
+            registry=self.registry,
+        )
+
+    @cached_property
     def state_restored_entries_total(self) -> Counter:
         return Counter(
             "fretworx_state_restored_entries_total",

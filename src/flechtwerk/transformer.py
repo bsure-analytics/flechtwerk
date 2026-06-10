@@ -9,13 +9,13 @@ from typing import AsyncIterator, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.abc import ConsumerRebalanceListener
-
 from reactor_di import lookup
 
+from .configs import ConfigStore, EnrichFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
 from .state import ChangelogStateStore, StateStore
-from .types import IncomingMessage, Message, State
+from .types import IncomingMessage, Message, Stage, State
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class BucketResult:
     state_change: State | None
 
 
-class Transformer(ABC):
+class Transformer(Stage, ABC):
     """Event transformer (stateless or stateful).
 
     Two ways to construct one:
@@ -66,9 +66,25 @@ class Transformer(ABC):
     The Kafka consumer group ID (driving consumer group membership,
     transactional offset commits, and changelog topic naming) is set on
     `Fretworx` by the caller; stages don't carry it.
+
+    A transformer may additionally declare ``config_topics`` (see `Stage`)
+    and look their entries up via `configs` — a config table joined against
+    the partitioned input stream.
     """
 
     input_topics: list[str]
+
+    configs: ConfigStore
+    """The stage's config store, injected by the runner before ``__aenter__``.
+
+    Keyed by wire key, merged across all declared ``config_topics``.
+    Lookups are eventually consistent: the store is updated between batches
+    and is NOT part of any task transaction (Kafka Streams' GlobalKTable
+    caveat) — a record produced to a config topic is visible here no later
+    than the next batch. Tests seed this directly::
+
+        stage.configs = ConfigStore.of({key: config})
+    """
 
     @classmethod
     def of(
@@ -76,6 +92,7 @@ class Transformer(ABC):
             *,
             input_topics: list[str],
             transform: TransformFn,
+            enrich: EnrichFn | None = None,
             extract_key: ExtractKeyFn | None = None,
     ) -> Transformer:
         """Build a Transformer from a transform function and input topics.
@@ -86,13 +103,15 @@ class Transformer(ABC):
 
         Patches the supplied callables in as instance attributes that
         shadow the class-level abstract method ``transform`` (and, when
-        provided, the default ``extract_key``). The ABC discipline still
-        applies to every other construction path — ``Transformer()`` and
-        any abstract subclass remain uninstantiable.
+        provided, the default ``enrich`` / ``extract_key``). The ABC
+        discipline still applies to every other construction path —
+        ``Transformer()`` and any abstract subclass remain uninstantiable.
         """
         instance = _FunctionalTransformer()
         instance.input_topics = input_topics
         instance.transform = transform
+        if enrich is not None:
+            instance.enrich = enrich
         if extract_key is not None:
             instance.extract_key = extract_key
         return instance
@@ -200,6 +219,8 @@ class TransformerRunner:
     """
 
     application_id: str
+    config_consumer: AIOKafkaConsumer | None
+    config_store: ConfigStore
     consumer: AIOKafkaConsumer
     observer: Observer
     restore_consumer_factory: Callable[[], AIOKafkaConsumer]
@@ -228,7 +249,20 @@ class TransformerRunner:
 
         Resource lifecycle (consumer start/stop) is managed by Fretworx, not
         the runner; per-task producers and stores are owned by the runner.
+
+        The config store is instance-level, not per-task: it is
+        bootstrapped once, BEFORE the subscribe joins the consumer group (a
+        failing bootstrap crashes without causing rebalance churn for
+        healthy instances), and rebalances never touch it.
         """
+        if self.config_consumer is not None:
+            await bootstrap_config_store(
+                self.config_consumer, self.transformer.config_topics,
+                self.config_store, self.transformer.enrich,
+            )
+            self.observer.config_store_restored(len(self.config_store))
+            self.observer.config_store_entries(len(self.config_store))
+        self.transformer.configs = self.config_store
         self.consumer.subscribe(self.transformer.input_topics, listener=TaskRebalanceListener(self))
         try:
             async with self.transformer:
@@ -238,6 +272,7 @@ class TransformerRunner:
                     async with self.batch_lock:
                         await self.start_pending_tasks()
                     records = await self.consumer.getmany(timeout_ms=1000)
+                    await self.check_config_updates()
                     if not records:
                         continue
                     async with self.batch_lock:
@@ -248,6 +283,23 @@ class TransformerRunner:
             # The rebalance listener is NOT invoked on consumer.stop() —
             # live tasks must be torn down explicitly on the way out.
             await self.close_tasks()
+
+    async def check_config_updates(self) -> None:
+        """Non-blocking check for config changes.
+
+        Runs once per loop iteration, outside the batch lock — it touches no
+        tasks or transactions, and the loop is sequential, so every record
+        of a batch sees one consistent config snapshot (updates land at
+        batch boundaries; that is slightly stronger than Kafka Streams'
+        concurrent GlobalKTable updates).
+        """
+        if self.config_consumer is None:
+            return
+        records = await drain_config_updates(self.config_consumer, self.config_store, self.transformer.enrich)
+        for msg in records:
+            self.observer.config_message_in(msg.topic)
+        if records:
+            self.observer.config_store_entries(len(self.config_store))
 
     async def start_pending_tasks(self) -> None:
         """Initialize every task marked pending by the rebalance listener."""

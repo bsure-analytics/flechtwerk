@@ -12,7 +12,7 @@ from fretworx.module import CompressionType, Fretworx
 
 
 class StubExtractor(Extractor):
-    input_topics = ["cfg"]
+    config_topics = ["cfg"]
 
     async def poll(self, config, state):
         return

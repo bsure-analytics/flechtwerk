@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import AsyncIterator, Never
@@ -11,17 +11,17 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
 
 from fretworx.attribute import BOOL, OptionalAttribute
+from .configs import ConfigStore, EnrichFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
 from .state import StateStore
-from .types import Config, IncomingMessage, Message, State
+from .types import Config, IncomingMessage, Message, Stage, State
 
 log = logging.getLogger(__name__)
 
 SUSPENDED = OptionalAttribute("suspended", BOOL)
 
 PollFn = Callable[[Config, State], AsyncIterator[Message | State]]
-EnrichFn = Callable[[Config], Awaitable[Config]]
 ExtractKeyFn = Callable[[IncomingMessage], str]
 
 
@@ -32,23 +32,23 @@ class ConfigEntry:
     state_key: str
 
 
-class Extractor(ABC):
+class Extractor(Stage, ABC):
     """Poll-driven data extractor (stateful or stateless).
 
     Two ways to construct one:
 
     * Functionally with ``Extractor.of(...)``, supplying a poll function
-      and the input topics::
+      and the config topics::
 
           stage = Extractor.of(
-              input_topics=["my-config"],
+              config_topics=["my-config"],
               poll=my_poll_fn,
           )
 
     * As a subclass for lifecycle management (HTTP clients, MQTT sessions)::
 
           class MyExtractor(Extractor):
-              input_topics = ["my-config"]
+              config_topics = ["my-config"]
 
               async def __aenter__(self):
                   self.http = httpx.AsyncClient()
@@ -65,18 +65,16 @@ class Extractor(ABC):
     used for changelog topic naming on `Fretworx`; stages don't carry it.
     """
 
-    input_topics: list[str]
-
     @classmethod
     def of(
             cls,
             *,
-            input_topics: list[str],
+            config_topics: list[str],
             poll: PollFn,
             enrich: EnrichFn | None = None,
             extract_key: ExtractKeyFn | None = None,
     ) -> Extractor:
-        """Build an Extractor from a poll function and input topics.
+        """Build an Extractor from a poll function and config topics.
 
         ``enrich`` and ``extract_key`` are optional overrides; omit them
         to use the defaults (no enrichment, ``extract_key`` returns the
@@ -89,7 +87,7 @@ class Extractor(ABC):
         ``Extractor()`` and any abstract subclass remain uninstantiable.
         """
         instance = _FunctionalExtractor()
-        instance.input_topics = input_topics
+        instance.config_topics = config_topics
         instance.poll = poll
         if enrich is not None:
             instance.enrich = enrich
@@ -107,14 +105,6 @@ class Extractor(ABC):
         operator-facing identity doesn't match the desired state namespace.
         """
         return msg.key
-
-    async def enrich(self, config: Config) -> Config:
-        """One-time enrichment when a config first arrives or updates.
-
-        Called once per config message, NOT on every poll tick.
-        Override for e.g. SumUp merchant code lookup.
-        """
-        return config
 
     async def __aenter__(self) -> Extractor:
         return self
@@ -150,6 +140,7 @@ class ExtractorRunner:
     Attributes are set by the DI container (reactor-di) or directly in tests.
     """
 
+    config_store: ConfigStore
     consumer: AIOKafkaConsumer
     extractor: lookup[Extractor, "stage"]  # noqa: PyUnresolvedReferences
     observer: Observer
@@ -164,9 +155,9 @@ class ExtractorRunner:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
 
         Resource lifecycle (consumer/producer start/stop) is managed by
-        Fretworx, not the runner.
+        Fretworx, not the runner. The consumer is assigned (not subscribed)
+        to every partition of every config topic by the bootstrap.
         """
-        self.consumer.subscribe(self.extractor.input_topics)
         async with self.extractor:
             await self.load_initial_configs()
 
@@ -192,46 +183,47 @@ class ExtractorRunner:
                 await asyncio.sleep(self.poll_interval_seconds)
 
     async def load_initial_configs(self) -> None:
-        """Read all existing configs from the topic on startup.
+        """Read all existing configs from the config topics on startup.
 
-        Compacts messages by key, treating empty values as tombstones
-        that remove the key entirely — matching Kafka log compaction.
+        `bootstrap_config_store` compacts by wire key, treating empty
+        values as tombstones that remove the key entirely — matching Kafka
+        log compaction — reads to the end offsets captured at entry, and
+        enriches once per surviving entry. Every surviving entry becomes
+        a config.
         """
-        latest: dict[str, IncomingMessage] = {}
-        while True:
-            records = await self.consumer.getmany(timeout_ms=2000)
-            if not records:
-                break
-            for tp, msgs in records.items():
-                for raw_msg in msgs:
-                    msg = parse_message(raw_msg)
-                    if msg.value:
-                        latest[msg.key] = msg
-                    else:
-                        latest.pop(msg.key, None)
-        for msg in latest.values():
-            await self.apply_config(msg)
+        latest = await bootstrap_config_store(
+            self.consumer, self.extractor.config_topics, self.config_store, self.extractor.enrich,
+        )
+        for raw_msg in latest.values():
+            await self.apply_config(parse_message(raw_msg))
+        self.observer.config_store_restored(len(self.config_store))
+        self.observer.config_store_entries(len(self.config_store))
         log.info("Loaded %d initial config(s)", len(self.configs))
 
     async def check_config_updates(self) -> None:
         """Non-blocking check for config changes."""
-        records = await self.consumer.getmany(timeout_ms=0)
-        for tp, msgs in records.items():
-            for raw_msg in msgs:
-                await self.apply_config(parse_message(raw_msg))
+        records = await drain_config_updates(self.consumer, self.config_store, self.extractor.enrich)
+        for raw_msg in records:
+            self.observer.config_message_in(raw_msg.topic)
+            await self.apply_config(parse_message(raw_msg))
+        if records:
+            self.observer.config_store_entries(len(self.config_store))
 
     async def apply_config(self, msg: IncomingMessage) -> None:
-        """Enrich and store a config update."""
+        """Sync this runner's config entry for one config record.
+
+        The record has already been applied to the (enriched) config store;
+        this reads the store rather than re-enriching the raw message.
+        """
         self.observer.message_in(msg.topic)
         key = msg.key
-        config = Config(msg.value)
-        if not config:
+        config = self.config_store.get(key)
+        if config is None:
             if key in self.configs:
                 del self.configs[key]
                 log.info("Removed config for key %s", key)
             return
 
-        config = await self.extractor.enrich(config)
         present = key in self.configs
         self.configs[key] = ConfigEntry(
             config=config,

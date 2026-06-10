@@ -27,6 +27,15 @@ class RecordingObserver(Observer):
     def active_configs(self, n: int) -> None:
         self.calls.append(("active_configs", n))
 
+    def config_message_in(self, topic: str) -> None:
+        self.calls.append(("config_message_in", topic))
+
+    def config_store_entries(self, n: int) -> None:
+        self.calls.append(("config_store_entries", n))
+
+    def config_store_restored(self, entries: int) -> None:
+        self.calls.append(("config_store_restored", entries))
+
     def state_restored(self, partition: int, entries: int) -> None:
         self.calls.append(("state_restored", partition, entries))
 
@@ -105,14 +114,33 @@ def make_record(
     )
 
 
+class FakeKafkaClient:
+    """Stands in for ``consumer._client`` — records `set_topics` metadata priming."""
+
+    def __init__(self) -> None:
+        self.topics: list[str] = []
+
+    async def set_topics(self, topics: list[str]) -> None:
+        self.topics = list(topics)
+
+
 class FakeKafkaConsumer:
-    """Test double implementing the subset of aiokafka.AIOKafkaConsumer used by runners."""
+    """Test double implementing the subset of aiokafka.AIOKafkaConsumer used by runners.
+
+    ``records`` is the unread backlog: `getmany` drains it (optionally
+    filtered to the requested partitions) and advances per-partition fetch
+    positions, and `end_offsets` derives ends from position + backlog — so
+    the position-vs-end-offset termination of ``read_to_end`` works against
+    this fake.
+    """
 
     def __init__(self, records: list[ConsumerRecord[Any, Any]] | None = None):
+        self._client = FakeKafkaClient()
         self.assigned: set[TopicPartition] = set()
         self.committed = False
         self.listener: Any = None
         self.paused: set[TopicPartition] = set()
+        self.positions: dict[TopicPartition, int] = {}
         self.records = list(records or [])
         self.started = False
         self.subscribed: list[str] = []
@@ -131,8 +159,14 @@ class FakeKafkaConsumer:
         groups: dict[TopicPartition, list] = defaultdict(list)
         for record in self.records:
             groups[TopicPartition(record.topic, record.partition)].append(record)
-        self.records = []
-        return dict(groups)
+        selected = {tp: msgs for tp, msgs in groups.items() if not partitions or tp in partitions}
+        self.records = [
+            r for r in self.records
+            if TopicPartition(r.topic, r.partition) not in selected
+        ]
+        for tp, msgs in selected.items():
+            self.positions[tp] = max(self.positions.get(tp, 0), max(m.offset for m in msgs) + 1)
+        return selected
 
     async def commit(self, offsets: dict | None = None) -> None:
         self.committed = True
@@ -141,11 +175,27 @@ class FakeKafkaConsumer:
         self.listener = listener
         self.subscribed = list(topics)
 
+    def assign(self, tps: list[TopicPartition]) -> None:
+        self.assigned = set(tps)
+
     async def seek_to_beginning(self, *tps: TopicPartition) -> None:
         pass
 
-    async def position(self, tp: Any) -> int:
-        return 0
+    async def position(self, tp: TopicPartition) -> int:
+        return self.positions.get(tp, 0)
+
+    async def end_offsets(self, tps: list[TopicPartition]) -> dict[TopicPartition, int]:
+        return {
+            tp: max(
+                self.positions.get(tp, 0),
+                *(r.offset + 1 for r in self.records if TopicPartition(r.topic, r.partition) == tp),
+                0,
+            )
+            for tp in tps
+        }
+
+    def partitions_for_topic(self, topic: str) -> set[int]:
+        return {r.partition for r in self.records if r.topic == topic}
 
     def assignment(self) -> set:
         return set(self.assigned)
