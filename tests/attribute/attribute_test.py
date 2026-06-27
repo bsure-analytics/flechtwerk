@@ -7,34 +7,37 @@ from fretworx.attribute import (
     Codec,
     DATETIME,
     INT,
-    OptionalAttribute,
-    RequiredAttribute,
+    LIST,
     STR,
 )
 
 
-def test_attribute_is_abstract():
-    """Direct instantiation of the base `Attribute` is rejected."""
+def test_attribute_is_concrete_and_required_by_default():
+    attr = Attribute("count", INT)
+    assert attr.optional is False
+    assert attr.required is True
+
+
+def test_optional_attribute():
+    attr = Attribute("count", INT, optional=True)
+    assert attr.optional is True
+    assert attr.required is False
+
+
+def test_required_property_inverts_optional():
+    assert Attribute("c", INT).required is True
+    assert Attribute("c", INT, optional=True).required is False
+
+
+def test_optional_is_keyword_only():
+    """`optional` must be passed by keyword — no positional boolean trap."""
     with pytest.raises(TypeError):
-        Attribute("count", INT)  # type: ignore[abstract]
-
-
-def test_required_attribute_is_concrete():
-    RequiredAttribute("count", INT)
-
-
-def test_optional_attribute_is_concrete():
-    OptionalAttribute("count", INT)
-
-
-def test_subclasses_inherit_attribute():
-    assert issubclass(RequiredAttribute, Attribute)
-    assert issubclass(OptionalAttribute, Attribute)
+        Attribute("count", INT, True)  # type: ignore[misc]
 
 
 def test_codec_drives_validation():
     """The supplied codec asserts on type mismatch."""
-    attr = RequiredAttribute("name", STR)
+    attr = Attribute("name", STR)
     assert attr.codec.decode("hello") == "hello"
     with pytest.raises(AssertionError):
         attr.codec.decode(42)
@@ -44,7 +47,7 @@ def test_codec_drives_validation():
 
 def test_int_codec_rejects_bool():
     """Exact-type check: bool is not int even though `isinstance(True, int)` is True."""
-    attr = RequiredAttribute("count", INT)
+    attr = Attribute("count", INT)
     with pytest.raises(AssertionError):
         attr.codec.encode(True)
     with pytest.raises(AssertionError):
@@ -52,7 +55,7 @@ def test_int_codec_rejects_bool():
 
 
 def test_datetime_codec_round_trip():
-    attr = RequiredAttribute("ts", DATETIME)
+    attr = Attribute("ts", DATETIME)
     dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
     encoded = attr.codec.encode(dt)
     assert encoded == "2024-06-15T14:30:00Z"
@@ -60,91 +63,48 @@ def test_datetime_codec_round_trip():
 
 
 def test_name_attribute():
-    attr = RequiredAttribute("count", INT)
+    attr = Attribute("count", INT)
     assert attr.name == "count"
 
 
 def test_attribute_is_not_a_str():
     """An attribute is a distinct type — it does not subclass str."""
-    attr = RequiredAttribute("count", INT)
+    attr = Attribute("count", INT)
     assert not isinstance(attr, str)
 
 
 def test_attribute_does_not_compare_equal_to_string():
-    attr = RequiredAttribute("count", INT)
+    attr = Attribute("count", INT)
     assert attr != "count"
 
 
+def test_equality_is_name_keyed_independent_of_optional_and_codec():
+    """Identity is `(type, name)` — `optional` and codec don't affect it, so the
+    required and optional handles for one wire key are the same dict/set key."""
+    assert Attribute("x", STR) == Attribute("x", STR, optional=True)
+    assert hash(Attribute("x", STR)) == hash(Attribute("x", STR, optional=True))
+    # Composite codecs are rebuilt per call (LIST(STR) is not LIST(STR) by
+    # identity); name-keyed equality keeps "same field" attributes equal anyway.
+    assert LIST(STR) != LIST(STR)
+    assert Attribute("tags", LIST(STR)) == Attribute("tags", LIST(STR))
+
+
 def test_required_attribute_repr():
-    attr = RequiredAttribute("count", INT)
-    assert repr(attr) == "RequiredAttribute('count')"
+    assert repr(Attribute("count", INT)) == "Attribute('count')"
 
 
 def test_optional_attribute_repr():
-    attr = OptionalAttribute("count", INT)
-    assert repr(attr) == "OptionalAttribute('count')"
-
-
-# --- presence-kind conversion ---
-
-
-def test_optional_required_returns_required_with_same_name_and_codec():
-    opt = OptionalAttribute("count", INT)
-    req = opt.required
-    assert isinstance(req, RequiredAttribute)
-    assert req.name == "count"
-    assert req.codec is opt.codec
-    assert req.codec.decode(42) == 42
-
-
-def test_required_optional_returns_optional_with_same_name_and_codec():
-    req = RequiredAttribute("count", INT)
-    opt = req.optional
-    assert isinstance(opt, OptionalAttribute)
-    assert opt.name == "count"
-    assert opt.codec is req.codec
-    assert opt.codec.decode(42) == 42
-
-
-def test_converted_attribute_round_trip_preserves_value_type():
-    opt = OptionalAttribute("name", STR)
-    assert opt.required.optional == opt
-    req = RequiredAttribute("name", STR)
-    assert req.optional.required == req
+    assert repr(Attribute("count", INT, optional=True)) == "Attribute('count', optional=True)"
 
 
 # --- sealed hierarchy ---
 
 
 def test_attribute_cannot_be_subclassed_directly():
-    """The hierarchy is sealed — every Attribute kind lives in the framework module."""
+    """The hierarchy is sealed — every Attribute lives in the framework module."""
     with pytest.raises(TypeError, match="sealed Attribute hierarchy"):
         class Rogue(Attribute):  # noqa
-            def write_to(self, raw, value):
-                ...
-
-
-def test_attribute_kinds_cannot_be_subclassed_either():
-    """The seal covers the whole hierarchy, not just the abstract base."""
-    with pytest.raises(TypeError, match="sealed Attribute hierarchy"):
-        class Marker(RequiredAttribute):  # noqa
             ...
-
-
-def test_converted_attribute_is_cached():
-    """`required` / `optional` cache the converted view on the source instance."""
-    opt = OptionalAttribute("name", STR)
-    assert opt.required is opt.required
-    req = RequiredAttribute("name", STR)
-    assert req.optional is req.optional
-
-
-def test_converted_attribute_works_with_dict_access():
-    """An `OPT.required` is accepted by `Record.__getitem__`."""
-    from fretworx.attribute import Record
-    opt = OptionalAttribute("token", STR)
-    d = Record.wrap({"token": "abc"})
-    assert d[opt.required] == "abc"
 
 
 # --- per-attribute custom codecs ---
@@ -152,7 +112,7 @@ def test_converted_attribute_works_with_dict_access():
 
 def test_attribute_with_custom_codec():
     """A `Codec` with custom encode/decode is honored end-to-end."""
-    attr = RequiredAttribute(
+    attr = Attribute(
         "count",
         Codec(
             encode=lambda v: f"int:{v}",
@@ -163,22 +123,10 @@ def test_attribute_with_custom_codec():
     assert attr.codec.decode("int:5") == 5
 
 
-def test_attribute_custom_codec_carries_through_kind_conversion():
-    """`OPT.required` (and reverse) inherit the source's codec."""
-    codec = Codec(
-        encode=lambda v: f"e:{v}",
-        decode=lambda v: int(v.split(":")[1]) if isinstance(v, str) else v,
-    )
-    opt = OptionalAttribute("count", codec)
-    req = opt.required
-    assert req.codec.encode(5) == "e:5"
-    assert req.codec.decode("e:5") == 5
-
-
 def test_attribute_custom_codec_used_via_dict_access():
     """A `Record` uses the attribute's codec for both encode (set) and decode (get)."""
     from fretworx.attribute import Record
-    attr = RequiredAttribute(
+    attr = Attribute(
         "count",
         Codec(
             encode=lambda v: f"int:{v}",

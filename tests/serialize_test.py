@@ -3,14 +3,14 @@ import pickle
 from datetime import datetime, timezone
 from typing import Final
 
-from fretworx.attribute import DATETIME, OptionalAttribute, RequiredAttribute, SET, STR, TUPLE
+from fretworx.attribute import Attribute, DATETIME, SET, STR, TUPLE
 from fretworx.state import deserialize, serialize
 from fretworx.types import State
 
 
-HASHES: Final = OptionalAttribute("hashes", SET(STR))
-LAST_TIME: Final = RequiredAttribute("last_time", DATETIME)
-RESULT_IDS: Final = RequiredAttribute("result_ids", TUPLE(STR))
+HASHES: Final = Attribute("hashes", SET(STR), optional=True)
+LAST_TIME: Final = Attribute("last_time", DATETIME)
+RESULT_IDS: Final = Attribute("result_ids", TUPLE(STR))
 
 
 # --- JSON round-trip ---

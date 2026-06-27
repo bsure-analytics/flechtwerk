@@ -4,19 +4,18 @@ import pickle
 import pytest
 
 from fretworx.attribute import (
+    Attribute,
     INT,
     MissingAttributeError,
-    OptionalAttribute,
     Record,
-    RequiredAttribute,
     STR,
 )
 
 
-COUNT = RequiredAttribute("count", INT)
-NAME = RequiredAttribute("name", STR)
-LABEL = OptionalAttribute("label", STR)
-MAYBE_COUNT = OptionalAttribute("count", INT)
+COUNT = Attribute("count", INT)
+NAME = Attribute("name", STR)
+LABEL = Attribute("label", STR, optional=True)
+MAYBE_COUNT = Attribute("count", INT, optional=True)
 
 
 # --- construction ---
@@ -74,7 +73,7 @@ def test_getitem_validates_and_returns():
 
 def test_getitem_raises_on_wire_type_mismatch():
     """If the wire value isn't an instance of V, the type-validating decoder asserts."""
-    d = Record.wrap({"count": "42"})  # wire is str but COUNT is RequiredAttribute[int]
+    d = Record.wrap({"count": "42"})  # wire is str but COUNT is Attribute[int]
     with pytest.raises(AssertionError):
         _ = d[COUNT]
 
@@ -114,17 +113,17 @@ def test_setitem_overwrites_existing():
 
 
 def test_setitem_optional_stores_none_without_encode():
-    """`OptionalAttribute` accepts `None` — stored as `null`, encoder is bypassed."""
+    """An optional attribute accepts `None` — stored as `null`, encoder is bypassed."""
     d = Record()
     d[LABEL] = None
     assert d.raw == {"label": None}
 
 
 def test_setitem_required_rejects_none():
-    """Writing `None` to a `RequiredAttribute` is a type bug — fail loudly."""
+    """Writing `None` to a required attribute is a type bug — fail loudly."""
     d = Record()
     with pytest.raises(ValueError, match="cannot assign None to required"):
-        d[COUNT] = None  # type: ignore[assignment]
+        d[COUNT] = None
 
 
 def test_construct_optional_attribute_with_none_stores_null():
@@ -136,7 +135,7 @@ def test_construct_optional_attribute_with_none_stores_null():
 def test_construct_required_attribute_with_none_raises():
     d = Record()
     with pytest.raises(ValueError, match="cannot assign None to required"):
-        Record({COUNT: None})  # type: ignore[dict-item]
+        Record({COUNT: None})
 
 
 # --- __delitem__ ---
@@ -144,14 +143,14 @@ def test_construct_required_attribute_with_none_raises():
 
 def test_delitem_removes_key():
     d = Record.wrap({"count": 42, "name": "x"})
-    del d[COUNT.optional]
+    del d[COUNT]
     assert d.raw == {"name": "x"}
 
 
 def test_delitem_missing_raises_keyerror():
     d = Record()
     with pytest.raises(KeyError):
-        del d[COUNT.optional]
+        del d[COUNT]
 
 
 # --- __contains__ ---
@@ -298,7 +297,7 @@ class LegacyEventDictSubclass(dict):
     pass
 
 
-# --- get() — OptionalAttribute only ---
+# --- get() ---
 
 
 def test_get_returns_decoded_value():
@@ -325,23 +324,23 @@ def test_get_returns_none_default_when_missing():
 
 
 def test_coalesce_returns_first_present_value():
-    A = OptionalAttribute("a", STR)
-    B = OptionalAttribute("b", STR)
-    C = OptionalAttribute("c", STR)
+    A = Attribute("a", STR, optional=True)
+    B = Attribute("b", STR, optional=True)
+    C = Attribute("c", STR, optional=True)
     d = Record({B: "from-b", C: "from-c"})
     assert d.coalesce(A, B, C) == "from-b"
 
 
 def test_coalesce_skips_null_values():
-    A = OptionalAttribute("a", STR)
-    B = OptionalAttribute("b", STR)
+    A = Attribute("a", STR, optional=True)
+    B = Attribute("b", STR, optional=True)
     d = Record({A: None, B: "from-b"})
     assert d.coalesce(A, B) == "from-b"
 
 
 def test_coalesce_returns_none_when_all_absent():
-    A = OptionalAttribute("a", STR)
-    B = OptionalAttribute("b", STR)
+    A = Attribute("a", STR, optional=True)
+    B = Attribute("b", STR, optional=True)
     assert Record().coalesce(A, B) is None
 
 
@@ -349,7 +348,7 @@ def test_coalesce_with_no_attrs_returns_none():
     assert Record.wrap({"a": "x"}).coalesce() is None
 
 
-# --- pop() — OptionalAttribute only ---
+# --- pop() ---
 
 
 def test_pop_returns_decoded_and_removes():
@@ -427,7 +426,7 @@ def test_spread_into_record_preserves_keys_and_values():
 
 
 def test_spread_into_record_preserves_stored_none():
-    """Spread must enumerate every key, including OptionalAttribute-stored None."""
+    """Spread must enumerate every key, including an optional attribute's stored None."""
     r = Record({NAME: "alice", LABEL: None})
     merged = Record({**r, COUNT: 1})
     assert merged.raw == {"name": "alice", "label": None, "count": 1}

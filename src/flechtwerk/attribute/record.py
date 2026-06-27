@@ -4,16 +4,17 @@
 string keys serialize directly to JSON. All public access uses
 `Attribute` instances:
 
-    event[CHANNEL_ID]              # RequiredAttribute → decoded V or raise
-    event[CHANNEL_ID] = value      # any Attribute → dispatches via attr.write_to
-    event.get(STATUS, default)     # OptionalAttribute → decoded V or default
-    event.pop(LAST_TIME, default)  # OptionalAttribute → decoded V or default
-    del event[STATUS]              # OptionalAttribute → removes the entry
-    STATUS in event                # OptionalAttribute → presence check
+    event[CHANNEL_ID]              # decoded V, or raise if absent/null
+    event[CHANNEL_ID] = value      # dispatches via attr.write_to
+    event.get(STATUS, default)     # decoded V or default
+    event.pop(LAST_TIME, default)  # decoded V or default
+    del event[STATUS]              # removes the entry
+    STATUS in event                # presence check
 
-Indexing with a string raises `TypeError`. The `__getitem__` / `get` /
-`pop` signatures encode the schema intent: required fields use `[]`,
-optional fields use `.get()` / `.pop()`.
+Indexing with a string raises `TypeError`. The *method* encodes the
+presence intent — `[]` asserts the value is present (returns `V`),
+`.get()` / `.pop()` tolerate absence (return `V | None`) — independent
+of whether the attribute was declared `optional`.
 
 Iteration (`iter(record)`, `for attr in record`) yields the same
 synthesized `ViewAttribute` handles that `keys()` produces — aligning
@@ -33,9 +34,7 @@ from typing import Any, Final, Self, overload
 
 from .attribute import (
     Attribute,
-    OptionalAttribute,
     RawDict,
-    RequiredAttribute,
     ViewAttribute,
 )
 from .codec import Codec
@@ -119,16 +118,8 @@ class Record:
 
     # --- indexing ---
 
-    def __getitem__[V](self, attr: RequiredAttribute[V]) -> V:
+    def __getitem__[V](self, attr: Attribute[V]) -> V:
         return attr.read_from(self.raw)
-
-    @overload
-    def __setitem__[V](self, attr: RequiredAttribute[V], value: V) -> None:
-        ...
-
-    @overload
-    def __setitem__[V](self, attr: OptionalAttribute[V], value: V | None) -> None:
-        ...
 
     def __setitem__[V](self, attr: Attribute[V], value: V | None) -> None:
         # TODO(legacy-pickle-compat): once all changelog topics in every
@@ -143,10 +134,8 @@ class Record:
             return
         attr.write_to(self.raw, value)
 
-    def __delitem__(self, attr: OptionalAttribute) -> None:
-        """Remove the key — optional-only, like `pop`: deletion creates the
-        absence a `RequiredAttribute` promises readers can't exist, so a
-        required field must be downgraded via `.optional` at the call site."""
+    def __delitem__(self, attr: Attribute) -> None:
+        """Remove the key from the underlying dict. Raises `KeyError` if absent."""
         attr.delete_from(self.raw)
 
     def __contains__(self, attr: Attribute) -> bool:
@@ -159,7 +148,7 @@ class Record:
     def __len__(self) -> int:
         return len(self.raw)
 
-    def __iter__(self) -> Iterator[RequiredAttribute[Any]]:
+    def __iter__(self) -> Iterator[Attribute[Any]]:
         """Yield a `ViewAttribute` per key in `raw`, lazily.
 
         The primary iteration protocol — `keys()` materializes this for
@@ -170,7 +159,7 @@ class Record:
         for name in self.raw:
             yield ViewAttribute(name)
 
-    def keys(self) -> Iterable[RequiredAttribute[Any]]:
+    def keys(self) -> Iterable[Attribute[Any]]:
         """Materialize a list of `ViewAttribute` handles from `__iter__`.
 
         Enables dict-spread: ``Record({**other, NEW_ATTR: value})`` calls
@@ -202,30 +191,30 @@ class Record:
         new.raw = deepcopy(self.raw, memo)
         return new
 
-    # --- Pythonic helpers (Optional only) ---
+    # --- Pythonic helpers ---
 
     @overload
-    def get[V](self, attr: OptionalAttribute[V]) -> V | None:
+    def get[V](self, attr: Attribute[V]) -> V | None:
         ...
 
     @overload
-    def get[V](self, attr: OptionalAttribute[V], default: V) -> V:
+    def get[V](self, attr: Attribute[V], default: V) -> V:
         ...
 
-    def get[V](self, attr: OptionalAttribute[V], default: V | None = None) -> V | None:
+    def get[V](self, attr: Attribute[V], default: V | None = None) -> V | None:
         """Return the decoded value, or `default` if missing or `None`."""
         return attr.get_from(self.raw, default)
 
-    def pop[V](self, attr: OptionalAttribute[V], /, *default: V) -> V | None:
+    def pop[V](self, attr: Attribute[V], /, *default: V) -> V | None:
         """Remove and return the decoded value; raise KeyError if missing and no default given.
 
         A stored `None` is returned as `None` (no decode) and the key is removed —
-        mirroring `dict.pop` semantics and matching how `OptionalAttribute.write_to`
-        allows `None` writes.
+        mirroring `dict.pop` semantics and matching how an optional attribute's
+        `write_to` allows `None` writes.
         """
         return attr.pop_from(self.raw, *default)
 
-    def coalesce[V](self, *attrs: OptionalAttribute[V]) -> V | None:
+    def coalesce[V](self, *attrs: Attribute[V]) -> V | None:
         """Return the first non-`None` decoded value among the given attributes.
 
         Equivalent to a chain of `.get()` falls-through: returns
@@ -263,7 +252,7 @@ def record_codec[T: Record](cls: type[T]) -> Codec[T]:
 RECORD: Final = record_codec(Record)
 """Codec for an untyped `Record` value.
 
-Use as `RequiredAttribute("data", RECORD)` for fields whose value is a
+Use as `Attribute("data", RECORD)` for fields whose value is a
 plain `Record`. For `Record` subclasses, build a per-subclass codec via
 `record_codec(cls)` (or use the constants exported from `fretworx.types`
 for `Config`, `Event`, `State`).

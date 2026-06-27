@@ -3,19 +3,19 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Final
 
-from fretworx.attribute import ANY, DATETIME, DICT, INT, RequiredAttribute, SET, STR
+from fretworx.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
 from fretworx.state import ChangelogStateStore, RocksDBStateStore
 from fretworx.testing import FakeKafkaProducer, InMemoryStateStore
 from fretworx.types import State
 
 
-CHANGES_SINCE: Final = RequiredAttribute("changes_since", STR)
-COUNT: Final = RequiredAttribute("count", INT)
-DATA: Final = RequiredAttribute("data", INT)
-HASHES: Final = RequiredAttribute("hashes", SET(STR))
-LAST_TIME: Final = RequiredAttribute("last_time", DATETIME)
-NESTED: Final = RequiredAttribute("nested", DICT(ANY))
-X: Final = RequiredAttribute("x", INT)
+CHANGES_SINCE: Final = Attribute("changes_since", STR)
+COUNT: Final = Attribute("count", INT)
+DATA: Final = Attribute("data", INT)
+HASHES: Final = Attribute("hashes", SET(STR))
+LAST_TIME: Final = Attribute("last_time", DATETIME)
+NESTED: Final = Attribute("nested", DICT(ANY))
+X: Final = Attribute("x", INT)
 
 
 def test_in_memory_get_missing_returns_none():

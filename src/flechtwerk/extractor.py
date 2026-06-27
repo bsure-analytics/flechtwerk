@@ -10,7 +10,7 @@ from typing import AsyncIterator, Never
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
 
-from fretworx.attribute import BOOL, OptionalAttribute
+from fretworx.attribute import Attribute, BOOL
 from .configs import ConfigStore, EnrichFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
@@ -19,7 +19,7 @@ from .types import Config, IncomingMessage, Message, Stage, State
 
 log = logging.getLogger(__name__)
 
-SUSPENDED = OptionalAttribute("suspended", BOOL)
+SUSPENDED = Attribute("suspended", BOOL, optional=True)
 
 PollFn = Callable[[Config, State], AsyncIterator[Message | State]]
 ExtractKeyFn = Callable[[IncomingMessage], str]

@@ -2,9 +2,7 @@
 from .attribute import (
     Attribute,
     MissingAttributeError,
-    OptionalAttribute,
     RawDict,
-    RequiredAttribute,
 )
 from .codec import Codec, Decoder, Encoder
 from .codecs import (
@@ -41,11 +39,9 @@ __all__ = [
     "INT",
     "LIST",
     "MissingAttributeError",
-    "OptionalAttribute",
     "RawDict",
     "RECORD",
     "Record",
-    "RequiredAttribute",
     "SET",
     "STR",
     "TIME",

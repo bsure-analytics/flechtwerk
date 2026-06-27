@@ -23,7 +23,7 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.coordinator.assignors.range import RangePartitionAssignor
 from aiokafka.errors import ProducerFenced
 
-from fretworx.attribute import INT, RequiredAttribute
+from fretworx.attribute import Attribute, INT
 from fretworx.kafka import restore_changelog
 from fretworx.observer import Observer
 from fretworx.configs import ConfigStore
@@ -34,7 +34,7 @@ from fretworx.types import Message, State
 
 pytestmark = pytest.mark.integration
 
-COUNT = RequiredAttribute("count", INT)
+COUNT = Attribute("count", INT)
 
 
 async def _create_topics(bootstrap: str, *topics: str, num_partitions: int = 1, compacted: tuple[str, ...] = ()) -> None:
