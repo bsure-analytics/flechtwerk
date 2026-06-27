@@ -37,7 +37,9 @@ def test_get_returns_a_fresh_config_per_call():
 
 def test_get_decodes_malformed_value_to_empty_config(caplog):
     store = ConfigStore()
-    store.raw["bad"] = b"{not json"
+    # Seed the internal dict directly: put() only accepts a Record and always
+    # encodes valid JSON, so there's no public way to inject a malformed value.
+    store._raw["bad"] = b"{not json"
     with caplog.at_level(logging.WARNING):
         assert store.get("bad") == Config.wrap({})
     assert any("Malformed" in rec.message for rec in caplog.records)

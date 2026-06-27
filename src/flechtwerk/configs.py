@@ -50,31 +50,31 @@ class ConfigStore:
     """
 
     def __init__(self) -> None:
-        self.raw: dict[str, bytes] = {}
+        self._raw: dict[str, bytes] = {}
 
     def __contains__(self, key: str) -> bool:
-        return key in self.raw
+        return key in self._raw
 
     def __len__(self) -> int:
-        return len(self.raw)
+        return len(self._raw)
 
     @classmethod
     def of(cls, entries: dict[str, Record]) -> ConfigStore:
         """Build a pre-seeded store — the test-side entry point."""
         store = cls()
-        store.raw = {key: encode_json(value) for key, value in entries.items()}
+        store._raw = {key: encode_json(value) for key, value in entries.items()}
         return store
 
     def get(self, key: str) -> Config | None:
         """Return the latest config for ``key``, or None if absent."""
-        raw = self.raw.get(key)
+        raw = self._raw.get(key)
         return None if raw is None else Config(decode_event(raw, key))
 
     def put(self, key: str, config: Record) -> None:
-        self.raw[key] = encode_json(config)
+        self._raw[key] = encode_json(config)
 
     def delete(self, key: str) -> None:
-        self.raw.pop(key, None)
+        self._raw.pop(key, None)
 
 
 async def apply_config_record(
