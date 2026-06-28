@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import AsyncIterator, Never
+from typing import AsyncIterator, Never, Self
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.abc import ConsumerRebalanceListener
@@ -120,7 +120,7 @@ class Transformer(Stage, ABC):
         """Extract the state key from the incoming message. Default: msg.key."""
         return msg.key
 
-    async def __aenter__(self) -> Transformer:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
