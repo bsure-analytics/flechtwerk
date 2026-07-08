@@ -532,6 +532,121 @@ def test_subclass_defaults_not_overridden_by_init():
     assert ext.config_topics == ["test-config"]
 
 
+def test_reentry_contract_flush_strictly_precedes_next_poll():
+    """Pin the runner's re-entry contract: poll() is re-entered only after the
+    previous invocation's messages were sent AND the producer was flushed.
+    The MQTT template's ACK-previous-batch pattern depends on this ordering."""
+    events: list[str] = []
+
+    class StopRunner(Exception):
+        pass
+
+    class OrderRecordingProducer(FakeKafkaProducer):
+        async def send(self, topic, *, key=None, value=None, timestamp_ms=None):
+            events.append("send")
+            await super().send(topic, key=key, value=value, timestamp_ms=timestamp_ms)
+
+        async def flush(self):
+            events.append("flush")
+            await super().flush()
+
+    class OrderRecordingExtractor(Extractor):
+        config_topics = ["test-config"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            events.append("poll")
+            if events.count("poll") >= 3:
+                raise StopRunner
+            yield Message(key="k", topic="out", value={"data": "x"})
+
+    async def run():
+        record = json_record(key="k", value={"api_key": "a"})
+        mod = make_module(OrderRecordingExtractor(), FakeKafkaConsumer([record]), OrderRecordingProducer())
+
+        with pytest.raises(StopRunner):
+            await mod.runner.run()
+
+        assert events == ["poll", "send", "flush", "poll", "send", "flush", "poll"]
+
+    asyncio.run(run())
+
+
+def test_run_loop_honors_wakeup():
+    """run() waits on the stage's wakeup between cycles: with a prohibitive
+    interval, cycles still proceed as long as the extractor keeps firing it.
+    A regression to a plain sleep would hang this test into its timeout."""
+    polls: list[int] = []
+
+    class StopRunner(Exception):
+        pass
+
+    class WakeupExtractor(Extractor):
+        config_topics = ["test-config"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            polls.append(1)
+            if len(polls) >= 3:
+                raise StopRunner
+            self.wakeup.set()  # a message "arrives" right after this cycle
+            return
+            yield  # pragma: no cover
+
+    async def run():
+        ext = WakeupExtractor()
+        ext.wakeup = asyncio.Event()
+        record = json_record(key="k", value={"api_key": "a"})
+        mod = make_module(ext, FakeKafkaConsumer([record]))
+        mod.poll_interval_seconds = 3600  # a plain sleep would hang here
+
+        with pytest.raises(StopRunner):
+            await asyncio.wait_for(mod.runner.run(), timeout=5)
+
+        assert len(polls) == 3
+
+    asyncio.run(run())
+
+
+def test_idle_sleeps_when_no_wakeup():
+    """Without a wakeup event, idle() is the plain interval sleep."""
+
+    async def run():
+        mod = make_module(SimpleExtractor())
+        assert mod.stage.wakeup is None
+        await mod.runner.idle()  # poll_interval_seconds=0 → returns immediately
+
+    asyncio.run(run())
+
+
+def test_idle_returns_early_on_wakeup():
+    """A set wakeup event ends the wait before the interval elapses."""
+
+    async def run():
+        ext = SimpleExtractor()
+        ext.wakeup = asyncio.Event()
+        mod = make_module(ext)
+        mod.poll_interval_seconds = 3600  # would block for an hour without the wakeup
+
+        ext.wakeup.set()
+        await asyncio.wait_for(mod.runner.idle(), timeout=1)
+
+        assert not ext.wakeup.is_set()  # cleared for the next cycle
+
+    asyncio.run(run())
+
+
+def test_idle_times_out_at_interval_when_wakeup_never_fires():
+    async def run():
+        ext = SimpleExtractor()
+        ext.wakeup = asyncio.Event()
+        mod = make_module(ext)  # poll_interval_seconds=0 → immediate timeout
+
+        await asyncio.wait_for(mod.runner.idle(), timeout=1)
+
+        assert not ext.wakeup.is_set()
+
+    asyncio.run(run())
+
+
 def test_functional_extractor_end_to_end_with_runner():
     """Functional Extractor works through the runner with config-topic processing."""
 

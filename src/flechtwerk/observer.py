@@ -28,6 +28,14 @@ class Observer:
     def state_restored(self, partition: int, entries: int) -> None: pass
     def tasks_assigned(self, n: int) -> None: pass
 
+    # MQTT events — `topic` is always the subscription filter from config
+    # (bounded cardinality), never the per-device publish topic.
+    def mqtt_buffered(self, topic: str, n: int) -> None: pass
+    def mqtt_connected(self) -> None: pass
+    def mqtt_disconnected(self) -> None: pass
+    def mqtt_message_dropped(self, topic: str, reason: str) -> None: pass
+    def mqtt_message_in(self, topic: str) -> None: pass
+
     def dispatch_scope(self) -> AbstractContextManager[None]: return nullcontext()
     def batch_scope(self, size: int) -> AbstractContextManager[None]: return nullcontext()
     def poll_cycle_scope(self) -> AbstractContextManager[None]: return nullcontext()
@@ -70,6 +78,21 @@ class PrometheusObserver(Observer):
 
     def tasks_assigned(self, n: int) -> None:
         self.metrics.tasks_assigned.labels(**self.metrics_labels).set(n)
+
+    def mqtt_buffered(self, topic: str, n: int) -> None:
+        self.metrics.mqtt_buffered_messages.labels(**self.metrics_labels, topic=topic).set(n)
+
+    def mqtt_connected(self) -> None:
+        self.metrics.mqtt_connects_total.labels(**self.metrics_labels).inc()
+
+    def mqtt_disconnected(self) -> None:
+        self.metrics.mqtt_disconnects_total.labels(**self.metrics_labels).inc()
+
+    def mqtt_message_dropped(self, topic: str, reason: str) -> None:
+        self.metrics.mqtt_messages_dropped_total.labels(**self.metrics_labels, reason=reason, topic=topic).inc()
+
+    def mqtt_message_in(self, topic: str) -> None:
+        self.metrics.mqtt_messages_in_total.labels(**self.metrics_labels, topic=topic).inc()
 
     def dispatch_scope(self) -> AbstractContextManager[None]:
         return self.metrics.message_processing_seconds.labels(**self.metrics_labels).time()

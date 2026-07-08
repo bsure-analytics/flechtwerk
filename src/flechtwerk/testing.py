@@ -1,12 +1,20 @@
-"""Test doubles for fretworx framework testing."""
+"""Test doubles for fretworx framework testing.
+
+paho imports are deferred into the MQTT doubles so importing this module
+never loads paho — mirroring the framework rule that ``fretworx/mqtt.py``
+is the only eager paho importer (the ``fretworx[mqtt]`` extra seam).
+"""
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiokafka import ConsumerRecord, TopicPartition
 
 from fretworx.observer import Observer
 from fretworx.state import StateStore, deserialize
 from fretworx.types import Message, State
+
+if TYPE_CHECKING:
+    from paho.mqtt.client import MQTTMessage
 
 
 class RecordingObserver(Observer):
@@ -41,6 +49,21 @@ class RecordingObserver(Observer):
 
     def tasks_assigned(self, n: int) -> None:
         self.calls.append(("tasks_assigned", n))
+
+    def mqtt_buffered(self, topic: str, n: int) -> None:
+        self.calls.append(("mqtt_buffered", topic, n))
+
+    def mqtt_connected(self) -> None:
+        self.calls.append(("mqtt_connected",))
+
+    def mqtt_disconnected(self) -> None:
+        self.calls.append(("mqtt_disconnected",))
+
+    def mqtt_message_dropped(self, topic: str, reason: str) -> None:
+        self.calls.append(("mqtt_message_dropped", topic, reason))
+
+    def mqtt_message_in(self, topic: str) -> None:
+        self.calls.append(("mqtt_message_in", topic))
 
     @contextmanager
     def dispatch_scope(self):
@@ -259,3 +282,90 @@ class FakeTransaction:
 
     async def __aexit__(self, *exc_info):
         self.producer.transaction_active = False
+
+
+def make_mqtt_message(
+    *,
+    topic: str = "test/topic",
+    payload: bytes = b"{}",
+    mid: int = 1,
+    qos: int = 1,
+) -> "MQTTMessage":
+    """Build a real ``paho.mqtt.client.MQTTMessage`` with the four fields the
+    framework reads (``topic``, ``payload``, ``mid``, ``qos``)."""
+    from paho.mqtt.client import MQTTMessage
+    msg = MQTTMessage(mid=mid, topic=topic.encode())
+    msg.payload = payload
+    msg.qos = qos
+    return msg
+
+
+class FakeMqttSubscription:
+    """Mirrors ``MqttSubscription``: per-topic buffer + pending-ACK list, plus
+    an ``acked`` record for assertions (ACKs are recorded even at QoS 0,
+    where the real one no-ops on the wire)."""
+
+    def __init__(self, *, connection: "FakeMqttConnection", topic: str) -> None:
+        self.acked: list["MQTTMessage"] = []
+        self.connection = connection
+        self.items: list["MQTTMessage"] = []
+        self.pending_acks: list["MQTTMessage"] = []
+        self.topic = topic
+
+    def drain(self, limit: int) -> list["MQTTMessage"]:
+        batch = self.items[:limit]
+        del self.items[:limit]
+        if not batch and self.connection.error is not None:
+            raise self.connection.error
+        return batch
+
+    def ack_all_pending(self) -> None:
+        self.acked.extend(self.pending_acks)
+        self.pending_acks.clear()
+
+    def ack(self, msg: "MQTTMessage") -> None:
+        self.acked.append(msg)
+
+    def mark_pending(self, msg: "MQTTMessage") -> None:
+        self.pending_acks.append(msg)
+
+
+class FakeMqttConnection:
+    """Test double for ``MqttConnection``: a ``subscribe()`` registry plus
+    ``publish()`` routing by MQTT topic-filter matching and error injection
+    via the ``error`` attribute (surfaced by ``drain`` like the real one).
+
+    Pre-set it on an ``MqttExtractor`` (``extractor.connection = fake``) —
+    the stage then skips the broker connect and the injected-settings
+    requirement entirely.
+    """
+
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+        self.next_mid = 1
+        self.subscriptions: dict[str, FakeMqttSubscription] = {}
+
+    async def __aenter__(self) -> "FakeMqttConnection":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        pass
+
+    def subscribe(self, topic: str) -> FakeMqttSubscription:
+        sub = self.subscriptions.get(topic)
+        if sub is None:
+            sub = FakeMqttSubscription(connection=self, topic=topic)
+            self.subscriptions[topic] = sub
+        return sub
+
+    def publish(self, *, topic: str, payload: bytes, qos: int = 1) -> None:
+        """Route one message into the first matching subscription's buffer,
+        like the real connection's ``on_message``. Unmatched messages are
+        dropped silently — assert on buffers, not logs."""
+        from paho.mqtt.client import topic_matches_sub
+        msg = make_mqtt_message(topic=topic, payload=payload, mid=self.next_mid, qos=qos)
+        self.next_mid += 1
+        for filter_, sub in self.subscriptions.items():
+            if topic_matches_sub(filter_, topic):
+                sub.items.append(msg)
+                return

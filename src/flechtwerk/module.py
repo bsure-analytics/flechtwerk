@@ -15,6 +15,7 @@ instances safe. Extractors keep a single shared non-transactional producer.
 """
 import logging
 import tempfile
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal, Never
@@ -36,6 +37,32 @@ log = logging.getLogger(__name__)
 
 CompressionType = Literal["gzip", "snappy", "lz4", "zstd"]
 """Kafka producer compression codec — closed set matching aiokafka's accepted values."""
+
+
+@dataclass(frozen=True)
+class MqttBrokerConfig:
+    """Shared MQTT connection settings — one broker serves the whole platform.
+
+    Defined here rather than in ``fretworx/mqtt.py`` so the container can
+    annotate its ``mqtt`` slot without importing paho: reactor-di evaluates
+    all class annotations at decoration time, and paho must stay an opt-in
+    import confined to ``fretworx/mqtt.py`` (the seam for a ``fretworx[mqtt]``
+    extra at extraction time).
+
+    ``client_id`` is the identity of the instance's persistent MQTT session
+    (``clean_session=False``): the caller must resolve it to something unique
+    per instance and stable across restarts (the application entry point
+    cascades ``MQTT_CLIENT_ID`` → ``FRETWORX_CLIENT_ID`` → the application
+    id; production K8s sets the pod name). The framework does no identity
+    defaulting — ``MqttExtractor`` rejects an empty ``client_id`` at startup,
+    since MQTT 3.1.1 forbids an empty client id with a persistent session.
+    """
+    broker: str
+    port: int
+    client_id: str = ""
+    password: str = ""
+    qos: int = 1
+    username: str = ""
 
 
 def validate_topics(stage: Extractor | Transformer) -> None:
@@ -87,6 +114,7 @@ class Fretworx:
     metrics: Metrics
     metrics_labels: lookup[dict[str, str]]
     metrics_port: lookup[int]
+    mqtt: lookup[MqttBrokerConfig | None]
     poll_interval_seconds: lookup[int]
     prometheus_observer: PrometheusObserver
     registry: CollectorRegistry = REGISTRY
@@ -106,6 +134,7 @@ class Fretworx:
         compression_type: CompressionType | None = "zstd",
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
+        mqtt: MqttBrokerConfig | None = None,
     ) -> Fretworx:
         """Build a fully-configured top-level application container.
 
@@ -113,8 +142,10 @@ class Fretworx:
         ``compression_type`` defaults to ``"zstd"`` because Fretworx
         outputs JSON everywhere (encode_json) and JSON compresses ~13×;
         pass ``None`` to disable. ``metrics_labels`` defaults to an empty
-        dict and ``metrics_port`` defaults to 0 (Prometheus disabled);
-        everything else is required.
+        dict and ``metrics_port`` defaults to 0 (Prometheus disabled).
+        ``mqtt`` carries the platform's shared MQTT broker settings; it is
+        used only by MQTT-sourced stages and ignored everywhere else, so
+        the caller may pass it unconditionally. Everything else is required.
         """
         instance = cls()
         instance.application_id = application_id
@@ -123,6 +154,7 @@ class Fretworx:
         instance.compression_type = compression_type
         instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
         instance.metrics_port = metrics_port
+        instance.mqtt = mqtt
         instance.poll_interval_seconds = poll_interval_seconds
         instance.stage = stage
         return instance
@@ -266,10 +298,36 @@ class Fretworx:
         store.topic = self.changelog_topic
         return store
 
+    def configure_mqtt(self) -> None:
+        """Inject the MQTT settings onto an MQTT-sourced stage, verbatim.
+
+        Identity resolution is the caller's job (see ``MqttBrokerConfig``);
+        this only places the settings and the observer on the stage. Lazy
+        import: fretworx.mqtt is the only framework module importing paho,
+        so an application that never configures MQTT never loads it (the
+        seam for a ``fretworx[mqtt]`` extra at extraction time). A
+        configured broker on a non-MQTT stage is ignored — the caller passes
+        platform-wide settings for every stage, MQTT-sourced or not. The
+        ``getattr`` tolerates a parent module that didn't wire the ``mqtt``
+        slot (the bare-constructor path).
+        """
+        mqtt = getattr(self, "mqtt", None)
+        if mqtt is None:
+            return
+        from .mqtt import MqttExtractor
+        if isinstance(self.stage, MqttExtractor):
+            self.stage.mqtt = mqtt
+            self.stage.observer = self.observer
+
     async def __aenter__(self) -> Fretworx:
         # Bring up the scrape endpoint first so health probes see it as
         # soon as the process is up.
         _ = self.metrics_server
+
+        # Before validate_topics so the stage is fully configured the moment
+        # any startup check can raise; strictly precedes the extractor's
+        # __aenter__ (which runs inside runner.run()).
+        self.configure_mqtt()
 
         validate_topics(self.stage)
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)

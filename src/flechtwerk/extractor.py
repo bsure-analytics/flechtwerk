@@ -3,6 +3,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import AsyncIterator, Never, Self
@@ -63,6 +64,17 @@ class Extractor(Stage, ABC):
     Extractors do not use Kafka consumer groups — config topics are re-read
     from the earliest on every startup. The caller sets the ``application_id``
     used for changelog topic naming on `Fretworx`; stages don't carry it.
+    """
+
+    wakeup: asyncio.Event | None = None
+    """Optional wakeup for push-driven sources.
+
+    ``None`` (the default) keeps the runner on a plain
+    ``poll_interval_seconds`` sleep between cycles. A stage whose input
+    arrives asynchronously (e.g. an MQTT subscription) sets this in
+    ``__aenter__`` and fires it on arrival; the runner then treats the
+    interval as an upper bound, polling as soon as the event is set —
+    the interval degrades to the idle/config-drain cadence.
     """
 
     @classmethod
@@ -138,6 +150,14 @@ class ExtractorRunner:
     """Orchestrates concurrent polling for an Extractor subclass.
 
     Attributes are set by the DI container (reactor-di) or directly in tests.
+
+    Re-entry contract: for any given config, ``poll()`` is re-entered only
+    after the previous invocation's yielded messages were sent to Kafka and
+    the producer was flushed (``poll_one`` awaits ``send_batch`` before
+    returning; a send failure crashes the process). Sources that defer an
+    acknowledgement to their upstream system until the data is durable in
+    Kafka — e.g. the MQTT template's ACK-the-previous-batch-at-the-top-of-
+    the-next-poll pattern — depend on this ordering; do not weaken it.
     """
 
     config_store: ConfigStore
@@ -180,7 +200,25 @@ class ExtractorRunner:
                             log.error("Poll failed for key %s", key, exc_info=result)
                             raise result
 
-                await asyncio.sleep(self.poll_interval_seconds)
+                await self.idle()
+
+    async def idle(self) -> None:
+        """Wait for the next poll cycle.
+
+        Plain sleep unless the stage exposes a ``wakeup`` event (push-driven
+        sources); then the first inbound message ends the wait early. The
+        clear-after-wait ordering can't lose messages: producers set the
+        event *after* buffering, and the next cycle drains the buffer — a
+        set landing between clear() and the drain merely costs one extra
+        (empty) cycle.
+        """
+        wakeup = self.extractor.wakeup
+        if wakeup is None:
+            await asyncio.sleep(self.poll_interval_seconds)
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(wakeup.wait(), self.poll_interval_seconds)
+        wakeup.clear()
 
     async def load_initial_configs(self) -> None:
         """Read all existing configs from the config topics on startup.

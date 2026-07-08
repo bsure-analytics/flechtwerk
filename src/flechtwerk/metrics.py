@@ -142,3 +142,51 @@ class Metrics:
             self._label_names,
             registry=self.registry,
         )
+
+    # MQTT metrics — the `topic` label carries the subscription filter from
+    # config (bounded cardinality), never the per-device publish topic.
+
+    @cached_property
+    def mqtt_buffered_messages(self) -> Gauge:
+        return Gauge(
+            "fretworx_mqtt_buffered_messages",
+            "MQTT messages left buffered for a subscription after the last drain",
+            self._label_names + ["topic"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def mqtt_connects_total(self) -> Counter:
+        return Counter(
+            "fretworx_mqtt_connects_total",
+            "Successful MQTT (re)connects — more than one per process lifetime means session churn",
+            self._label_names,
+            registry=self.registry,
+        )
+
+    @cached_property
+    def mqtt_disconnects_total(self) -> Counter:
+        return Counter(
+            "fretworx_mqtt_disconnects_total",
+            "Unexpected MQTT disconnects (clean shutdown is not counted)",
+            self._label_names,
+            registry=self.registry,
+        )
+
+    @cached_property
+    def mqtt_messages_dropped_total(self) -> Counter:
+        return Counter(
+            "fretworx_mqtt_messages_dropped_total",
+            "MQTT messages dropped without forwarding (filtered: relay returned None; poison: relay raised)",
+            self._label_names + ["reason", "topic"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def mqtt_messages_in_total(self) -> Counter:
+        return Counter(
+            "fretworx_mqtt_messages_in_total",
+            "MQTT messages routed into a subscription's buffer",
+            self._label_names + ["topic"],
+            registry=self.registry,
+        )

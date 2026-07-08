@@ -144,3 +144,53 @@ def test_poll_cycle_scope_records_histogram():
         {"datasource": "ds1", "stage": "extractor"},
     )
     assert count == 1
+
+
+def test_mqtt_connects_and_disconnects_increment_counters():
+    observer, registry = make_observer()
+    observer.mqtt_connected()
+    observer.mqtt_connected()
+    observer.mqtt_disconnected()
+    assert registry.get_sample_value(
+        "fretworx_mqtt_connects_total",
+        {"datasource": "ds1", "stage": "extractor"},
+    ) == 2
+    assert registry.get_sample_value(
+        "fretworx_mqtt_disconnects_total",
+        {"datasource": "ds1", "stage": "extractor"},
+    ) == 1
+
+
+def test_mqtt_message_in_increments_counter_per_topic():
+    observer, registry = make_observer()
+    observer.mqtt_message_in("t/+/events")
+    observer.mqtt_message_in("t/+/events")
+    assert registry.get_sample_value(
+        "fretworx_mqtt_messages_in_total",
+        {"datasource": "ds1", "stage": "extractor", "topic": "t/+/events"},
+    ) == 2
+
+
+def test_mqtt_message_dropped_increments_counter_per_reason():
+    observer, registry = make_observer()
+    observer.mqtt_message_dropped("t/+/events", "filtered")
+    observer.mqtt_message_dropped("t/+/events", "poison")
+    observer.mqtt_message_dropped("t/+/events", "poison")
+    assert registry.get_sample_value(
+        "fretworx_mqtt_messages_dropped_total",
+        {"datasource": "ds1", "reason": "filtered", "stage": "extractor", "topic": "t/+/events"},
+    ) == 1
+    assert registry.get_sample_value(
+        "fretworx_mqtt_messages_dropped_total",
+        {"datasource": "ds1", "reason": "poison", "stage": "extractor", "topic": "t/+/events"},
+    ) == 2
+
+
+def test_mqtt_buffered_sets_gauge():
+    observer, registry = make_observer()
+    observer.mqtt_buffered("t/+/events", 5)
+    observer.mqtt_buffered("t/+/events", 0)
+    assert registry.get_sample_value(
+        "fretworx_mqtt_buffered_messages",
+        {"datasource": "ds1", "stage": "extractor", "topic": "t/+/events"},
+    ) == 0

@@ -67,6 +67,23 @@ For extractors this is simply how config handling has always worked, named. For 
 
 `Stage.enrich(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it once per config record — never per poll tick or lookup — and both stage kinds inherit it. Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation; Fretworx re-reads the topics through the same enrich path on every startup, so the enriched store cannot diverge.
 
+### MQTT sources — push into the poll loop
+
+`fretworx.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped — one shared paho connection per process driven by the asyncio event loop (no threads), persistent sessions with a stable client id, manual-ACK at-least-once (a batch is ACKed to the broker only once it is provably durable in Kafka — at the top of the next poll, per the runner's re-entry contract), per-topic subscriptions fed by config records, an arrival wakeup so delivery latency is sub-second rather than poll-interval-bound, and Prometheus metrics. An application writes one pure function:
+
+```python
+def relay(config, topic, payload):          # -> Message | None
+    return Message(
+        key=payload[DEVICE_ID],             # missing → the framework poison-drops
+        topic=EXTRACT_TOPIC,
+        value=Event({DATA: payload, PROCESSING_TIME: now(), TYPE: "acme"}),
+    )
+
+stage = MqttExtractor.of(config_topics=["acme-config"], relay=relay)
+```
+
+Return a `Message` to forward, `None` to drop (ACKed immediately), or raise to poison-drop (logged, ACKed, counted — never a crash loop on a broken payload). Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template. Broker settings are injected via `Fretworx.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `fretworx/mqtt.py` — `import fretworx` never loads it.
+
 ## Operational model
 
 - **Consumer groups** drive partition assignment and rebalancing — standard Kafka semantics, no custom coordination.
@@ -77,7 +94,7 @@ For extractors this is simply how config handling has always worked, named. For 
 
 ## Architecture
 
-Hexagonal: ports and adapters. The core (`Extractor`, `Transformer`, their runners) depends only on abstract ports (`StateStore`, `Observer`, `aiokafka` consumer/producer interfaces). Adapters (`RocksDBStateStore`, `ChangelogStateStore`, `PrometheusObserver`, `FakeKafkaConsumer`/`FakeKafkaProducer` for tests) plug in via DI through `reactor-di`.
+Hexagonal: ports and adapters. The core (`Extractor`, `Transformer`, their runners) depends only on abstract ports (`StateStore`, `Observer`, `aiokafka` consumer/producer interfaces). Adapters (`RocksDBStateStore`, `ChangelogStateStore`, `PrometheusObserver`, the `fretworx.mqtt` transport, `FakeKafkaConsumer`/`FakeKafkaProducer`/`FakeMqttConnection` for tests) plug in via DI through `reactor-di`. Transport adapters earn a place in the framework only when their correctness depends on runner delivery semantics — MQTT's manual-ACK protocol does; a plain HTTP poller does not.
 
 The framework has no CLI, no module-level `os.getenv`, no `load_dotenv`, and no opinions about how applications are packaged or deployed. All configuration is injected by the caller.
 
