@@ -4,7 +4,7 @@ from typing import AsyncIterator
 import pytest
 
 from fretworx.extractor import Extractor
-from fretworx.module import Fretworx, MqttBrokerConfig, validate_topics
+from fretworx.module import MqttBrokerConfig, _FretworxModule, validate_topics
 from fretworx.mqtt import MqttExtractor
 from fretworx.observer import Observer
 from fretworx.transformer import Transformer
@@ -55,8 +55,8 @@ def test_valid_declarations_pass():
 # -- configured_stage ----------------------------------------------------------
 
 
-def make_mqtt_module(stage, mqtt: MqttBrokerConfig | None) -> Fretworx:
-    mod = Fretworx()
+def make_mqtt_module(stage, mqtt: MqttBrokerConfig | None) -> _FretworxModule:
+    mod = _FretworxModule()
     mod.client_id = "pod-0"
     mod.metrics_port = 0  # observer resolves to the no-op Observer
     mod.mqtt = mqtt

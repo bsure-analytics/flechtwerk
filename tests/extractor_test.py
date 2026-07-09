@@ -7,7 +7,7 @@ import pytest
 
 from fretworx.attribute import Attribute, BOOL, INT, STR
 from fretworx.extractor import ConfigEntry, Extractor
-from fretworx.module import Fretworx
+from fretworx.module import _FretworxModule
 from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 from fretworx.types import Config, Message, State
 
@@ -74,8 +74,8 @@ def json_record(key="k", value=None, topic="test-config", offset=0, partition=0)
 
 
 def make_module(extractor, consumer=None, producer=None, state_store=None):
-    """Create a Fretworx with monkey-patched fake resources."""
-    mod = Fretworx()
+    """Create a Fretworx container with monkey-patched fake resources."""
+    mod = _FretworxModule()
     mod.application_id = "test"
     mod.client_id = "test"
     mod.bootstrap_servers = "localhost:9092"

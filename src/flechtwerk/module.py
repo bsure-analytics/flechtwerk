@@ -15,10 +15,11 @@ instances safe. Extractors keep a single shared non-transactional producer.
 """
 import logging
 import tempfile
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Literal, Never
+from typing import Any, Literal, Never, Self
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
@@ -82,27 +83,109 @@ def validate_topics(stage: Extractor | Transformer) -> None:
         raise ValueError("an extractor needs at least one config topic")
 
 
+class Fretworx(ABC):
+    """The application-facing handle for a Fretworx stage.
+
+    An application constructs one with the ``of`` factory and calls
+    ``run()``::
+
+        await Fretworx.of(
+            application_id="ariadne-extractor",
+            bootstrap_servers="localhost:9092",
+            client_id="ariadne-extractor-0",
+            poll_interval_seconds=60,
+            stage=my_extractor,
+        ).run()
+
+    This is deliberately a narrow surface — ``of`` / ``run`` / the async
+    context manager, nothing else. The Kafka resources (consumers,
+    transactional producers, state stores, runners) live on the private
+    ``_FretworxModule`` reactor-di container that ``of`` returns; an
+    application must not reach past this handle into the wiring, whose
+    invariants (EOS-v1 fencing, changelog restore ordering, config-store
+    bootstrap sequencing) are the framework's to keep. Same idiom as
+    ``Extractor.of`` / ``Transformer.of``: a factory on the public
+    abstraction that returns a private concrete subclass typed as the
+    abstraction.
+
+    To embed Fretworx as a component of a larger reactor-di module, wire
+    the concrete container directly — declare ``make[Fretworx,
+    _FretworxModule]`` and let the parent module fill every ``lookup``
+    field by attribute name.
+    """
+
+    @classmethod
+    def of(
+        cls,
+        *,
+        application_id: str,
+        bootstrap_servers: str,
+        client_id: str,
+        poll_interval_seconds: int,
+        stage: Extractor | Transformer,
+        compression_type: CompressionType | None = "zstd",
+        metrics_labels: dict[str, str] | None = None,
+        metrics_port: int = 0,
+        mqtt: MqttBrokerConfig | None = None,
+    ) -> Fretworx:
+        """Build a fully-configured application handle.
+
+        Use this when running Fretworx as the program's entry point.
+        ``compression_type`` defaults to ``"zstd"`` because Fretworx
+        outputs JSON everywhere (encode_json) and JSON compresses ~13×;
+        pass ``None`` to disable. ``metrics_labels`` defaults to an empty
+        dict and ``metrics_port`` defaults to 0 (Prometheus disabled).
+        ``mqtt`` carries the platform's shared MQTT broker settings; it is
+        used only by MQTT-sourced stages and ignored everywhere else, so
+        the caller may pass it unconditionally. Everything else is required.
+        """
+        instance = _FretworxModule()
+        instance.application_id = application_id
+        instance.bootstrap_servers = bootstrap_servers
+        instance.client_id = client_id
+        instance.compression_type = compression_type
+        instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
+        instance.metrics_port = metrics_port
+        instance.mqtt = mqtt
+        instance.poll_interval_seconds = poll_interval_seconds
+        instance.stage = stage
+        return instance
+
+    @abstractmethod
+    async def run(self) -> Never:
+        """Bootstrap resources and run the configured stage forever.
+
+        The runner's main loop is ``while True``, so under normal operation
+        this coroutine never returns — it terminates only by cancellation
+        or an unrecovered exception.
+        """
+        ...
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        ...
+
+    @abstractmethod
+    async def __aexit__(self, *exc_info: object) -> None:
+        ...
+
+
 @module(CachingStrategy.NOT_THREAD_SAFE)
-class Fretworx:
-    """DI container for all Kafka resources.
+class _FretworxModule(Fretworx):
+    """Private DI container for all Kafka resources — the concrete
+    ``Fretworx`` returned by ``Fretworx.of`` and the type wired into a
+    parent reactor-di module via ``make[Fretworx, _FretworxModule]``.
 
-    Two ways to construct one:
+    Fretworx is the single place where all Kafka resources (admin client,
+    consumers, producers, state stores) are created and shared. Not part of
+    the application-facing surface: like the runners, it may leak aiokafka
+    types freely.
 
-    * As a top-level application container, use the ``of`` factory and
-      call ``run()``::
-
-          await Fretworx.of(
-              application_id="ariadne-extractor",
-              bootstrap_servers="localhost:9092",
-              client_id="ariadne-extractor-0",
-              poll_interval_seconds=60,
-              stage=my_extractor,
-          ).run()
-
-    * As a component of a larger reactor-di module, construct with no
-      args (``Fretworx()``) and let the parent module wire every
-      ``lookup`` field by attribute name. The bare constructor sets
-      nothing, leaving every slot for the parent to fill.
+    Keep the ``Fretworx`` base annotation-free. ``@module`` walks
+    ``get_type_hints`` over the whole MRO, so any annotated attribute added
+    to the base would silently become a DI-managed name here — and would
+    leak back onto the public handle's type. ``test_public_handle_*`` pins
+    the empty-surface invariant.
     """
 
     application_id: lookup[str]
@@ -121,43 +204,6 @@ class Fretworx:
     stage: lookup[Extractor | Transformer]
     state_store: ChangelogStateStore
     transformer_runner: TransformerRunner
-
-    @classmethod
-    def of(
-        cls,
-        *,
-        application_id: str,
-        bootstrap_servers: str,
-        client_id: str,
-        poll_interval_seconds: int,
-        stage: Extractor | Transformer,
-        compression_type: CompressionType | None = "zstd",
-        metrics_labels: dict[str, str] | None = None,
-        metrics_port: int = 0,
-        mqtt: MqttBrokerConfig | None = None,
-    ) -> Fretworx:
-        """Build a fully-configured top-level application container.
-
-        Use this when running Fretworx as the program's entry point.
-        ``compression_type`` defaults to ``"zstd"`` because Fretworx
-        outputs JSON everywhere (encode_json) and JSON compresses ~13×;
-        pass ``None`` to disable. ``metrics_labels`` defaults to an empty
-        dict and ``metrics_port`` defaults to 0 (Prometheus disabled).
-        ``mqtt`` carries the platform's shared MQTT broker settings; it is
-        used only by MQTT-sourced stages and ignored everywhere else, so
-        the caller may pass it unconditionally. Everything else is required.
-        """
-        instance = cls()
-        instance.application_id = application_id
-        instance.bootstrap_servers = bootstrap_servers
-        instance.client_id = client_id
-        instance.compression_type = compression_type
-        instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
-        instance.metrics_port = metrics_port
-        instance.mqtt = mqtt
-        instance.poll_interval_seconds = poll_interval_seconds
-        instance.stage = stage
-        return instance
 
     @cached_property
     def changelog_topic(self) -> str:
@@ -319,7 +365,7 @@ class Fretworx:
         """
         return self.extractor_runner if isinstance(self.stage, Extractor) else self.transformer_runner
 
-    async def __aenter__(self) -> Fretworx:
+    async def __aenter__(self) -> Self:
         # Bring up the scrape endpoint first so health probes see it as
         # soon as the process is up.
         _ = self.metrics_server
@@ -401,11 +447,7 @@ class Fretworx:
             server.shutdown()
 
     async def run(self) -> Never:  # noqa: return type — PyCharm misreads await of Never inside async with
-        """Bootstrap resources and run the configured stage.
-
-        The runner's main loop is ``while True``, so under normal operation
-        this coroutine never returns — it terminates only by cancellation
-        or an unrecovered exception.
+        """Run the configured stage (see ``Fretworx.run`` for the contract).
 
         On Ctrl-C, ``asyncio.run`` / ``uvloop.run`` translates SIGINT into
         a ``Task.cancel()`` on the main task, so what propagates *through*

@@ -3,6 +3,8 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Final
 
+import pytest
+
 from fretworx.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
 from fretworx.state import ChangelogStateStore, RocksDBStateStore
 from fretworx.testing import FakeKafkaProducer, InMemoryStateStore
@@ -316,9 +318,9 @@ def test_changelog_close_closes_inner():
 
 
 def test_module_wires_changelog_state_store():
-    """Fretworx wires ChangelogStateStore via reactor-di lookups."""
+    """The container wires ChangelogStateStore via reactor-di lookups."""
     from fretworx.extractor import Extractor
-    from fretworx.module import Fretworx
+    from fretworx.module import _FretworxModule
 
     class StubExtractor(Extractor):
         config_topics = ["cfg"]
@@ -328,7 +330,7 @@ def test_module_wires_changelog_state_store():
             yield  # pragma: no cover
 
     async def run():
-        mod = Fretworx()
+        mod = _FretworxModule()
         mod.application_id = "test-app"
         mod.bootstrap_servers = "localhost:9092"
         mod.client_id = "test-app"
@@ -350,19 +352,20 @@ def test_module_wires_changelog_state_store():
 
 
 def test_module_lookups_resolve_from_parent():
-    """A parent reactor-di module can inject every Fretworx lookup field by
-    name when Fretworx is embedded as a child component.
+    """A parent reactor-di module can inject every container lookup field by
+    name when the Fretworx container is embedded as a child component.
 
-    Reactor-di calls the child's no-arg constructor and then writes a
-    dependency map into ``instance.__dict__``; subsequent access to a
-    ``lookup[X]`` field falls through to ``__getattr__`` only if the field
-    is *not* already in ``__dict__``. Fretworx.__init__ therefore writes
-    each lookup parameter only when explicitly provided — so the no-arg
-    form leaves every slot for the parent to fill.
+    Applications get the narrow ``Fretworx`` handle from ``Fretworx.of``;
+    embedding wires the concrete container directly via ``make[Fretworx,
+    _FretworxModule]``. Reactor-di calls the child's no-arg constructor and
+    then writes a dependency map into ``instance.__dict__``; subsequent
+    access to a ``lookup[X]`` field falls through to ``__getattr__`` only if
+    the field is *not* already in ``__dict__``. The no-arg constructor sets
+    nothing, so it leaves every slot for the parent to fill.
     """
     from fretworx.extractor import Extractor
-    from fretworx.module import Fretworx
-    from reactor_di import CachingStrategy, module
+    from fretworx.module import Fretworx, _FretworxModule
+    from reactor_di import CachingStrategy, make, module
 
     class StubExtractor(Extractor):
         config_topics = ["cfg"]
@@ -385,9 +388,10 @@ def test_module_lookups_resolve_from_parent():
         poll_interval_seconds: int
         stage: Extractor
 
-        # Child component — reactor-di builds its dependency map from the
-        # parent's matching attribute names.
-        fretworx: Fretworx
+        # Child component — reactor-di instantiates the private concrete
+        # container and builds its dependency map from the parent's matching
+        # attribute names.
+        fretworx: make[Fretworx, _FretworxModule]
 
     app = App()
     app.application_id = "aid"
@@ -436,12 +440,12 @@ def test_app_factory_defaults_metrics_when_omitted():
 
 
 def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
-    """The bare constructor (no args) sets nothing, so a parent module
-    can inject every lookup field — including metrics_labels and
+    """The container's bare constructor (no args) sets nothing, so a parent
+    module can inject every lookup field — including metrics_labels and
     metrics_port."""
-    from fretworx.module import Fretworx
+    from fretworx.module import _FretworxModule
 
-    f = Fretworx()
+    f = _FretworxModule()
     for name in (
         "application_id",
         "bootstrap_servers",
@@ -454,3 +458,33 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
         "stage",
     ):
         assert name not in f.__dict__
+
+
+def test_public_handle_exposes_no_container_internals():
+    """The public ``Fretworx`` handle carries only of()/run()/the async
+    context manager — never the DI container's resource factories.
+
+    This is the encapsulation gate: ``@module`` walks ``get_type_hints``
+    over the MRO, so a stray annotated attribute on the base would silently
+    become a DI-managed name AND leak onto this public type. Keep the base
+    annotation-free.
+    """
+    from typing import get_type_hints
+
+    from fretworx.module import Fretworx
+
+    assert get_type_hints(Fretworx) == {}
+    assert {n for n in dir(Fretworx) if not n.startswith("_")} == {"of", "run"}
+
+
+def test_bare_public_handle_cannot_be_constructed():
+    """``Fretworx`` is abstract — applications must go through ``of``.
+
+    The loud failure is the point: a bare ``Fretworx()`` (or a parent module
+    annotating the abstract base instead of ``make[Fretworx,
+    _FretworxModule]``) raises immediately rather than silently mis-wiring.
+    """
+    from fretworx.module import Fretworx
+
+    with pytest.raises(TypeError, match="abstract"):
+        Fretworx()

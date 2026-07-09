@@ -6,7 +6,7 @@ from typing import AsyncIterator, Final
 import pytest
 
 from fretworx.attribute import Attribute, BOOL, INT, LIST, RECORD, STR
-from fretworx.module import Fretworx
+from fretworx.module import _FretworxModule
 from fretworx.transformer import Task, Transformer
 from fretworx.types import Event, Message, State
 from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
@@ -78,13 +78,13 @@ def make_incoming(key="k", value=None, topic="input-topic"):
 
 
 def make_module(transformer, consumer=None, producer=None, state_store=None):
-    """Create a Fretworx with monkey-patched fake resources.
+    """Create a Fretworx container with monkey-patched fake resources.
 
     The fake producer and state store are pre-wired as task 0 on the runner —
     records built by ``json_record`` default to partition 0, so single-task
     tests work unchanged. Multi-task tests register further tasks themselves.
     """
-    mod = Fretworx()
+    mod = _FretworxModule()
     mod.application_id = "test-group"
     mod.client_id = "test-group"
     mod.bootstrap_servers = "localhost:9092"
