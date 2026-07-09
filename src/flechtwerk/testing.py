@@ -5,7 +5,7 @@ never loads paho — mirroring the framework rule that ``fretworx/mqtt.py``
 is the only eager paho importer (the ``fretworx[mqtt]`` extra seam).
 """
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from aiokafka import ConsumerRecord, TopicPartition
 
@@ -345,7 +345,7 @@ class FakeMqttConnection:
         self.next_mid = 1
         self.subscriptions: dict[str, FakeMqttSubscription] = {}
 
-    async def __aenter__(self) -> "FakeMqttConnection":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
