@@ -69,10 +69,12 @@ weaken it. `test_reentry_contract_flush_strictly_precedes_next_poll` pins it.
   `@module` decorator resolves all class annotations at decoration time, so
   the `mqtt: lookup[MqttBrokerConfig | None]` slot needs a runtime-importable,
   paho-free name.
-- The framework reads no environment: MQTT settings arrive only through
-  `Fretworx.of(mqtt=...)` (or parent-module wiring), and the MQTT client_id
-  defaults to the container's client_id inside `configure_mqtt()` — never via
-  an env side-channel.
+- The framework reads no environment and does no identity defaulting: MQTT
+  settings arrive fully resolved through `Fretworx.of(mqtt=...)` (or
+  parent-module wiring) — the application entry point owns the client-id
+  cascade (`MQTT_CLIENT_ID` → `FRETWORX_CLIENT_ID` → `application_id`) —
+  and `MqttExtractor` rejects an empty `client_id` at startup (MQTT 3.1.1
+  forbids one with a persistent session).
 
 ## Boundary rule: which transport adapters belong in the framework
 
