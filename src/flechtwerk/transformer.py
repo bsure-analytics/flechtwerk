@@ -223,10 +223,10 @@ class TransformerRunner:
     config_store: ConfigStore
     consumer: AIOKafkaConsumer
     observer: Observer
-    restore_consumer_factory: Callable[[], AIOKafkaConsumer]
-    task_producer_factory: Callable[[int], AIOKafkaProducer]
-    task_store_factory: Callable[[int, AIOKafkaProducer], ChangelogStateStore]
-    transformer: lookup[Transformer, "stage"]  # noqa: PyUnresolvedReferences
+    create_restore_consumer: Callable[[], AIOKafkaConsumer]
+    create_task_producer: Callable[[int], AIOKafkaProducer]
+    create_task_store: Callable[[int, AIOKafkaProducer], ChangelogStateStore]
+    transformer: lookup[Transformer, "configured_stage"]  # noqa: PyUnresolvedReferences
 
     def __init__(self) -> None:
         self.batch_lock = asyncio.Lock()
@@ -318,10 +318,10 @@ class TransformerRunner:
         in-flight transaction is aborted and its producer fenced. Only then
         is the changelog end offset final, so the restore MUST come after.
         """
-        producer = self.task_producer_factory(partition)
+        producer = self.create_task_producer(partition)
         await producer.start()
-        store = self.task_store_factory(partition, producer)
-        consumer = self.restore_consumer_factory()
+        store = self.create_task_store(partition, producer)
+        consumer = self.create_restore_consumer()
         await consumer.start()
         try:
             entries = await store.restore(consumer, partitions={partition})

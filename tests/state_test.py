@@ -449,6 +449,7 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
         "compression_type",
         "metrics_labels",
         "metrics_port",
+        "mqtt",
         "poll_interval_seconds",
         "stage",
     ):

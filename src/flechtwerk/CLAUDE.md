@@ -61,10 +61,10 @@ weaken it. `test_reentry_contract_flush_strictly_precedes_next_poll` pins it.
 
 - `fretworx/mqtt.py` is the only framework module that imports paho eagerly.
   `module.py` must never import `.mqtt` at module level — the lazy import
-  inside `configure_mqtt()` is both what keeps `mqtt → module` acyclic and
-  the seam for a `fretworx[mqtt]` optional extra at extraction time (an
-  application that never configures MQTT never loads paho). `testing.py`'s
-  MQTT doubles defer their paho imports for the same reason.
+  inside the `configured_stage` factory is both what keeps `mqtt → module`
+  acyclic and the seam for a `fretworx[mqtt]` optional extra at extraction
+  time (an application that never configures MQTT never loads paho).
+  `testing.py`'s MQTT doubles defer their paho imports for the same reason.
 - `MqttBrokerConfig` lives in `module.py`, not `mqtt.py`: reactor-di's
   `@module` decorator resolves all class annotations at decoration time, so
   the `mqtt: lookup[MqttBrokerConfig | None]` slot needs a runtime-importable,

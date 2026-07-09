@@ -90,6 +90,7 @@ def make_module(transformer, consumer=None, producer=None, state_store=None):
     mod.bootstrap_servers = "localhost:9092"
     mod.metrics_labels = {}
     mod.metrics_port = 0
+    mod.mqtt = None
     mod.stage = transformer
     mod.consumer = consumer or FakeKafkaConsumer()
     mod.runner.tasks[0] = Task(0, producer or FakeKafkaProducer(), state_store or InMemoryStateStore())
@@ -931,9 +932,9 @@ def test_start_pending_tasks_fences_then_restores_then_resumes():
         runner.tasks.clear()
         producer = OrderedProducer()
         store = OrderedStore()
-        runner.task_producer_factory = lambda p: producer
-        runner.task_store_factory = lambda p, prod: store
-        runner.restore_consumer_factory = OrderedRestoreConsumer
+        runner.create_task_producer = lambda p: producer
+        runner.create_task_store = lambda p, prod: store
+        runner.create_restore_consumer = OrderedRestoreConsumer
         runner.pending = {3}
 
         await runner.start_pending_tasks()

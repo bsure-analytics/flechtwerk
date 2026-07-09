@@ -354,12 +354,12 @@ class MqttExtractor(Extractor, ABC):
     """Max messages drained per poll() invocation and topic."""
 
     mqtt: MqttBrokerConfig
-    """Broker settings — injected verbatim by ``Fretworx.configure_mqtt()``
-    before ``__aenter__``; the caller resolves ``client_id`` (see
+    """Broker settings — placed verbatim by the ``Fretworx.configured_stage``
+    factory before ``__aenter__``; the caller resolves ``client_id`` (see
     ``MqttBrokerConfig``)."""
 
     observer: Observer = Observer()
-    """Injected by ``Fretworx.configure_mqtt()``; no-op by default."""
+    """Placed by the ``Fretworx.configured_stage`` factory; no-op by default."""
 
     @classmethod
     def of(

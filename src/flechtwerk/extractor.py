@@ -162,7 +162,7 @@ class ExtractorRunner:
 
     config_store: ConfigStore
     consumer: AIOKafkaConsumer
-    extractor: lookup[Extractor, "stage"]  # noqa: PyUnresolvedReferences
+    extractor: lookup[Extractor, "configured_stage"]  # noqa: PyUnresolvedReferences
     observer: Observer
     poll_interval_seconds: int
     producer: AIOKafkaProducer

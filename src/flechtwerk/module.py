@@ -164,6 +164,49 @@ class Fretworx:
         return self.application_id + "-changelog"
 
     @cached_property
+    def config_consumer(self) -> AIOKafkaConsumer | None:
+        """Consumer feeding a transformer's config store (None without config topics).
+
+        Group-less and read_committed, like the restore consumers. Extractors
+        don't need one — their main consumer is already group-less and IS the
+        config consumer.
+        """
+        if not (isinstance(self.stage, Transformer) and self.stage.config_topics):
+            return None
+        return AIOKafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            client_id=self.client_id + "-config",
+            group_id=None,
+            isolation_level="read_committed",
+        )
+
+    @cached_property
+    def config_store(self) -> ConfigStore:
+        """The stage's per-process config store, fed by the runner."""
+        return ConfigStore()
+
+    @cached_property
+    def configured_stage(self) -> Extractor | Transformer:
+        """The caller's stage, completed with its module-owned collaborators.
+
+        An MQTT-sourced stage receives the broker settings verbatim (identity
+        resolution is the caller's job — see ``MqttBrokerConfig``) plus the
+        observer; the runners consume the stage through this factory, so
+        completion strictly precedes the stage's ``__aenter__``. Lazy import:
+        fretworx.mqtt is the only framework module importing paho, so an
+        application that never configures MQTT never loads it (the seam for
+        a ``fretworx[mqtt]`` extra at extraction time). A configured broker
+        on a non-MQTT stage is ignored — the caller passes platform-wide
+        settings for every stage, MQTT-sourced or not.
+        """
+        if self.mqtt is not None:
+            from .mqtt import MqttExtractor
+            if isinstance(self.stage, MqttExtractor):
+                self.stage.mqtt = self.mqtt
+                self.stage.observer = self.observer
+        return self.stage
+
+    @cached_property
     def consumer(self) -> AIOKafkaConsumer:
         # read_committed everywhere: identical to read_uncommitted on
         # non-transactional topics, and required for EOS chaining — records
@@ -180,6 +223,52 @@ class Fretworx:
             isolation_level="read_committed",
             partition_assignment_strategy=(RangePartitionAssignor,),  # noqa: aiokafka's docstring says list, but its own default is a tuple
         )
+
+    def create_restore_consumer(self) -> AIOKafkaConsumer:
+        """Builds throwaway consumers for per-task changelog restore.
+
+        read_committed so a restore stops at the last stable offset and never
+        sees writes of in-flight (or fenced-and-aborted) transactions.
+        """
+        return AIOKafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            client_id=self.client_id,
+            group_id=None,
+            isolation_level="read_committed",
+        )
+
+    def create_task_producer(self, partition: int) -> AIOKafkaProducer:
+        """Builds one transactional producer per task (input partition).
+
+        The transactional ID is static per task — ``{application_id}-{p}`` —
+        so whichever instance is assigned partition p fences the previous
+        owner via InitProducerId (Kafka Streams EOS-v1; aiokafka has no
+        KIP-447 generation fencing).
+        """
+        kwargs: dict = {
+            "bootstrap_servers": self.bootstrap_servers,
+            "client_id": f"{self.client_id}-{partition}",
+            "transactional_id": f"{self.application_id}-{partition}",
+        }
+        if self.compression_type:
+            kwargs["compression_type"] = self.compression_type
+        return AIOKafkaProducer(**kwargs)
+
+    def create_task_store(self, partition: int, producer: AIOKafkaProducer) -> ChangelogStateStore:
+        """Builds one partition-scoped changelog-backed store per task.
+
+        The store shares the task's transactional producer (state writes join
+        the task's transaction) and pins changelog writes to the task's
+        partition, so state lands where the task's restore reads it.
+        """
+        inner = RocksDBStateStore()
+        inner.path = self.path / str(partition)
+        store = ChangelogStateStore()
+        store.inner = inner
+        store.partition = partition
+        store.producer = producer
+        store.topic = self.changelog_topic
+        return store
 
     @cached_property
     def metrics_server(self) -> tuple[Any, Any] | None:
@@ -211,7 +300,7 @@ class Fretworx:
         ChangelogStateStore sends pickle bytes directly. No serializers
         avoids the conflict between str-encoded output and bytes-encoded state.
         Transformers don't use this — they build one transactional producer
-        per task via ``task_producer_factory``.
+        per task via ``create_task_producer``.
         """
         kwargs: dict = {
             "bootstrap_servers": self.bootstrap_servers,
@@ -220,19 +309,6 @@ class Fretworx:
         if self.compression_type:
             kwargs["compression_type"] = self.compression_type
         return AIOKafkaProducer(**kwargs)
-
-    def restore_consumer_factory(self) -> AIOKafkaConsumer:
-        """Builds throwaway consumers for per-task changelog restore.
-
-        read_committed so a restore stops at the last stable offset and never
-        sees writes of in-flight (or fenced-and-aborted) transactions.
-        """
-        return AIOKafkaConsumer(
-            bootstrap_servers=self.bootstrap_servers,
-            client_id=self.client_id,
-            group_id=None,
-            isolation_level="read_committed",
-        )
 
     @cached_property
     def runner(self) -> ExtractorRunner | TransformerRunner:
@@ -243,91 +319,10 @@ class Fretworx:
         """
         return self.extractor_runner if isinstance(self.stage, Extractor) else self.transformer_runner
 
-    @cached_property
-    def config_consumer(self) -> AIOKafkaConsumer | None:
-        """Consumer feeding a transformer's config store (None without config topics).
-
-        Group-less and read_committed, like the restore consumers. Extractors
-        don't need one — their main consumer is already group-less and IS the
-        config consumer.
-        """
-        if not (isinstance(self.stage, Transformer) and self.stage.config_topics):
-            return None
-        return AIOKafkaConsumer(
-            bootstrap_servers=self.bootstrap_servers,
-            client_id=self.client_id + "-config",
-            group_id=None,
-            isolation_level="read_committed",
-        )
-
-    @cached_property
-    def config_store(self) -> ConfigStore:
-        """The stage's per-process config store, fed by the runner."""
-        return ConfigStore()
-
-    def task_producer_factory(self, partition: int) -> AIOKafkaProducer:
-        """Builds one transactional producer per task (input partition).
-
-        The transactional ID is static per task — ``{application_id}-{p}`` —
-        so whichever instance is assigned partition p fences the previous
-        owner via InitProducerId (Kafka Streams EOS-v1; aiokafka has no
-        KIP-447 generation fencing).
-        """
-        kwargs: dict = {
-            "bootstrap_servers": self.bootstrap_servers,
-            "client_id": f"{self.client_id}-{partition}",
-            "transactional_id": f"{self.application_id}-{partition}",
-        }
-        if self.compression_type:
-            kwargs["compression_type"] = self.compression_type
-        return AIOKafkaProducer(**kwargs)
-
-    def task_store_factory(self, partition: int, producer: AIOKafkaProducer) -> ChangelogStateStore:
-        """Builds one partition-scoped changelog-backed store per task.
-
-        The store shares the task's transactional producer (state writes join
-        the task's transaction) and pins changelog writes to the task's
-        partition, so state lands where the task's restore reads it.
-        """
-        inner = RocksDBStateStore()
-        inner.path = self.path / str(partition)
-        store = ChangelogStateStore()
-        store.inner = inner
-        store.partition = partition
-        store.producer = producer
-        store.topic = self.changelog_topic
-        return store
-
-    def configure_mqtt(self) -> None:
-        """Inject the MQTT settings onto an MQTT-sourced stage, verbatim.
-
-        Identity resolution is the caller's job (see ``MqttBrokerConfig``);
-        this only places the settings and the observer on the stage. Lazy
-        import: fretworx.mqtt is the only framework module importing paho,
-        so an application that never configures MQTT never loads it (the
-        seam for a ``fretworx[mqtt]`` extra at extraction time). A
-        configured broker on a non-MQTT stage is ignored — the caller passes
-        platform-wide settings for every stage, MQTT-sourced or not. The
-        ``getattr`` tolerates a parent module that didn't wire the ``mqtt``
-        slot (the bare-constructor path).
-        """
-        mqtt = getattr(self, "mqtt", None)
-        if mqtt is None:
-            return
-        from .mqtt import MqttExtractor
-        if isinstance(self.stage, MqttExtractor):
-            self.stage.mqtt = mqtt
-            self.stage.observer = self.observer
-
     async def __aenter__(self) -> Fretworx:
         # Bring up the scrape endpoint first so health probes see it as
         # soon as the process is up.
         _ = self.metrics_server
-
-        # Before validate_topics so the stage is fully configured the moment
-        # any startup check can raise; strictly precedes the extractor's
-        # __aenter__ (which runs inside runner.run()).
-        self.configure_mqtt()
 
         validate_topics(self.stage)
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)

@@ -162,15 +162,15 @@ def make_runner(bootstrap: str, group_id: str, transformer: Transformer, changel
         partition_assignment_strategy=(RangePartitionAssignor,),
     )
     runner.observer = Observer()
-    runner.restore_consumer_factory = make_restore_consumer
+    runner.create_restore_consumer = make_restore_consumer
     runner.config_consumer = AIOKafkaConsumer(
         bootstrap_servers=bootstrap,
         group_id=None,
         isolation_level="read_committed",
     )
     runner.config_store = ConfigStore()
-    runner.task_producer_factory = make_producer
-    runner.task_store_factory = make_store
+    runner.create_task_producer = make_producer
+    runner.create_task_store = make_store
     runner.transformer = transformer
     return runner
 
