@@ -47,9 +47,9 @@ override ``poll()`` wholesale — the connection/subscription layer works
 without the template.
 
 Configuration is injected, never read from the environment: the application
-passes a fully resolved ``mqtt=MqttBrokerConfig(...)`` to ``Flechtwerk.of(...)``
-— including the ``client_id``, the persistent session's identity — and the
-container places it on the stage verbatim before startup.
+passes a fully resolved ``mqtt=MqttBrokerConfig(...)`` to ``Flechtwerk.of(...)``,
+whose module-wide ``client_id`` doubles as the persistent session's identity —
+the container places both on the stage verbatim before startup.
 """
 import asyncio
 import json
@@ -346,6 +346,13 @@ class MqttExtractor(Extractor, ABC):
     per-topic view owns its buffer + pending-ACK list.
     """
 
+    client_id: str = ""
+    """The persistent MQTT session's identity (``clean_session=False``) —
+    must be unique per instance and stable across restarts. Set on the
+    caller's stage by ``Flechtwerk.configured_stage`` from the module-wide
+    ``client_id``; ``__aenter__`` rejects an empty value, since MQTT 3.1.1
+    forbids an empty client id with a persistent session."""
+
     connection: MqttConnection | None = None
     """Built in ``__aenter__`` from the injected settings — pre-set only by
     tests, which thereby bypass the connect."""
@@ -358,7 +365,7 @@ class MqttExtractor(Extractor, ABC):
     by reactor-di — so this bare annotation is a convention, not a checked
     dependency: ``Flechtwerk.configured_stage`` mutates it onto the caller's
     instance before ``__aenter__``, whose ``getattr`` guard is the only
-    enforcement. The caller resolves ``client_id`` (see ``MqttBrokerConfig``)."""
+    enforcement."""
 
     observer: Observer = Observer()
     """Set on the caller's stage by ``Flechtwerk.configured_stage``; no-op by
@@ -396,7 +403,7 @@ class MqttExtractor(Extractor, ABC):
         if self.connection is None:
             if getattr(self, "mqtt", None) is None:
                 raise RuntimeError("no MQTT broker configured — pass mqtt=MqttBrokerConfig(...) to Flechtwerk.of")
-            if not self.mqtt.client_id:
+            if not self.client_id:
                 raise RuntimeError(
                     "no MQTT client_id configured — the persistent session (clean_session=False) "
                     "needs a stable, per-instance-unique identity"
@@ -404,7 +411,7 @@ class MqttExtractor(Extractor, ABC):
             self.wakeup = asyncio.Event()
             self.connection = MqttConnection(
                 broker=self.mqtt,
-                client_id=self.mqtt.client_id,
+                client_id=self.client_id,
                 loop=asyncio.get_running_loop(),
                 observer=self.observer,
                 wakeup=self.wakeup,

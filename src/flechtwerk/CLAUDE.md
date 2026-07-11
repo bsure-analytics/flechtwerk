@@ -69,12 +69,13 @@ weaken it. `test_reentry_contract_flush_strictly_precedes_next_poll` pins it.
   `@module` decorator resolves all class annotations at decoration time, so
   the `mqtt: lookup[MqttBrokerConfig | None]` slot needs a runtime-importable,
   paho-free name.
-- The framework reads no environment and does no identity defaulting: MQTT
+- The framework reads no environment and does no identity defaulting: broker
   settings arrive fully resolved through `Flechtwerk.of(mqtt=...)` (or
-  parent-module wiring) — the application entry point owns the client-id
-  cascade (`MQTT_CLIENT_ID` → `FLECHTWERK_CLIENT_ID` → `application_id`) —
-  and `MqttExtractor` rejects an empty `client_id` at startup (MQTT 3.1.1
-  forbids one with a persistent session).
+  parent-module wiring), the session identity is the module-wide `client_id`
+  (injected onto the stage by `configured_stage`; the application entry
+  point resolves `FLECHTWERK_CLIENT_ID` → `application_id`, the pod name in
+  K8s), and `MqttExtractor` rejects an empty `client_id` at startup (MQTT
+  3.1.1 forbids one with a persistent session).
 
 ## Boundary rule: which transport adapters belong in the framework
 
@@ -103,4 +104,4 @@ deliberately deferred: a correct fix needs a runner→stage config-removal
 hook, a broker UNSUBSCRIBE, and a decision about un-ACKed buffered messages
 (they were never written to Kafka). Until then: stop the publisher before
 removing a config, and recover a wedged session with a fresh
-`MQTT_CLIENT_ID` (a new broker session) or broker-side session cleanup.
+`FLECHTWERK_CLIENT_ID` (a new broker session) or broker-side session cleanup.

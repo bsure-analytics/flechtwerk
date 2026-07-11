@@ -72,12 +72,14 @@ def test_configured_stage_without_mqtt_is_untouched():
 
 def test_configured_stage_injects_settings_verbatim():
     """Identity resolution is the entry point's job — the factory completes
-    the stage with the settings unchanged, plus the container's observer."""
+    the stage with the settings unchanged, plus the container's client_id
+    and observer."""
     stage = MqttExtractor.of(config_topics=["cfg"], relay=noop_relay)
-    mqtt = MqttBrokerConfig(broker="b", port=1883, client_id="pod-0")
+    mqtt = MqttBrokerConfig(broker="b", port=1883)
     mod = make_mqtt_module(stage, mqtt)
 
     assert mod.configured_stage is stage
+    assert stage.client_id == "pod-0"  # the container's client_id, not the class default
     assert stage.mqtt is mqtt
     assert stage.observer is mod.observer  # the container's observer, not the class default
 
@@ -94,7 +96,7 @@ def test_runner_consumes_the_configured_stage():
     """The runner's `extractor` lookup sources `configured_stage`, so the
     stage is complete strictly before the runner enters it."""
     stage = MqttExtractor.of(config_topics=["cfg"], relay=noop_relay)
-    mqtt = MqttBrokerConfig(broker="b", port=1883, client_id="pod-0")
+    mqtt = MqttBrokerConfig(broker="b", port=1883)
     mod = make_mqtt_module(stage, mqtt)
 
     assert mod.runner.extractor is stage

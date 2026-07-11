@@ -485,7 +485,8 @@ async def test_extractor_aenter_without_client_id_raises():
 async def test_extractor_aenter_builds_connection_from_injected_settings(mock_client):
     MockClient, client = mock_client
     ext = MqttExtractor.of(config_topics=["cfg"], relay=forward_relay)
-    ext.mqtt = MqttBrokerConfig(broker="broker.example", port=8883, client_id="pod-0")
+    ext.client_id = "pod-0"
+    ext.mqtt = MqttBrokerConfig(broker="broker.example", port=8883)
 
     async with ext:
         _, kwargs = MockClient.call_args

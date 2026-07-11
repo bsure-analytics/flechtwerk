@@ -50,17 +50,12 @@ class MqttBrokerConfig:
     import confined to ``flechtwerk/mqtt.py`` (the seam for a ``flechtwerk[mqtt]``
     extra at extraction time).
 
-    ``client_id`` is the identity of the instance's persistent MQTT session
-    (``clean_session=False``): the caller must resolve it to something unique
-    per instance and stable across restarts (the application entry point
-    cascades ``MQTT_CLIENT_ID`` → ``FLECHTWERK_CLIENT_ID`` → the application
-    id; production K8s sets the pod name). The framework does no identity
-    defaulting — ``MqttExtractor`` rejects an empty ``client_id`` at startup,
-    since MQTT 3.1.1 forbids an empty client id with a persistent session.
+    Deliberately broker-only: the identity of the instance's persistent MQTT
+    session is the module-wide ``client_id`` (see ``Flechtwerk.of``), which
+    ``configured_stage`` injects onto the stage alongside these settings.
     """
     broker: str
     port: int
-    client_id: str = ""
     password: str = ""
     qos: int = 1
     username: str = ""
@@ -131,13 +126,18 @@ class Flechtwerk(ABC):
         """Build a fully-configured application handle.
 
         Use this when running Flechtwerk as the program's entry point.
-        ``compression_type`` defaults to ``"zstd"`` because Flechtwerk
-        outputs JSON everywhere (encode_json) and JSON compresses ~13×;
-        pass ``None`` to disable. ``metrics_labels`` defaults to an empty
-        dict and ``metrics_port`` defaults to 0 (Prometheus disabled).
-        ``mqtt`` carries the platform's shared MQTT broker settings; it is
-        used only by MQTT-sourced stages and ignored everywhere else, so
-        the caller may pass it unconditionally. Everything else is required.
+        ``client_id`` is the process identity: every Kafka client this
+        module opens derives its ID from it, and for an MQTT-sourced stage
+        it also names the persistent MQTT session — so it must be unique
+        per instance and stable across restarts (production K8s passes the
+        pod name). ``compression_type`` defaults to ``"zstd"`` because
+        Flechtwerk outputs JSON everywhere (encode_json) and JSON
+        compresses ~13×; pass ``None`` to disable. ``metrics_labels``
+        defaults to an empty dict and ``metrics_port`` defaults to 0
+        (Prometheus disabled). ``mqtt`` carries the platform's shared MQTT
+        broker settings; it is used only by MQTT-sourced stages and ignored
+        everywhere else, so the caller may pass it unconditionally.
+        Everything else is required.
         """
         instance = _FlechtwerkModule()
         instance.application_id = application_id
@@ -235,9 +235,10 @@ class _FlechtwerkModule(Flechtwerk):
     def configured_stage(self) -> Extractor | Transformer:
         """The caller's stage, completed with its module-owned collaborators.
 
-        An MQTT-sourced stage receives the broker settings verbatim (identity
-        resolution is the caller's job — see ``MqttBrokerConfig``) plus the
-        observer; the runners consume the stage through this factory, so
+        An MQTT-sourced stage receives the broker settings verbatim, the
+        module-wide ``client_id`` (identity resolution is the caller's job —
+        see ``Flechtwerk.of``), and the observer; the runners consume the
+        stage through this factory, so
         completion strictly precedes the stage's ``__aenter__``. Lazy import:
         flechtwerk.mqtt is the only framework module importing paho, so an
         application that never configures MQTT never loads it (the seam for
@@ -248,6 +249,7 @@ class _FlechtwerkModule(Flechtwerk):
         if self.mqtt is not None:
             from .mqtt import MqttExtractor
             if isinstance(self.stage, MqttExtractor):
+                self.stage.client_id = self.client_id
                 self.stage.mqtt = self.mqtt
                 self.stage.observer = self.observer
         return self.stage
