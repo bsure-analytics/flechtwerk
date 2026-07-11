@@ -1,4 +1,4 @@
-"""Tests for flechtwerk Transformer and TransformerRunner."""
+"""Tests for Flechtwerk Transformer and TransformerRunner."""
 import asyncio
 import json
 from typing import AsyncIterator, Final

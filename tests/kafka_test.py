@@ -1,4 +1,4 @@
-"""Tests for flechtwerk Kafka utilities."""
+"""Tests for Flechtwerk Kafka utilities."""
 import asyncio
 import json
 import logging

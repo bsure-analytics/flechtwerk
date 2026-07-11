@@ -1,4 +1,4 @@
-"""Tests for flechtwerk state store."""
+"""Tests for Flechtwerk state store."""
 import asyncio
 from datetime import datetime, timezone
 from typing import Final

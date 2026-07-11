@@ -1,4 +1,4 @@
-"""Tests for flechtwerk core types."""
+"""Tests for Flechtwerk core types."""
 from datetime import datetime, timezone
 
 from flechtwerk.types import IncomingMessage, Message

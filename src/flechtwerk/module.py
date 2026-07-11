@@ -1,4 +1,4 @@
-"""Dependency injection module for flechtwerk Kafka resources.
+"""Dependency injection module for Flechtwerk Kafka resources.
 
 Flechtwerk is the single place where all Kafka resources (admin client,
 consumer, producer, state store) are created and shared. The module uses
