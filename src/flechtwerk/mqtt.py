@@ -348,18 +348,21 @@ class MqttExtractor(Extractor, ABC):
 
     connection: MqttConnection | None = None
     """Built in ``__aenter__`` from the injected settings — pre-set only by
-    tests (mirroring "attributes set by DI or directly in tests")."""
+    tests, which thereby bypass the connect."""
 
     drain_limit: int = 1000
     """Max messages drained per poll() invocation and topic."""
 
     mqtt: MqttBrokerConfig
-    """Broker settings — placed verbatim by the ``Flechtwerk.configured_stage``
-    factory before ``__aenter__``; the caller resolves ``client_id`` (see
-    ``MqttBrokerConfig``)."""
+    """Broker settings. The stage is application-constructed — never created
+    by reactor-di — so this bare annotation is a convention, not a checked
+    dependency: ``Flechtwerk.configured_stage`` mutates it onto the caller's
+    instance before ``__aenter__``, whose ``getattr`` guard is the only
+    enforcement. The caller resolves ``client_id`` (see ``MqttBrokerConfig``)."""
 
     observer: Observer = Observer()
-    """Placed by the ``Flechtwerk.configured_stage`` factory; no-op by default."""
+    """Set on the caller's stage by ``Flechtwerk.configured_stage``; no-op by
+    default."""
 
     @classmethod
     def of(
