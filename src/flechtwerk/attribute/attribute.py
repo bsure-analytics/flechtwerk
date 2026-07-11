@@ -9,7 +9,7 @@ identical for both kinds and are carried by the *method*, not the flag —
 `Record[attr]` reads-or-raises (returns `V`), `Record.get` / `Record.pop`
 tolerate absence (return `V | None`). The `required` property is the
 inverse of `optional`, for the few sites that branch on mandatory-ness
-(e.g. the auditor's missing-field check).
+(e.g. a validation layer's missing-field check).
 
 Each `Attribute` carries a `Codec[V]` that drives both the static type
 parameter and the runtime encode/decode. The type checker infers the

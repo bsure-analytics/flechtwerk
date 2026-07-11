@@ -85,9 +85,9 @@ class Flechtwerk(ABC):
     ``run()``::
 
         await Flechtwerk.of(
-            application_id="ariadne-extractor",
+            application_id="my-extractor",
             bootstrap_servers="localhost:9092",
-            client_id="ariadne-extractor-0",
+            client_id="my-extractor-0",
             poll_interval_seconds=60,
             stage=my_extractor,
         ).run()

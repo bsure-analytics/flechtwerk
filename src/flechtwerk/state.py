@@ -28,10 +28,10 @@ def serialize(state: State) -> bytes:
 
 def deserialize(b: bytes) -> State:
     """JSON-only counterpart of `serialize`. Undecodable bytes are an
-    unrecoverable data error — crash, then reset the affected state. The
-    legacy pickle fallback is gone: the Fretworx→Flechtwerk rename made
-    pre-JSON pickle records unreadable anyway (pickle resolves classes by
-    the module path baked into the bytes)."""
+    unrecoverable data error — crash, then reset the affected state.
+    Deliberately no pickle fallback: pickle resolves classes by the module
+    path baked into the bytes, so any package rename would invalidate every
+    record."""
     return State.wrap(json.loads(b))
 
 

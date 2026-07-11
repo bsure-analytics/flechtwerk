@@ -2,7 +2,7 @@
 
 The framework declares metric *names* and *types* here. Label names and
 values are caller-provided via `metrics_labels` — Flechtwerk itself doesn't
-know what they're called, which keeps it reusable beyond this repo.
+know what they're called, which keeps it application-agnostic.
 """
 from functools import cached_property
 

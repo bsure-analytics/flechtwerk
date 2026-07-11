@@ -149,7 +149,7 @@ def test_any_encodes_time_as_iso_string():
 def test_time_rejects_timedelta():
     """TIME is strict — `datetime.timedelta` is a duration, not a time of day.
     Callers that need wall-clock semantics must convert at the application
-    boundary (see ds/excel_import/parsers/promoter_time.py)."""
+    boundary."""
     import pytest
 
     with pytest.raises((AttributeError, TypeError)):

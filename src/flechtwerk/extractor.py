@@ -110,8 +110,8 @@ class Extractor(Stage, ABC):
     def extract_key(self, msg: IncomingMessage) -> str:
         """Extract the state key from the incoming message. Default: msg.key.
 
-        The default is the Kafka message key, which by convention carries the
-        operator-facing identity (e.g. `{tenancy_id}/{channel_id}`). This is
+        The default is the Kafka message key, which typically carries the
+        operator-facing identity (e.g. a tenant or channel ID). This is
         stable across credential rotations — rotating an API key via a new
         config message preserves the state entry. Override only if the
         operator-facing identity doesn't match the desired state namespace.

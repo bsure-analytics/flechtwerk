@@ -67,6 +67,6 @@ class Stage:
         bootstrap compacts first, so once per surviving entry — never per
         poll tick or per lookup. The enriched value is what the store,
         `poll`, and `Transformer.configs` lookups see. Override for e.g.
-        SumUp merchant code lookup.
+        resolving an account name from an API key.
         """
         return config

@@ -2,10 +2,9 @@
 
 Covers what mocks cannot: the multi-topic `_client.set_topics()` metadata
 priming, reading every partition of differently-sized topics, and the
-end-to-end reproduction of the Ariadne co-partitioning bug — a config
-produced to partition 0 serving a request that lands on a different
-partition (the exact fret-stage failure shape that motivated config
-topics; see ARIADNE_CONFIG_COPARTITIONING_BUG.md).
+end-to-end reproduction of the co-partitioning bug that motivated config
+topics — a config produced to partition 0 serving a request that lands on
+a different partition (see the Co-Partitioning Trap section in CLAUDE.md).
 """
 import asyncio
 from contextlib import suppress
@@ -189,8 +188,8 @@ async def _await_output(bootstrap: str, topic: str, count: int, runner_task: asy
 async def test_request_finds_config_regardless_of_partition_placement(
     kafka_bootstrap: str, unique_topic: str, unique_group_id: str,
 ) -> None:
-    """The Ariadne bug reproduction, fixed: the config sits on partition 0 of a
-    2-partition config topic, the request on partition 3 of a 4-partition
+    """The co-partitioning bug reproduction, fixed: the config sits on partition
+    0 of a 2-partition config topic, the request on partition 3 of a 4-partition
     input topic — under partitioned state these never meet; via the config
     store the join succeeds. Also proves the partition counts need not match,
     and that a config produced AFTER startup is picked up by the drain."""

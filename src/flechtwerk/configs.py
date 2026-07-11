@@ -7,8 +7,8 @@ per-process `ConfigStore` — a single key namespace regardless of how many
 config topics a stage declares, matching what the extractor runner's config
 dict has always done. Partition placement on a config topic is therefore
 irrelevant — any task on any instance finds any key — which is exactly what
-partitioned task state cannot offer (see the Co-Partitioning Trap in the
-project docs).
+partitioned task state cannot offer (see the Co-Partitioning Trap section
+in CLAUDE.md).
 
 The source topics are their own changelog: no separate changelog topic, no
 committed offsets, a full re-read on every startup. They must be compacted
