@@ -1,17 +1,17 @@
-"""Test doubles for fretworx framework testing.
+"""Test doubles for Flechtwerk framework testing.
 
 paho imports are deferred into the MQTT doubles so importing this module
-never loads paho — mirroring the framework rule that ``fretworx/mqtt.py``
-is the only eager paho importer (the ``fretworx[mqtt]`` extra seam).
+never loads paho — mirroring the framework rule that ``flechtwerk/mqtt.py``
+is the only eager paho importer (the ``flechtwerk[mqtt]`` extra seam).
 """
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Self
 
 from aiokafka import ConsumerRecord, TopicPartition
 
-from fretworx.observer import Observer
-from fretworx.state import StateStore, deserialize
-from fretworx.types import Message, State
+from flechtwerk.observer import Observer
+from flechtwerk.state import StateStore, deserialize
+from flechtwerk.types import Message, State
 
 if TYPE_CHECKING:
     from paho.mqtt.client import MQTTMessage

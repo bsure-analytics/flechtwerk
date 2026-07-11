@@ -3,9 +3,9 @@ import pickle
 from datetime import datetime, timezone
 from typing import Final
 
-from fretworx.attribute import Attribute, DATETIME, SET, STR, TUPLE
-from fretworx.state import deserialize, serialize
-from fretworx.types import State
+from flechtwerk.attribute import Attribute, DATETIME, SET, STR, TUPLE
+from flechtwerk.state import deserialize, serialize
+from flechtwerk.types import State
 
 
 HASHES: Final = Attribute("hashes", SET(STR), optional=True)

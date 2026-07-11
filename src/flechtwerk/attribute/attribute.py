@@ -15,7 +15,7 @@ Each `Attribute` carries a `Codec[V]` that drives both the static type
 parameter and the runtime encode/decode. The type checker infers the
 `[V]` from the codec — `Attribute("name", STR)` produces an
 `Attribute[str]` without an explicit subscript. Built-in codecs are
-exported from `fretworx.attribute` (`STR`, `INT`, `DATETIME`, `RECORD`,
+exported from `flechtwerk.attribute` (`STR`, `INT`, `DATETIME`, `RECORD`,
 `LIST(RECORD)`, …).
 """
 from typing import Any
@@ -155,7 +155,7 @@ class ViewAttribute(Attribute[Any]):
     in is already in wire form. The same dispatch protocol as every other
     Attribute, just with no-op codec behavior.
 
-    Public class but deliberately not re-exported from `fretworx.attribute`:
+    Public class but deliberately not re-exported from `flechtwerk.attribute`:
     application code constructs handles via `Attribute(...)`; `ViewAttribute`
     is a framework-internal mechanism that powers `Record`'s dict-spread
     support. Reaching it requires the fully qualified import, which serves

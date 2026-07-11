@@ -1,6 +1,6 @@
-"""Dependency injection module for fretworx Kafka resources.
+"""Dependency injection module for flechtwerk Kafka resources.
 
-Fretworx is the single place where all Kafka resources (admin client,
+Flechtwerk is the single place where all Kafka resources (admin client,
 consumer, producer, state store) are created and shared. The module uses
 reactor-di for lazy dependency resolution and provides an async context
 manager for lifecycle management (start/stop).
@@ -44,16 +44,16 @@ CompressionType = Literal["gzip", "snappy", "lz4", "zstd"]
 class MqttBrokerConfig:
     """Shared MQTT connection settings — one broker serves the whole platform.
 
-    Defined here rather than in ``fretworx/mqtt.py`` so the container can
+    Defined here rather than in ``flechtwerk/mqtt.py`` so the container can
     annotate its ``mqtt`` slot without importing paho: reactor-di evaluates
     all class annotations at decoration time, and paho must stay an opt-in
-    import confined to ``fretworx/mqtt.py`` (the seam for a ``fretworx[mqtt]``
+    import confined to ``flechtwerk/mqtt.py`` (the seam for a ``flechtwerk[mqtt]``
     extra at extraction time).
 
     ``client_id`` is the identity of the instance's persistent MQTT session
     (``clean_session=False``): the caller must resolve it to something unique
     per instance and stable across restarts (the application entry point
-    cascades ``MQTT_CLIENT_ID`` → ``FRETWORX_CLIENT_ID`` → the application
+    cascades ``MQTT_CLIENT_ID`` → ``FLECHTWERK_CLIENT_ID`` → the application
     id; production K8s sets the pod name). The framework does no identity
     defaulting — ``MqttExtractor`` rejects an empty ``client_id`` at startup,
     since MQTT 3.1.1 forbids an empty client id with a persistent session.
@@ -83,13 +83,13 @@ def validate_topics(stage: Extractor | Transformer) -> None:
         raise ValueError("an extractor needs at least one config topic")
 
 
-class Fretworx(ABC):
-    """The application-facing handle for a Fretworx stage.
+class Flechtwerk(ABC):
+    """The application-facing handle for a Flechtwerk stage.
 
     An application constructs one with the ``of`` factory and calls
     ``run()``::
 
-        await Fretworx.of(
+        await Flechtwerk.of(
             application_id="ariadne-extractor",
             bootstrap_servers="localhost:9092",
             client_id="ariadne-extractor-0",
@@ -100,7 +100,7 @@ class Fretworx(ABC):
     This is deliberately a narrow surface — ``of`` / ``run`` / the async
     context manager, nothing else. The Kafka resources (consumers,
     transactional producers, state stores, runners) live on the private
-    ``_FretworxModule`` reactor-di container that ``of`` returns; an
+    ``_FlechtwerkModule`` reactor-di container that ``of`` returns; an
     application must not reach past this handle into the wiring, whose
     invariants (EOS-v1 fencing, changelog restore ordering, config-store
     bootstrap sequencing) are the framework's to keep. Same idiom as
@@ -108,9 +108,9 @@ class Fretworx(ABC):
     abstraction that returns a private concrete subclass typed as the
     abstraction.
 
-    To embed Fretworx as a component of a larger reactor-di module, wire
-    the concrete container directly — declare ``make[Fretworx,
-    _FretworxModule]`` and let the parent module fill every ``lookup``
+    To embed Flechtwerk as a component of a larger reactor-di module, wire
+    the concrete container directly — declare ``make[Flechtwerk,
+    _FlechtwerkModule]`` and let the parent module fill every ``lookup``
     field by attribute name.
     """
 
@@ -127,11 +127,11 @@ class Fretworx(ABC):
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
         mqtt: MqttBrokerConfig | None = None,
-    ) -> Fretworx:
+    ) -> Flechtwerk:
         """Build a fully-configured application handle.
 
-        Use this when running Fretworx as the program's entry point.
-        ``compression_type`` defaults to ``"zstd"`` because Fretworx
+        Use this when running Flechtwerk as the program's entry point.
+        ``compression_type`` defaults to ``"zstd"`` because Flechtwerk
         outputs JSON everywhere (encode_json) and JSON compresses ~13×;
         pass ``None`` to disable. ``metrics_labels`` defaults to an empty
         dict and ``metrics_port`` defaults to 0 (Prometheus disabled).
@@ -139,7 +139,7 @@ class Fretworx(ABC):
         used only by MQTT-sourced stages and ignored everywhere else, so
         the caller may pass it unconditionally. Everything else is required.
         """
-        instance = _FretworxModule()
+        instance = _FlechtwerkModule()
         instance.application_id = application_id
         instance.bootstrap_servers = bootstrap_servers
         instance.client_id = client_id
@@ -171,17 +171,17 @@ class Fretworx(ABC):
 
 
 @module(CachingStrategy.NOT_THREAD_SAFE)
-class _FretworxModule(Fretworx):
+class _FlechtwerkModule(Flechtwerk):
     """Private DI container for all Kafka resources — the concrete
-    ``Fretworx`` returned by ``Fretworx.of`` and the type wired into a
-    parent reactor-di module via ``make[Fretworx, _FretworxModule]``.
+    ``Flechtwerk`` returned by ``Flechtwerk.of`` and the type wired into a
+    parent reactor-di module via ``make[Flechtwerk, _FlechtwerkModule]``.
 
-    Fretworx is the single place where all Kafka resources (admin client,
+    Flechtwerk is the single place where all Kafka resources (admin client,
     consumers, producers, state stores) are created and shared. Not part of
     the application-facing surface: like the runners, it may leak aiokafka
     types freely.
 
-    Keep the ``Fretworx`` base annotation-free. ``@module`` walks
+    Keep the ``Flechtwerk`` base annotation-free. ``@module`` walks
     ``get_type_hints`` over the whole MRO, so any annotated attribute added
     to the base would silently become a DI-managed name here — and would
     leak back onto the public handle's type. ``test_public_handle_*`` pins
@@ -239,9 +239,9 @@ class _FretworxModule(Fretworx):
         resolution is the caller's job — see ``MqttBrokerConfig``) plus the
         observer; the runners consume the stage through this factory, so
         completion strictly precedes the stage's ``__aenter__``. Lazy import:
-        fretworx.mqtt is the only framework module importing paho, so an
+        flechtwerk.mqtt is the only framework module importing paho, so an
         application that never configures MQTT never loads it (the seam for
-        a ``fretworx[mqtt]`` extra at extraction time). A configured broker
+        a ``flechtwerk[mqtt]`` extra at extraction time). A configured broker
         on a non-MQTT stage is ignored — the caller passes platform-wide
         settings for every stage, MQTT-sourced or not.
         """
@@ -447,7 +447,7 @@ class _FretworxModule(Fretworx):
             server.shutdown()
 
     async def run(self) -> Never:  # noqa: return type — PyCharm misreads await of Never inside async with
-        """Run the configured stage (see ``Fretworx.run`` for the contract).
+        """Run the configured stage (see ``Flechtwerk.run`` for the contract).
 
         On Ctrl-C, ``asyncio.run`` / ``uvloop.run`` translates SIGINT into
         a ``Task.cancel()`` on the main task, so what propagates *through*

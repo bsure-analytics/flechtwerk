@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 from aiokafka import TopicPartition
 
-from fretworx.configs import ConfigStore, bootstrap_config_store, drain_config_updates
-from fretworx.testing import make_record
-from fretworx.types import Config
+from flechtwerk.configs import ConfigStore, bootstrap_config_store, drain_config_updates
+from flechtwerk.testing import make_record
+from flechtwerk.types import Config
 
 
 async def identity(config: Config) -> Config:

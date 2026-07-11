@@ -44,7 +44,7 @@ class Observer:
 class PrometheusObserver(Observer):
     """Splats `metrics_labels` over the `Metrics` instance once per call.
 
-    reactor-di wires `metrics` and `metrics_labels` from `Fretworx`
+    reactor-di wires `metrics` and `metrics_labels` from `Flechtwerk`
     by attribute name. This is the single place the framework converts
     the caller's label dict into prometheus_client `.labels(...)` calls.
     """

@@ -19,7 +19,7 @@ import shlex
 
 import pytest
 
-from fretworx.mqtt import MqttBrokerConfig, MqttConnection, MqttSubscription
+from flechtwerk.mqtt import MqttBrokerConfig, MqttConnection, MqttSubscription
 
 pytestmark = pytest.mark.integration
 
@@ -114,10 +114,10 @@ async def wait_for_items(sub: MqttSubscription, timeout: float) -> None:
 
 
 async def test_unacked_message_is_redelivered(broker, mosquitto_broker) -> None:
-    topic_pattern = "fretworx/test-redeliver/+/events"
-    device_topic = "fretworx/test-redeliver/001122334455/events"
+    topic_pattern = "flechtwerk/test-redeliver/+/events"
+    device_topic = "flechtwerk/test-redeliver/001122334455/events"
     payload = json.dumps({"anything": "here"})
-    client_id = "fretworx-integ-redeliver"
+    client_id = "flechtwerk-integ-redeliver"
     loop = asyncio.get_running_loop()
 
     conn1 = MqttConnection(broker=broker, client_id=client_id, loop=loop)
@@ -148,10 +148,10 @@ async def test_unacked_message_is_redelivered(broker, mosquitto_broker) -> None:
 
 
 async def test_acked_message_is_not_redelivered(broker, mosquitto_broker) -> None:
-    topic_pattern = "fretworx/test-badack/+/info"
-    device_topic = "fretworx/test-badack/aabb/info"
+    topic_pattern = "flechtwerk/test-badack/+/info"
+    device_topic = "flechtwerk/test-badack/aabb/info"
     payload = json.dumps({"anything": "here"})
-    client_id = "fretworx-integ-badack"
+    client_id = "flechtwerk-integ-badack"
     loop = asyncio.get_running_loop()
 
     conn1 = MqttConnection(broker=broker, client_id=client_id, loop=loop)
@@ -179,10 +179,10 @@ async def test_backlog_replayed_before_subscribe_is_held_and_routed(broker, mosq
     queued backlog right after CONNACK — before the config bootstrap has
     registered any subscription. Those messages must be held un-ACKed and
     routed once the subscription registers, never ACK-dropped."""
-    topic_pattern = "fretworx/test-startup/+/events"
-    device_topic = "fretworx/test-startup/aabb/events"
+    topic_pattern = "flechtwerk/test-startup/+/events"
+    device_topic = "flechtwerk/test-startup/aabb/events"
     payload = json.dumps({"anything": "here"})
-    client_id = "fretworx-integ-startup"
+    client_id = "flechtwerk-integ-startup"
     loop = asyncio.get_running_loop()
 
     # Session setup: subscribe, then go away with a queued backlog.
@@ -213,15 +213,15 @@ async def test_backlog_replayed_before_subscribe_is_held_and_routed(broker, mosq
 async def test_wakeup_fires_on_arrival(broker, mosquitto_broker) -> None:
     """The wakeup event is set by a real broker round-trip — the runner's
     idle wait would end the moment the message lands, not at the interval."""
-    topic_pattern = "fretworx/test-wakeup/+/events"
+    topic_pattern = "flechtwerk/test-wakeup/+/events"
     wakeup = asyncio.Event()
     loop = asyncio.get_running_loop()
 
-    conn = MqttConnection(broker=broker, client_id="fretworx-integ-wakeup", loop=loop, wakeup=wakeup)
+    conn = MqttConnection(broker=broker, client_id="flechtwerk-integ-wakeup", loop=loop, wakeup=wakeup)
     async with conn:
         sub = conn.subscribe(topic_pattern)
         await asyncio.sleep(1.0)  # wait for CONNACK + SUBACK
-        publish_qos1(mosquitto_broker, "fretworx/test-wakeup/aabb/events", "{}")
+        publish_qos1(mosquitto_broker, "flechtwerk/test-wakeup/aabb/events", "{}")
 
         await asyncio.wait_for(wakeup.wait(), timeout=10.0)
 

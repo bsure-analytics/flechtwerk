@@ -1,10 +1,10 @@
-# Fretworx
+# Flechtwerk
 
 An async Python port of the Kafka Streams operational model.
 
 ## What it is
 
-Fretworx is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to modern async Python.
+Flechtwerk is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to modern async Python.
 
 If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
@@ -17,7 +17,7 @@ Existing Python options each fail one of the constraints that matter for I/O-bou
 - **Bytewax**: a Rust dataflow engine with Python bindings; excellent for CPU-bound partitioned dataflow, awkward for async I/O and heavier than the operational model needs.
 - **Apache Beam (on Flink)**: the Python SDK runs in a separate worker process and shuttles data to JVM operators over gRPC via the Beam portability framework. Setup is a maze of portable runners and SDK harnesses; failures span two runtimes and produce errors that are hard to localize. If Flink is the right answer, Java or Scala is a saner way to reach it.
 
-Fretworx assumes Python 3.14, `asyncio`, `aiokafka`, and `uvloop` are the right primitives and builds directly on them.
+Flechtwerk assumes Python 3.14, `asyncio`, `aiokafka`, and `uvloop` are the right primitives and builds directly on them.
 
 ## The API
 
@@ -65,11 +65,11 @@ class RequestDriven(Transformer):
 
 For extractors this is simply how config handling has always worked, named. For transformers it is the escape hatch from the co-partitioning requirement: a config topic's partition placement and count are irrelevant, so any producer (Kafka UI included) can write configs without routing them to the "right" partition. The source topics are their own changelog — compacted, small, re-read on every startup — and lookups are eventually consistent, outside the task transaction (the GlobalKTable caveat).
 
-`Stage.enrich(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it once per config record — never per poll tick or lookup — and both stage kinds inherit it. Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation; Fretworx re-reads the topics through the same enrich path on every startup, so the enriched store cannot diverge.
+`Stage.enrich(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it once per config record — never per poll tick or lookup — and both stage kinds inherit it. Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation; Flechtwerk re-reads the topics through the same enrich path on every startup, so the enriched store cannot diverge.
 
 ### MQTT sources — push into the poll loop
 
-`fretworx.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped — one shared paho connection per process driven by the asyncio event loop (no threads), persistent sessions with a stable client id, manual-ACK at-least-once (a batch is ACKed to the broker only once it is provably durable in Kafka — at the top of the next poll, per the runner's re-entry contract), per-topic subscriptions fed by config records, an arrival wakeup so delivery latency is sub-second rather than poll-interval-bound, and Prometheus metrics. An application writes one pure function:
+`flechtwerk.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped — one shared paho connection per process driven by the asyncio event loop (no threads), persistent sessions with a stable client id, manual-ACK at-least-once (a batch is ACKed to the broker only once it is provably durable in Kafka — at the top of the next poll, per the runner's re-entry contract), per-topic subscriptions fed by config records, an arrival wakeup so delivery latency is sub-second rather than poll-interval-bound, and Prometheus metrics. An application writes one pure function:
 
 ```python
 def relay(config, topic, payload):          # -> Message | None
@@ -82,7 +82,7 @@ def relay(config, topic, payload):          # -> Message | None
 stage = MqttExtractor.of(config_topics=["acme-config"], relay=relay)
 ```
 
-Return a `Message` to forward, `None` to drop (ACKed immediately), or raise to poison-drop (logged, ACKed, counted — never a crash loop on a broken payload). Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template. Broker settings are injected via `Fretworx.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `fretworx/mqtt.py` — `import fretworx` never loads it.
+Return a `Message` to forward, `None` to drop (ACKed immediately), or raise to poison-drop (logged, ACKed, counted — never a crash loop on a broken payload). Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template. Broker settings are injected via `Flechtwerk.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `flechtwerk/mqtt.py` — `import flechtwerk` never loads it.
 
 ## Operational model
 
@@ -94,7 +94,7 @@ Return a `Message` to forward, `None` to drop (ACKed immediately), or raise to p
 
 ## Architecture
 
-Hexagonal: ports and adapters. The core (`Extractor`, `Transformer`, their runners) depends only on abstract ports (`StateStore`, `Observer`, `aiokafka` consumer/producer interfaces). Adapters (`RocksDBStateStore`, `ChangelogStateStore`, `PrometheusObserver`, the `fretworx.mqtt` transport, `FakeKafkaConsumer`/`FakeKafkaProducer`/`FakeMqttConnection` for tests) plug in via DI through `reactor-di`. Transport adapters earn a place in the framework only when their correctness depends on runner delivery semantics — MQTT's manual-ACK protocol does; a plain HTTP poller does not.
+Hexagonal: ports and adapters. The core (`Extractor`, `Transformer`, their runners) depends only on abstract ports (`StateStore`, `Observer`, `aiokafka` consumer/producer interfaces). Adapters (`RocksDBStateStore`, `ChangelogStateStore`, `PrometheusObserver`, the `flechtwerk.mqtt` transport, `FakeKafkaConsumer`/`FakeKafkaProducer`/`FakeMqttConnection` for tests) plug in via DI through `reactor-di`. Transport adapters earn a place in the framework only when their correctness depends on runner delivery semantics — MQTT's manual-ACK protocol does; a plain HTTP poller does not.
 
 The framework has no CLI, no module-level `os.getenv`, no `load_dotenv`, and no opinions about how applications are packaged or deployed. All configuration is injected by the caller.
 
@@ -102,17 +102,17 @@ The framework has no CLI, no module-level `os.getenv`, no `load_dotenv`, and no 
 
 Because all durable state lives in Kafka — input topics, output topics, and compacted changelog topics — replicating production state on a developer laptop is just a matter of mirroring the relevant topics and committed consumer-group offsets into a local Kafka cluster. A locally-run stage then starts up against the local cluster, replays the changelog into a fresh RocksDB, and resumes processing exactly where its production counterpart left off.
 
-No PVCs to snapshot, no opaque local state directories to copy, no VPN into a shared dev cluster. The same property that makes Kubernetes pods disposable in production makes them reproducible on a laptop. Frameworks that hide state in framework-managed local stores cannot offer this cleanly; the Kafka Streams model can, and Fretworx inherits it.
+No PVCs to snapshot, no opaque local state directories to copy, no VPN into a shared dev cluster. The same property that makes Kubernetes pods disposable in production makes them reproducible on a laptop. Frameworks that hide state in framework-managed local stores cannot offer this cleanly; the Kafka Streams model can, and Flechtwerk inherits it.
 
 This is a property of the model, not a feature of the framework — building a small mirror script is straightforward and lives in application code.
 
 ## What's deliberately not here
 
-- **Event-time windowing with watermarks** — if you need this, use Flink. Fretworx targets the much larger class of problems where processing-time semantics are sufficient.
+- **Event-time windowing with watermarks** — if you need this, use Flink. Flechtwerk targets the much larger class of problems where processing-time semantics are sufficient.
 - **Stream-stream joins, complex topologies** — operators compose by writing to and reading from intermediate Kafka topics, not by chaining method calls.
 - **Savepoints / state migrations** — recovery is changelog replay; schema evolution is the application's responsibility.
 - **A DSL** — the API surface is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`, `ConfigStore`. That's the full vocabulary.
 
 ## Status
 
-Fretworx is currently developed inside a host application repository. It is designed to be extracted into its own package: no references to application paths, modules, or environment variables exist in framework code.
+Flechtwerk is currently developed inside a host application repository. It is designed to be extracted into its own package: no references to application paths, modules, or environment variables exist in framework code.

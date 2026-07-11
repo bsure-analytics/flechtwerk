@@ -1,7 +1,7 @@
-"""Tests for fretworx core types."""
+"""Tests for flechtwerk core types."""
 from datetime import datetime, timezone
 
-from fretworx.types import IncomingMessage, Message
+from flechtwerk.types import IncomingMessage, Message
 
 
 def test_message_is_frozen():

@@ -1,4 +1,4 @@
-"""Tests for the Fretworx Kafka producer cached_property.
+"""Tests for the Flechtwerk Kafka producer cached_property.
 
 These tests construct a real aiokafka producer (no broker needed — the
 constructor's codec-library check fires before any network I/O), so they
@@ -7,8 +7,8 @@ tests don't exercise.
 """
 import pytest
 
-from fretworx.extractor import Extractor
-from fretworx.module import CompressionType, Fretworx
+from flechtwerk.extractor import Extractor
+from flechtwerk.module import CompressionType, Flechtwerk
 
 
 class StubExtractor(Extractor):
@@ -30,7 +30,7 @@ async def test_producer_constructs_with_configured_compression(codec: Compressio
     under pytest-asyncio's auto mode (event loop in scope) rather than
     constructing aiokafka synchronously.
     """
-    f = Fretworx.of(
+    f = Flechtwerk.of(
         application_id="t",
         bootstrap_servers="localhost:9092",
         client_id="t",

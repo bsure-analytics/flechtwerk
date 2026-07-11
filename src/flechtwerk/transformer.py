@@ -65,7 +65,7 @@ class Transformer(Stage, ABC):
 
     The Kafka consumer group ID (driving consumer group membership,
     transactional offset commits, and changelog topic naming) is set on
-    `Fretworx` by the caller; stages don't carry it.
+    `Flechtwerk` by the caller; stages don't carry it.
 
     A transformer may additionally declare ``config_topics`` (see `Stage`)
     and look their entries up via `configs` — a config table joined against
@@ -247,7 +247,7 @@ class TransformerRunner:
         task was torn down are dropped (their offsets were never committed;
         the new owner reprocesses them).
 
-        Resource lifecycle (consumer start/stop) is managed by Fretworx, not
+        Resource lifecycle (consumer start/stop) is managed by Flechtwerk, not
         the runner; per-task producers and stores are owned by the runner.
 
         The config store is instance-level, not per-task: it is

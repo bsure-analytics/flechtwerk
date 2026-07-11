@@ -1,4 +1,4 @@
-"""Tests for fretworx Kafka utilities."""
+"""Tests for flechtwerk Kafka utilities."""
 import asyncio
 import json
 import logging
@@ -11,15 +11,15 @@ import aiokafka
 import pytest
 from hypothesis import given, strategies as st
 
-from fretworx.kafka import (
+from flechtwerk.kafka import (
     datetime_to_millis,
     encode_json,
     millis_to_datetime,
     parse_message,
     restore_changelog,
 )
-from fretworx.state import serialize
-from fretworx.types import Event, State
+from flechtwerk.state import serialize
+from flechtwerk.types import Event, State
 
 
 def test_encode_json_string_passthrough():
@@ -178,7 +178,7 @@ def test_parse_message_non_dict_json_falls_back_to_empty_event(caplog):
     raw = SimpleNamespace(
         key=b"k", value=b"42", offset=7, partition=0, timestamp=None, topic="t",
     )
-    with caplog.at_level(logging.WARNING, logger="fretworx.kafka"):
+    with caplog.at_level(logging.WARNING, logger="flechtwerk.kafka"):
         msg = parse_message(raw)
     assert msg.value == Event({})
     assert any(
@@ -196,7 +196,7 @@ def test_parse_message_invalid_json_falls_back_to_empty_event(caplog):
         timestamp=1704067200000,
         topic="my-topic",
     )
-    with caplog.at_level(logging.WARNING, logger="fretworx.kafka"):
+    with caplog.at_level(logging.WARNING, logger="flechtwerk.kafka"):
         msg = parse_message(raw)
     assert msg.key == "some-key"
     assert msg.value == Event({})

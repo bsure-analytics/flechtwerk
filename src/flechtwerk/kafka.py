@@ -8,7 +8,7 @@ from typing import Any
 import aiokafka
 from aiokafka import ConsumerRecord
 
-from fretworx.attribute import Record
+from flechtwerk.attribute import Record
 
 from .types import Event, IncomingMessage
 
@@ -187,7 +187,7 @@ async def restore_changelog(
         # object that doesn't update the consumer's own cache, and assign() requires
         # the partition set we're about to fetch. `_client.set_topics()` is a public
         # method on AIOKafkaClient (the `_client` attribute is the only underscore).
-        # The integration tests under test/fretworx/integration/ lock down this
+        # The integration tests under test/flechtwerk/integration/ lock down this
         # coupling against aiokafka upgrades.
         await consumer._client.set_topics([topic])
         partitions = consumer.partitions_for_topic(topic)

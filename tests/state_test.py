@@ -1,14 +1,14 @@
-"""Tests for fretworx state store."""
+"""Tests for flechtwerk state store."""
 import asyncio
 from datetime import datetime, timezone
 from typing import Final
 
 import pytest
 
-from fretworx.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
-from fretworx.state import ChangelogStateStore, RocksDBStateStore
-from fretworx.testing import FakeKafkaProducer, InMemoryStateStore
-from fretworx.types import State
+from flechtwerk.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
+from flechtwerk.state import ChangelogStateStore, RocksDBStateStore
+from flechtwerk.testing import FakeKafkaProducer, InMemoryStateStore
+from flechtwerk.types import State
 
 
 CHANGES_SINCE: Final = Attribute("changes_since", STR)
@@ -294,7 +294,7 @@ def test_changelog_inner_store_tombstone_deletes():
 def test_changelog_close_closes_inner():
     """close() closes the inner store but does NOT stop the producer.
 
-    Producer lifecycle is managed by the DI container (Fretworx),
+    Producer lifecycle is managed by the DI container (Flechtwerk),
     not by the state store.
     """
     async def run():
@@ -314,13 +314,13 @@ def test_changelog_close_closes_inner():
     asyncio.run(run())
 
 
-# --- Fretworx DI wiring tests ---
+# --- Flechtwerk DI wiring tests ---
 
 
 def test_module_wires_changelog_state_store():
     """The container wires ChangelogStateStore via reactor-di lookups."""
-    from fretworx.extractor import Extractor
-    from fretworx.module import _FretworxModule
+    from flechtwerk.extractor import Extractor
+    from flechtwerk.module import _FlechtwerkModule
 
     class StubExtractor(Extractor):
         config_topics = ["cfg"]
@@ -330,7 +330,7 @@ def test_module_wires_changelog_state_store():
             yield  # pragma: no cover
 
     async def run():
-        mod = _FretworxModule()
+        mod = _FlechtwerkModule()
         mod.application_id = "test-app"
         mod.bootstrap_servers = "localhost:9092"
         mod.client_id = "test-app"
@@ -353,18 +353,18 @@ def test_module_wires_changelog_state_store():
 
 def test_module_lookups_resolve_from_parent():
     """A parent reactor-di module can inject every container lookup field by
-    name when the Fretworx container is embedded as a child component.
+    name when the Flechtwerk container is embedded as a child component.
 
-    Applications get the narrow ``Fretworx`` handle from ``Fretworx.of``;
-    embedding wires the concrete container directly via ``make[Fretworx,
-    _FretworxModule]``. Reactor-di calls the child's no-arg constructor and
+    Applications get the narrow ``Flechtwerk`` handle from ``Flechtwerk.of``;
+    embedding wires the concrete container directly via ``make[Flechtwerk,
+    _FlechtwerkModule]``. Reactor-di calls the child's no-arg constructor and
     then writes a dependency map into ``instance.__dict__``; subsequent
     access to a ``lookup[X]`` field falls through to ``__getattr__`` only if
     the field is *not* already in ``__dict__``. The no-arg constructor sets
     nothing, so it leaves every slot for the parent to fill.
     """
-    from fretworx.extractor import Extractor
-    from fretworx.module import Fretworx, _FretworxModule
+    from flechtwerk.extractor import Extractor
+    from flechtwerk.module import Flechtwerk, _FlechtwerkModule
     from reactor_di import CachingStrategy, make, module
 
     class StubExtractor(Extractor):
@@ -391,7 +391,7 @@ def test_module_lookups_resolve_from_parent():
         # Child component — reactor-di instantiates the private concrete
         # container and builds its dependency map from the parent's matching
         # attribute names.
-        fretworx: make[Fretworx, _FretworxModule]
+        flechtwerk: make[Flechtwerk, _FlechtwerkModule]
 
     app = App()
     app.application_id = "aid"
@@ -402,7 +402,7 @@ def test_module_lookups_resolve_from_parent():
     app.poll_interval_seconds = 30
     app.stage = stage
 
-    f = app.fretworx
+    f = app.flechtwerk
 
     assert f.application_id == "aid"
     assert f.bootstrap_servers == "broker:9092"
@@ -414,11 +414,11 @@ def test_module_lookups_resolve_from_parent():
 
 
 def test_app_factory_defaults_metrics_when_omitted():
-    """Fretworx.of fills metrics_labels={} / metrics_port=0 when those
-    args are omitted, so the resulting Fretworx is fully configured even
+    """Flechtwerk.of fills metrics_labels={} / metrics_port=0 when those
+    args are omitted, so the resulting Flechtwerk is fully configured even
     when the caller doesn't care about Prometheus."""
-    from fretworx.extractor import Extractor
-    from fretworx.module import Fretworx
+    from flechtwerk.extractor import Extractor
+    from flechtwerk.module import Flechtwerk
 
     class StubExtractor(Extractor):
         config_topics = ["cfg"]
@@ -427,7 +427,7 @@ def test_app_factory_defaults_metrics_when_omitted():
             return
             yield  # pragma: no cover
 
-    f = Fretworx.of(
+    f = Flechtwerk.of(
         application_id="g",
         bootstrap_servers="b:9092",
         client_id="c",
@@ -443,9 +443,9 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
     """The container's bare constructor (no args) sets nothing, so a parent
     module can inject every lookup field — including metrics_labels and
     metrics_port."""
-    from fretworx.module import _FretworxModule
+    from flechtwerk.module import _FlechtwerkModule
 
-    f = _FretworxModule()
+    f = _FlechtwerkModule()
     for name in (
         "application_id",
         "bootstrap_servers",
@@ -461,7 +461,7 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
 
 
 def test_public_handle_exposes_no_container_internals():
-    """The public ``Fretworx`` handle carries only of()/run()/the async
+    """The public ``Flechtwerk`` handle carries only of()/run()/the async
     context manager — never the DI container's resource factories.
 
     This is the encapsulation gate: ``@module`` walks ``get_type_hints``
@@ -471,20 +471,20 @@ def test_public_handle_exposes_no_container_internals():
     """
     from typing import get_type_hints
 
-    from fretworx.module import Fretworx
+    from flechtwerk.module import Flechtwerk
 
-    assert get_type_hints(Fretworx) == {}
-    assert {n for n in dir(Fretworx) if not n.startswith("_")} == {"of", "run"}
+    assert get_type_hints(Flechtwerk) == {}
+    assert {n for n in dir(Flechtwerk) if not n.startswith("_")} == {"of", "run"}
 
 
 def test_bare_public_handle_cannot_be_constructed():
-    """``Fretworx`` is abstract — applications must go through ``of``.
+    """``Flechtwerk`` is abstract — applications must go through ``of``.
 
-    The loud failure is the point: a bare ``Fretworx()`` (or a parent module
-    annotating the abstract base instead of ``make[Fretworx,
-    _FretworxModule]``) raises immediately rather than silently mis-wiring.
+    The loud failure is the point: a bare ``Flechtwerk()`` (or a parent module
+    annotating the abstract base instead of ``make[Flechtwerk,
+    _FlechtwerkModule]``) raises immediately rather than silently mis-wiring.
     """
-    from fretworx.module import Fretworx
+    from flechtwerk.module import Flechtwerk
 
     with pytest.raises(TypeError, match="abstract"):
-        Fretworx()
+        Flechtwerk()

@@ -1,14 +1,14 @@
-"""Tests for fretworx.module topic-declaration validation and MQTT wiring."""
+"""Tests for flechtwerk.module topic-declaration validation and MQTT wiring."""
 from typing import AsyncIterator
 
 import pytest
 
-from fretworx.extractor import Extractor
-from fretworx.module import MqttBrokerConfig, _FretworxModule, validate_topics
-from fretworx.mqtt import MqttExtractor
-from fretworx.observer import Observer
-from fretworx.transformer import Transformer
-from fretworx.types import Message, State
+from flechtwerk.extractor import Extractor
+from flechtwerk.module import MqttBrokerConfig, _FlechtwerkModule, validate_topics
+from flechtwerk.mqtt import MqttExtractor
+from flechtwerk.observer import Observer
+from flechtwerk.transformer import Transformer
+from flechtwerk.types import Message, State
 
 
 async def noop_poll(config, state) -> AsyncIterator[Message | State]:
@@ -55,8 +55,8 @@ def test_valid_declarations_pass():
 # -- configured_stage ----------------------------------------------------------
 
 
-def make_mqtt_module(stage, mqtt: MqttBrokerConfig | None) -> _FretworxModule:
-    mod = _FretworxModule()
+def make_mqtt_module(stage, mqtt: MqttBrokerConfig | None) -> _FlechtwerkModule:
+    mod = _FlechtwerkModule()
     mod.client_id = "pod-0"
     mod.metrics_port = 0  # observer resolves to the no-op Observer
     mod.mqtt = mqtt

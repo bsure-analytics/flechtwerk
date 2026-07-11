@@ -10,11 +10,11 @@ import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
-from fretworx.observer import Observer
-from fretworx.state import ChangelogStateStore
-from fretworx.testing import InMemoryStateStore
-from fretworx.transformer import Task, TransformerRunner
-from fretworx.types import Message, State
+from flechtwerk.observer import Observer
+from flechtwerk.state import ChangelogStateStore
+from flechtwerk.testing import InMemoryStateStore
+from flechtwerk.transformer import Task, TransformerRunner
+from flechtwerk.types import Message, State
 
 pytestmark = pytest.mark.integration
 

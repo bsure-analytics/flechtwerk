@@ -1,15 +1,15 @@
-"""Tests for fretworx Extractor and ExtractorRunner."""
+"""Tests for flechtwerk Extractor and ExtractorRunner."""
 import asyncio
 import json
 from typing import AsyncIterator, Final
 
 import pytest
 
-from fretworx.attribute import Attribute, BOOL, INT, STR
-from fretworx.extractor import ConfigEntry, Extractor
-from fretworx.module import _FretworxModule
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
-from fretworx.types import Config, Message, State
+from flechtwerk.attribute import Attribute, BOOL, INT, STR
+from flechtwerk.extractor import ConfigEntry, Extractor
+from flechtwerk.module import _FlechtwerkModule
+from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
+from flechtwerk.types import Config, Message, State
 
 API_KEY: Final = Attribute("api_key", STR)
 CURSOR: Final = Attribute("cursor", INT)
@@ -74,8 +74,8 @@ def json_record(key="k", value=None, topic="test-config", offset=0, partition=0)
 
 
 def make_module(extractor, consumer=None, producer=None, state_store=None):
-    """Create a Fretworx container with monkey-patched fake resources."""
-    mod = _FretworxModule()
+    """Create a Flechtwerk container with monkey-patched fake resources."""
+    mod = _FlechtwerkModule()
     mod.application_id = "test"
     mod.client_id = "test"
     mod.bootstrap_servers = "localhost:9092"
@@ -501,7 +501,7 @@ def test_functional_extractor_with_enrich_and_extract_key():
         assert enriched[TAG] == "enriched"
 
         msg = json_record(key="ignored", value={"api_key": "a", "id": "custom"})
-        from fretworx.kafka import parse_message
+        from flechtwerk.kafka import parse_message
         assert ext.extract_key(parse_message(msg)) == "custom"
 
     asyncio.run(run())
@@ -516,7 +516,7 @@ def test_functional_extractor_default_extract_key():
 
     ext = Extractor.of(config_topics=["cfg"], poll=my_poll)
 
-    from fretworx.kafka import parse_message
+    from flechtwerk.kafka import parse_message
     msg = parse_message(json_record(key="tenant/channel", value={"api_key": "a"}))
     assert ext.extract_key(msg) == "tenant/channel"
 

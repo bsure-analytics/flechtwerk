@@ -1,14 +1,14 @@
-"""Tests for fretworx.mqtt — connection machinery and the relay template."""
+"""Tests for flechtwerk.mqtt — connection machinery and the relay template."""
 import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fretworx import Config, Event, Message, State
-from fretworx.attribute import Record
-from fretworx.mqtt import MqttBrokerConfig, MqttConnection, MqttExtractor
-from fretworx.testing import FakeMqttConnection, RecordingObserver, make_mqtt_message as make_message
+from flechtwerk import Config, Event, Message, State
+from flechtwerk.attribute import Record
+from flechtwerk.mqtt import MqttBrokerConfig, MqttConnection, MqttExtractor
+from flechtwerk.testing import FakeMqttConnection, RecordingObserver, make_mqtt_message as make_message
 
 DEFAULT_BROKER = MqttBrokerConfig(broker="localhost", port=1883, qos=1)
 
@@ -30,7 +30,7 @@ def make_connection(
 
 @pytest.fixture
 def mock_client():
-    with patch("fretworx.mqtt.Client") as MockClient:
+    with patch("flechtwerk.mqtt.Client") as MockClient:
         client = MagicMock()
         client._client_id = b"test-client"
         client.socket.return_value = MagicMock()

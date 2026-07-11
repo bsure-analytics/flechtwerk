@@ -254,7 +254,7 @@ RECORD: Final = record_codec(Record)
 
 Use as `Attribute("data", RECORD)` for fields whose value is a
 plain `Record`. For `Record` subclasses, build a per-subclass codec via
-`record_codec(cls)` (or use the constants exported from `fretworx.types`
+`record_codec(cls)` (or use the constants exported from `flechtwerk.types`
 for `Config`, `Event`, `State`).
 """
 

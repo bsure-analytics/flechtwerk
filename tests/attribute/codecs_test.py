@@ -1,7 +1,7 @@
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from fretworx.attribute import ANY, DATE, DATETIME, TIME
+from flechtwerk.attribute import ANY, DATE, DATETIME, TIME
 
 
 def test_datetime_from_iso_utc_round_trip():

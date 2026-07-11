@@ -23,14 +23,14 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.coordinator.assignors.range import RangePartitionAssignor
 from aiokafka.errors import ProducerFenced
 
-from fretworx.attribute import Attribute, INT
-from fretworx.kafka import restore_changelog
-from fretworx.observer import Observer
-from fretworx.configs import ConfigStore
-from fretworx.state import ChangelogStateStore
-from fretworx.testing import InMemoryStateStore
-from fretworx.transformer import Transformer, TransformerRunner
-from fretworx.types import Message, State
+from flechtwerk.attribute import Attribute, INT
+from flechtwerk.kafka import restore_changelog
+from flechtwerk.observer import Observer
+from flechtwerk.configs import ConfigStore
+from flechtwerk.state import ChangelogStateStore
+from flechtwerk.testing import InMemoryStateStore
+from flechtwerk.transformer import Transformer, TransformerRunner
+from flechtwerk.types import Message, State
 
 pytestmark = pytest.mark.integration
 
@@ -157,7 +157,7 @@ async def test_restore_reads_exactly_to_last_stable_offset(
 
 
 def _make_runner(bootstrap: str, group_id: str, input_topic: str, changelog_topic: str, transform) -> TransformerRunner:
-    """Wire a TransformerRunner against a real broker, mirroring Fretworx's DI."""
+    """Wire a TransformerRunner against a real broker, mirroring Flechtwerk's DI."""
     def make_producer(partition: int) -> AIOKafkaProducer:
         return AIOKafkaProducer(
             bootstrap_servers=bootstrap,

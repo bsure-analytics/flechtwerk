@@ -11,9 +11,9 @@ import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
-from fretworx.kafka import restore_changelog
-from fretworx.state import serialize
-from fretworx.types import State
+from flechtwerk.kafka import restore_changelog
+from flechtwerk.state import serialize
+from flechtwerk.types import State
 
 pytestmark = pytest.mark.integration
 

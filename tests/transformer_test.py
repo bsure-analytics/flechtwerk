@@ -1,15 +1,15 @@
-"""Tests for fretworx Transformer and TransformerRunner."""
+"""Tests for flechtwerk Transformer and TransformerRunner."""
 import asyncio
 import json
 from typing import AsyncIterator, Final
 
 import pytest
 
-from fretworx.attribute import Attribute, BOOL, INT, LIST, RECORD, STR
-from fretworx.module import _FretworxModule
-from fretworx.transformer import Task, Transformer
-from fretworx.types import Event, Message, State
-from fretworx.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
+from flechtwerk.attribute import Attribute, BOOL, INT, LIST, RECORD, STR
+from flechtwerk.module import _FlechtwerkModule
+from flechtwerk.transformer import Task, Transformer
+from flechtwerk.types import Event, Message, State
+from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
 COUNT: Final = Attribute("count", INT)
 CURSOR: Final = Attribute("cursor", INT)
@@ -73,18 +73,18 @@ def json_record(key="k", value=None, topic="input-topic", offset=0, partition=0)
 
 def make_incoming(key="k", value=None, topic="input-topic"):
     """Build an IncomingMessage-like object via parse_message on a ConsumerRecord."""
-    from fretworx.kafka import parse_message
+    from flechtwerk.kafka import parse_message
     return parse_message(json_record(key=key, value=value, topic=topic))
 
 
 def make_module(transformer, consumer=None, producer=None, state_store=None):
-    """Create a Fretworx container with monkey-patched fake resources.
+    """Create a Flechtwerk container with monkey-patched fake resources.
 
     The fake producer and state store are pre-wired as task 0 on the runner —
     records built by ``json_record`` default to partition 0, so single-task
     tests work unchanged. Multi-task tests register further tasks themselves.
     """
-    mod = _FretworxModule()
+    mod = _FlechtwerkModule()
     mod.application_id = "test-group"
     mod.client_id = "test-group"
     mod.bootstrap_servers = "localhost:9092"
@@ -811,7 +811,7 @@ def test_transformer_runner_outputs_routed_to_owning_task_producer():
 
 def test_rebalance_listener_assign_pauses_and_marks_pending():
     from aiokafka import TopicPartition
-    from fretworx.transformer import TaskRebalanceListener
+    from flechtwerk.transformer import TaskRebalanceListener
 
     async def run():
         consumer = FakeKafkaConsumer()
@@ -829,7 +829,7 @@ def test_rebalance_listener_assign_pauses_and_marks_pending():
 
 
 def test_rebalance_listener_revoke_tears_down_all_tasks():
-    from fretworx.transformer import TaskRebalanceListener
+    from flechtwerk.transformer import TaskRebalanceListener
 
     async def run():
         producer = FakeKafkaProducer()
@@ -850,7 +850,7 @@ def test_rebalance_listener_revoke_tears_down_all_tasks():
 
 def test_rebalance_listener_revoke_waits_for_batch_lock():
     """Revocation must not tear down tasks while a batch is in flight."""
-    from fretworx.transformer import TaskRebalanceListener
+    from flechtwerk.transformer import TaskRebalanceListener
 
     async def run():
         producer = FakeKafkaProducer()
@@ -871,7 +871,7 @@ def test_rebalance_listener_revoke_waits_for_batch_lock():
 
 def test_rebalance_listener_records_fatal_instead_of_raising():
     """aiokafka swallows listener exceptions — failures must land on runner.fatal."""
-    from fretworx.transformer import TaskRebalanceListener
+    from flechtwerk.transformer import TaskRebalanceListener
 
     class FailingProducer(FakeKafkaProducer):
         async def stop(self):
@@ -973,8 +973,8 @@ def test_configs_unseeded_access_raises_attribute_error():
 
 def test_configs_lookup_with_seeded_store():
     async def run():
-        from fretworx.configs import ConfigStore
-        from fretworx.types import Config
+        from flechtwerk.configs import ConfigStore
+        from flechtwerk.types import Config
 
         t = ConfigLookupTransformer()
         t.configs = ConfigStore.of({"k": Config.wrap({"a": 1})})
@@ -989,7 +989,7 @@ def test_run_bootstraps_config_store_and_subscribes_input_topics_only():
     consumer never subscribes to config topics."""
 
     async def run():
-        from fretworx.types import Config
+        from flechtwerk.types import Config
 
         t = ConfigLookupTransformer()
         consumer = FakeKafkaConsumer()
@@ -1012,8 +1012,8 @@ def test_run_bootstraps_config_store_and_subscribes_input_topics_only():
 
 def test_check_config_updates_applies_enriches_and_observes():
     async def run():
-        from fretworx.testing import RecordingObserver
-        from fretworx.types import Config
+        from flechtwerk.testing import RecordingObserver
+        from flechtwerk.types import Config
 
         class EnrichingLookup(ConfigLookupTransformer):
             async def enrich(self, config):
@@ -1057,7 +1057,7 @@ def test_functional_transformer_with_enrich():
     t = Transformer.of(input_topics=["in"], transform=my_transform, enrich=my_enrich)
 
     async def run():
-        from fretworx.types import Config
+        from flechtwerk.types import Config
         enriched = await t.enrich(Config.wrap({"a": 1}))
         assert enriched.raw == {"a": 1, "enriched": True}
 

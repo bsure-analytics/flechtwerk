@@ -20,7 +20,7 @@ transaction, matching the GlobalKTable caveat.
 bootstrap compacts first, so once per *surviving* entry — never per poll
 tick or per lookup. Kafka Streams forbids transforming records on their way
 into a global store (KIP-813) because a checkpoint-based restore would
-bypass the transformation; Fretworx re-reads the topics through this same
+bypass the transformation; Flechtwerk re-reads the topics through this same
 enrich path on every startup, so the enriched store cannot diverge from
 what a fresh boot would build.
 """
@@ -31,7 +31,7 @@ from typing import Any
 import aiokafka
 from aiokafka import ConsumerRecord
 
-from fretworx.attribute import Record
+from flechtwerk.attribute import Record
 from .kafka import decode_event, decode_key, encode_json, is_tombstone, read_to_end
 from .types import Config
 
@@ -116,7 +116,7 @@ async def bootstrap_config_store(
         return {}
     # Prime the consumer's internal cluster metadata so partitions_for_topic()
     # returns data — same private-API coupling as restore_changelog, locked
-    # down by the integration tests under test/fretworx/integration/.
+    # down by the integration tests under test/flechtwerk/integration/.
     await consumer._client.set_topics(list(topics))
     tps = [
         aiokafka.TopicPartition(topic, partition)

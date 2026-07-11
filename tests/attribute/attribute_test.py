@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from fretworx.attribute import (
+from flechtwerk.attribute import (
     Attribute,
     Codec,
     DATETIME,
@@ -125,7 +125,7 @@ def test_attribute_with_custom_codec():
 
 def test_attribute_custom_codec_used_via_dict_access():
     """A `Record` uses the attribute's codec for both encode (set) and decode (get)."""
-    from fretworx.attribute import Record
+    from flechtwerk.attribute import Record
     attr = Attribute(
         "count",
         Codec(

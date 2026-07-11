@@ -17,13 +17,13 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.coordinator.assignors.range import RangePartitionAssignor
 from aiokafka.errors import KafkaError
 
-from fretworx.module import Fretworx
-from fretworx.observer import Observer
-from fretworx.configs import ConfigStore, bootstrap_config_store
-from fretworx.state import ChangelogStateStore
-from fretworx.testing import InMemoryStateStore
-from fretworx.transformer import Transformer, TransformerRunner
-from fretworx.types import Message, State
+from flechtwerk.module import Flechtwerk
+from flechtwerk.observer import Observer
+from flechtwerk.configs import ConfigStore, bootstrap_config_store
+from flechtwerk.state import ChangelogStateStore
+from flechtwerk.testing import InMemoryStateStore
+from flechtwerk.transformer import Transformer, TransformerRunner
+from flechtwerk.types import Message, State
 
 pytestmark = pytest.mark.integration
 
@@ -129,7 +129,7 @@ class ConfigJoin(Transformer):
 
 
 def make_runner(bootstrap: str, group_id: str, transformer: Transformer, changelog_topic: str) -> TransformerRunner:
-    """Wire a TransformerRunner against a real broker, mirroring Fretworx's DI."""
+    """Wire a TransformerRunner against a real broker, mirroring Flechtwerk's DI."""
     def make_producer(partition: int) -> AIOKafkaProducer:
         return AIOKafkaProducer(
             bootstrap_servers=bootstrap,
@@ -250,7 +250,7 @@ async def test_missing_config_topic_fails_startup(
     await _create_topics(kafka_bootstrap, {input_topic: 1})
 
     transformer = ConfigJoin(f"missing-{unique_topic}", input_topic, f"out-{unique_topic}")
-    mod = Fretworx.of(
+    mod = Flechtwerk.of(
         application_id=unique_group_id,
         bootstrap_servers=kafka_bootstrap,
         client_id=unique_group_id,

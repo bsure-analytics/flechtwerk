@@ -3,7 +3,7 @@ import pickle
 
 import pytest
 
-from fretworx.attribute import (
+from flechtwerk.attribute import (
     Attribute,
     INT,
     MissingAttributeError,
@@ -177,7 +177,7 @@ def test_len():
 def test_iter_yields_view_attributes_matching_raw_keys():
     """Iteration aligns with `keys()` — yields ViewAttribute handles
     whose `.name` matches the wire-form keys, in insertion order."""
-    from fretworx.attribute.attribute import ViewAttribute
+    from flechtwerk.attribute.attribute import ViewAttribute
     d = Record.wrap({"count": "42", "name": "x"})
     attrs = list(d)
     assert all(isinstance(a, ViewAttribute) for a in attrs)
@@ -446,7 +446,7 @@ def test_spread_into_subclass_yields_subclass_instance():
 
 
 def test_view_attribute_read_returns_raw_including_stored_none():
-    from fretworx.attribute.attribute import ViewAttribute
+    from flechtwerk.attribute.attribute import ViewAttribute
     r = Record({NAME: "alice", LABEL: None})
     assert r[ViewAttribute("name")] == "alice"
     assert r[ViewAttribute("label")] is None
@@ -454,5 +454,5 @@ def test_view_attribute_read_returns_raw_including_stored_none():
 
 def test_view_attribute_not_exported_from_public_package():
     """ViewAttribute is reachable via fully-qualified import only."""
-    import fretworx.attribute as pkg
+    import flechtwerk.attribute as pkg
     assert not hasattr(pkg, "ViewAttribute")

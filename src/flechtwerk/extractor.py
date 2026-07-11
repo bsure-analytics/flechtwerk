@@ -11,7 +11,7 @@ from typing import AsyncIterator, Never, Self
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
 
-from fretworx.attribute import Attribute, BOOL
+from flechtwerk.attribute import Attribute, BOOL
 from .configs import ConfigStore, EnrichFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
@@ -63,7 +63,7 @@ class Extractor(Stage, ABC):
 
     Extractors do not use Kafka consumer groups — config topics are re-read
     from the earliest on every startup. The caller sets the ``application_id``
-    used for changelog topic naming on `Fretworx`; stages don't carry it.
+    used for changelog topic naming on `Flechtwerk`; stages don't carry it.
     """
 
     wakeup: asyncio.Event | None = None
@@ -175,7 +175,7 @@ class ExtractorRunner:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
 
         Resource lifecycle (consumer/producer start/stop) is managed by
-        Fretworx, not the runner. The consumer is assigned (not subscribed)
+        Flechtwerk, not the runner. The consumer is assigned (not subscribed)
         to every partition of every config topic by the bootstrap.
         """
         async with self.extractor:

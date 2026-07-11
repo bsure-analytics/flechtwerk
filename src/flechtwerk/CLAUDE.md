@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for the Fretworx framework code in this directory. The architecture
+Guidance for the Flechtwerk framework code in this directory. The architecture
 is documented in the repository root `CLAUDE.md`; this file holds framework
 invariants that must survive refactoring.
 
@@ -57,12 +57,12 @@ crashes the process). The MQTT template's ACK-the-previous-batch-at-the-top-
 of-the-next-poll pattern is correct *only* because of this ordering — do not
 weaken it. `test_reentry_contract_flush_strictly_precedes_next_poll` pins it.
 
-## Invariant: paho-mqtt stays confined to fretworx/mqtt.py
+## Invariant: paho-mqtt stays confined to flechtwerk/mqtt.py
 
-- `fretworx/mqtt.py` is the only framework module that imports paho eagerly.
+- `flechtwerk/mqtt.py` is the only framework module that imports paho eagerly.
   `module.py` must never import `.mqtt` at module level — the lazy import
   inside the `configured_stage` factory is both what keeps `mqtt → module`
-  acyclic and the seam for a `fretworx[mqtt]` optional extra at extraction
+  acyclic and the seam for a `flechtwerk[mqtt]` optional extra at extraction
   time (an application that never configures MQTT never loads paho).
   `testing.py`'s MQTT doubles defer their paho imports for the same reason.
 - `MqttBrokerConfig` lives in `module.py`, not `mqtt.py`: reactor-di's
@@ -70,15 +70,15 @@ weaken it. `test_reentry_contract_flush_strictly_precedes_next_poll` pins it.
   the `mqtt: lookup[MqttBrokerConfig | None]` slot needs a runtime-importable,
   paho-free name.
 - The framework reads no environment and does no identity defaulting: MQTT
-  settings arrive fully resolved through `Fretworx.of(mqtt=...)` (or
+  settings arrive fully resolved through `Flechtwerk.of(mqtt=...)` (or
   parent-module wiring) — the application entry point owns the client-id
-  cascade (`MQTT_CLIENT_ID` → `FRETWORX_CLIENT_ID` → `application_id`) —
+  cascade (`MQTT_CLIENT_ID` → `FLECHTWERK_CLIENT_ID` → `application_id`) —
   and `MqttExtractor` rejects an empty `client_id` at startup (MQTT 3.1.1
   forbids one with a persistent session).
 
 ## Boundary rule: which transport adapters belong in the framework
 
-Fretworx may own a transport adapter when its *correctness depends on runner
+Flechtwerk may own a transport adapter when its *correctness depends on runner
 delivery semantics* — MQTT qualifies because manual-ACK-after-Kafka-durable
 leans on the re-entry contract above. It must never own payload semantics,
 source-specific parsing, or per-datasource config schemas (those stay in

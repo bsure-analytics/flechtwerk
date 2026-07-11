@@ -1,9 +1,9 @@
-"""Core types for the fretworx framework."""
+"""Core types for the Flechtwerk framework."""
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from fretworx.attribute import Codec, Record, record_codec
+from flechtwerk.attribute import Codec, Record, record_codec
 
 
 class Config(Record):
@@ -49,7 +49,7 @@ class Stage:
     """Common base of `Extractor` and `Transformer` — owns the config-topic declaration.
 
     Config topics are read in full by every instance into ONE per-process
-    `ConfigStore` keyed by wire key (see `fretworx.configs`) — Kafka
+    `ConfigStore` keyed by wire key (see `flechtwerk.configs`) — Kafka
     Streams' GlobalKTable pattern, specialized to configuration. For an
     Extractor they are the topics whose entries feed `poll`; a Transformer
     may declare them in addition to its partitioned `input_topics` and look

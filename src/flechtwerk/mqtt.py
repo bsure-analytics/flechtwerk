@@ -47,7 +47,7 @@ override ``poll()`` wholesale — the connection/subscription layer works
 without the template.
 
 Configuration is injected, never read from the environment: the application
-passes a fully resolved ``mqtt=MqttBrokerConfig(...)`` to ``Fretworx.of(...)``
+passes a fully resolved ``mqtt=MqttBrokerConfig(...)`` to ``Flechtwerk.of(...)``
 — including the ``client_id``, the persistent session's identity — and the
 container places it on the stage verbatim before startup.
 """
@@ -354,12 +354,12 @@ class MqttExtractor(Extractor, ABC):
     """Max messages drained per poll() invocation and topic."""
 
     mqtt: MqttBrokerConfig
-    """Broker settings — placed verbatim by the ``Fretworx.configured_stage``
+    """Broker settings — placed verbatim by the ``Flechtwerk.configured_stage``
     factory before ``__aenter__``; the caller resolves ``client_id`` (see
     ``MqttBrokerConfig``)."""
 
     observer: Observer = Observer()
-    """Placed by the ``Fretworx.configured_stage`` factory; no-op by default."""
+    """Placed by the ``Flechtwerk.configured_stage`` factory; no-op by default."""
 
     @classmethod
     def of(
@@ -392,7 +392,7 @@ class MqttExtractor(Extractor, ABC):
     async def __aenter__(self) -> Self:
         if self.connection is None:
             if getattr(self, "mqtt", None) is None:
-                raise RuntimeError("no MQTT broker configured — pass mqtt=MqttBrokerConfig(...) to Fretworx.of")
+                raise RuntimeError("no MQTT broker configured — pass mqtt=MqttBrokerConfig(...) to Flechtwerk.of")
             if not self.mqtt.client_id:
                 raise RuntimeError(
                     "no MQTT client_id configured — the persistent session (clean_session=False) "

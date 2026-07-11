@@ -120,7 +120,7 @@ def DICT[V](inner: Codec[V]) -> Codec[dict[str, V]]:
 IDENTITY: Final = Codec[Any](decode=lambda x: x, encode=lambda x: x)
 """Identity codec — used by `ViewAttribute` where the value is already in wire form.
 
-Deliberately not re-exported from `fretworx.attribute`: an application
+Deliberately not re-exported from `flechtwerk.attribute`: an application
 that wants pass-through behavior should declare a real codec for the
 underlying type rather than reach for `IDENTITY`. Available via the
 fully-qualified import for the framework internals that need it.
