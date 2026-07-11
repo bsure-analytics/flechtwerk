@@ -1,0 +1,15 @@
+*.egg-info
+.coverage
+.coverage.*
+.hypothesis/
+.idea/
+.pytest_cache/
+.venv
+.vscode/
+/.claude/settings.local.json
+/CLAUDE.local.md
+__pycache__/
+build/
+coverage.xml
+dist/
+htmlcov/
