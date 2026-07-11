@@ -1,5 +1,10 @@
 # Flechtwerk
 
+[![CI](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg)](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml)
+[![PyPI version](https://img.shields.io/pypi/v/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
+[![Python versions](https://img.shields.io/pypi/pyversions/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 An async Python port of the Kafka Streams operational model.
 
 ## What it is
@@ -18,6 +23,15 @@ Existing Python options each fail one of the constraints that matter for I/O-bou
 - **Apache Beam (on Flink)**: the Python SDK runs in a separate worker process and shuttles data to JVM operators over gRPC via the Beam portability framework. Setup is a maze of portable runners and SDK harnesses; failures span two runtimes and produce errors that are hard to localize. If Flink is the right answer, Java or Scala is a saner way to reach it.
 
 Flechtwerk assumes Python 3.14, `asyncio`, `aiokafka`, and `uvloop` are the right primitives and builds directly on them.
+
+## Installation
+
+```bash
+pip install flechtwerk            # or: uv add flechtwerk
+pip install "flechtwerk[mqtt]"    # with the MQTT→Kafka bridge (paho-mqtt)
+```
+
+Python 3.14+. Runtime dependencies: `aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`. Run it on `uvloop` for best throughput — the framework works on stock `asyncio` (and therefore on Windows), but the event loop is the application's choice.
 
 ## The API
 
@@ -39,6 +53,18 @@ stage = Transformer.of(input_topics=["input"], transform=transform)
 ```
 
 `Extractor` and `Transformer` are ABCs. Use the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management (HTTP clients, dedup instances, etc.) via `__aenter__` / `__aexit__`. Stateless stages simply never yield `State` and never open a RocksDB file.
+
+Running a stage is one call — all configuration is injected, nothing is read from the environment:
+
+```python
+await Flechtwerk.of(
+    application_id="my-transformer",
+    bootstrap_servers="localhost:9092",
+    client_id="my-transformer-0",   # process identity: unique per instance, stable across restarts
+    poll_interval_seconds=60,
+    stage=stage,
+).run()
+```
 
 ### Typed records, not bare dicts
 
@@ -82,7 +108,7 @@ def relay(config, topic, payload):          # -> Message | None
 stage = MqttExtractor.of(config_topics=["acme-config"], relay=relay)
 ```
 
-Return a `Message` to forward, `None` to drop (ACKed immediately), or raise to poison-drop (logged, ACKed, counted — never a crash loop on a broken payload). Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template. Broker settings are injected via `Flechtwerk.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `flechtwerk/mqtt.py` — `import flechtwerk` never loads it.
+Return a `Message` to forward, `None` to drop (ACKed immediately), or raise to poison-drop (logged, ACKed, counted — never a crash loop on a broken payload). Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template. Broker settings are injected via `Flechtwerk.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra.
 
 ## Operational model
 
@@ -113,6 +139,17 @@ This is a property of the model, not a feature of the framework — building a s
 - **Savepoints / state migrations** — recovery is changelog replay; schema evolution is the application's responsibility.
 - **A DSL** — the API surface is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`, `ConfigStore`. That's the full vocabulary.
 
+## Development
+
+```bash
+uv sync                        # venv + all dependencies
+uv run pytest                  # unit tier — Docker-free
+uv run pytest -m integration   # integration tier — ephemeral Kafka/Mosquitto via testcontainers
+uv run coverage run -m pytest -m "integration or not integration" && uv run coverage report
+```
+
+Releases are cut by tagging: pushing a `vX.Y.Z` tag runs the test suite, builds the package with the tag-derived version (hatch-vcs), and publishes it to PyPI via trusted publishing.
+
 ## Status
 
-Flechtwerk is currently developed inside a host application repository. It is designed to be extracted into its own package: no references to application paths, modules, or environment variables exist in framework code.
+Flechtwerk was extracted from the data integration platform it was developed in, where it runs every stage in production. The API is small and settled in shape, but pre-1.0 — minor releases may still move things around. One design rule carries over from its origin as an embedded framework: framework code references no application paths, modules, or environment variables; all configuration is injected by the caller.
