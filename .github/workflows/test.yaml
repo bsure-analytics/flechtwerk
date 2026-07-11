@@ -1,0 +1,35 @@
+jobs:
+  test:
+    name: Test Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs derives the version from tags
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync
+      - name: Run tests without coverage
+        if: '!inputs.run-coverage'
+        run: uv run pytest -m 'integration or not integration'
+      - name: Run tests with coverage
+        if: inputs.run-coverage
+        run: |
+          uv run coverage run -m pytest -m 'integration or not integration'
+          uv run coverage report
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(inputs.python-versions) }}
+name: Reusable Test Workflow
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        type: string
+        default: '["3.14"]'
+      run-coverage:
+        type: boolean
+        default: true

@@ -1,0 +1,10 @@
+jobs:
+  test:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    uses: ./.github/workflows/test.yaml
+name: CI
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ '**' ]
