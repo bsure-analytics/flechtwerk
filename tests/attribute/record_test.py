@@ -262,41 +262,6 @@ def test_pickle_round_trip():
     assert restored.raw == d.raw
 
 
-def test_pickle_legacy_dict_subclass_format():
-    """Legacy changelog data was pickled when Event/Config/State were `dict`
-    subclasses. Those bytes (NEWOBJ + SETITEMS with str keys) must restore
-    cleanly into the new Record-based class, picking up the items via the
-    str-key compat path in __setitem__.
-
-    Construct the legacy bytes by hand using the pickle opcodes — exactly
-    what the old code would have produced for an `Event({"foo": "bar"})`.
-
-    TODO(legacy-pickle-compat): delete this test alongside the
-    `Record.__new__` / `Record.__setitem__` shims once all changelog topics in
-    every environment have been fully replaced with new-format entries.
-    """
-    import io
-    legacy_bytes = pickle.dumps(LegacyEventDictSubclass({"foo": "bar", "count": 42}))
-    # Redirect class lookup at load time: simulate that on disk we have bytes
-    # naming "Event" and the module's runtime definition is now Record-based.
-
-    class CompatUnpickler(pickle.Unpickler):
-        def find_class(self, module: str, name: str):
-            if name == LegacyEventDictSubclass.__name__:
-                return Event
-            return super().find_class(module, name)
-
-    restored = CompatUnpickler(io.BytesIO(legacy_bytes)).load()
-    assert isinstance(restored, Event)
-    assert restored.raw == {"foo": "bar", "count": 42}
-
-
-# Module-level legacy class to enable pickling in `test_pickle_legacy_dict_subclass_format`
-# (local classes can't be pickled).
-class LegacyEventDictSubclass(dict):
-    pass
-
-
 # --- get() ---
 
 

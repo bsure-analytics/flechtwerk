@@ -5,8 +5,6 @@ metadata-priming call actually populating partition info against a live broker,
 real Kafka compaction semantics, and round-tripping JSON-serialized state
 entries through the wire format.
 """
-import pickle
-
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
@@ -109,17 +107,17 @@ async def test_restore_applies_kafka_tombstones(
     assert restored == {"alive": alive_bytes}
 
 
-async def test_restore_passes_legacy_pickle_bytes_through_unchanged(
+async def test_restore_passes_raw_bytes_through_uninterpreted(
     kafka_bootstrap: str, unique_changelog_topic: str,
 ) -> None:
-    """Legacy pickle bytes are passed through `put_bytes` like any other wire bytes —
-    deserialization is deferred to the first `get()` for the key. TODO(legacy-pickle-state):
-    remove once all changelog topics have rolled over."""
+    """Restore never deserializes — bytes are passed through `put_bytes`
+    verbatim even when they are not valid JSON; decoding is deferred to the
+    first `get()` for the key."""
     await _create_compacted_topic(kafka_bootstrap, unique_changelog_topic)
-    legacy_bytes = pickle.dumps(State.wrap({"cursor": "from-the-past"}))
+    opaque_bytes = b"\x80\x04\x95not-json"
     modern_bytes = serialize(State.wrap({"cursor": "current"}))
     await _produce(kafka_bootstrap, unique_changelog_topic, [
-        (b"legacy", legacy_bytes),
+        (b"opaque", opaque_bytes),
         (b"modern", modern_bytes),
     ])
 
@@ -136,7 +134,7 @@ async def test_restore_passes_legacy_pickle_bytes_through_unchanged(
         await consumer.stop()
 
     assert count == 2
-    assert restored == {"legacy": legacy_bytes, "modern": modern_bytes}
+    assert restored == {"opaque": opaque_bytes, "modern": modern_bytes}
 
 
 async def test_restore_returns_zero_for_empty_topic(

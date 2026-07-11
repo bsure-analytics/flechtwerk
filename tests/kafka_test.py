@@ -2,7 +2,6 @@
 import asyncio
 import json
 import logging
-import pickle
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -431,15 +430,14 @@ def test_restore_changelog_survives_empty_polls_until_end_offset():
     asyncio.run(run())
 
 
-def test_restore_changelog_passes_legacy_pickle_bytes_through_unchanged():
-    """Legacy pickle bytes flow through `put_bytes` like any other wire bytes —
-    deserialization is deferred to the first `get()` for that key, which uses
-    the pickle fallback. TODO(legacy-pickle-state): remove once all changelog
-    topics have rolled over to JSON."""
+def test_restore_changelog_passes_raw_bytes_through_uninterpreted():
+    """Restore never deserializes — bytes flow through `put_bytes` verbatim
+    even when they are not valid JSON; decoding is deferred to the first
+    `get()` for that key."""
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
-        legacy_bytes = pickle.dumps(State.wrap({"cursor": 123}))
-        record = _make_record(key=b"k1", value=legacy_bytes)
+        opaque_bytes = b"\x80\x04\x95not-json"
+        record = _make_record(key=b"k1", value=opaque_bytes)
         consumer = _make_restore_consumer(batches=[{tp: [record]}])
         put_bytes = AsyncMock()
         delete = AsyncMock()
@@ -447,6 +445,6 @@ def test_restore_changelog_passes_legacy_pickle_bytes_through_unchanged():
         count = await restore_changelog(consumer, "cl", put_bytes, delete)
 
         assert count == 1
-        put_bytes.assert_awaited_once_with("k1", legacy_bytes)
+        put_bytes.assert_awaited_once_with("k1", opaque_bytes)
         delete.assert_not_called()
     asyncio.run(run())

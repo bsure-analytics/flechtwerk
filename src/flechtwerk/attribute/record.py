@@ -84,17 +84,8 @@ class Record:
 
     raw: RawDict
 
-    # TODO(legacy-pickle-compat): once all changelog topics in every environment
-    # have been fully replaced with new-format entries (the str-key __setitem__
-    # branch below is no longer reached), remove this `__new__` and move the
-    # `self.raw = {}` initialization back into `__init__`.
-    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        # Initialize `raw` in __new__ so it exists even when pickle skips __init__.
-        instance = super().__new__(cls)
-        instance.raw = {}
-        return instance
-
     def __init__(self, source: Record | dict[Attribute, Any] | None = None, /) -> None:
+        self.raw = {}
         if source is None:
             return
         if isinstance(source, Record):
@@ -111,9 +102,9 @@ class Record:
         return self
 
     def __reduce__(self) -> tuple:
-        # Clean modern pickle format: (cls.wrap, (raw,)) → reconstruct via cls.wrap(raw).
-        # Legacy changelog entries (saved when Event/Config/State were dict
-        # subclasses) are restored via the str-key path in __setitem__ below.
+        # Pickle reconstructs via (cls.wrap, (raw,)), running back through the
+        # wire-format path. copy.copy/deepcopy do not ride this — they use the
+        # dedicated __copy__/__deepcopy__ below.
         return self.__class__.wrap, (self.raw,)
 
     # --- indexing ---
@@ -122,16 +113,6 @@ class Record:
         return attr.read_from(self.raw)
 
     def __setitem__[V](self, attr: Attribute[V], value: V | None) -> None:
-        # TODO(legacy-pickle-compat): once all changelog topics in every
-        # environment have been fully replaced with new-format entries, remove
-        # the str-key branch below — it exists only for unpickling legacy
-        # dict-subclass State/Config/Event records.
-        if isinstance(attr, str):
-            # Backwards-compat path for unpickling legacy dict-subclass
-            # State/Config/Event entries from changelog topics. Type checker
-            # rejects str keys; only pickle's SETITEMS opcode reaches this branch.
-            self.raw[attr] = value
-            return
         attr.write_to(self.raw, value)
 
     def __delitem__(self, attr: Attribute) -> None:
@@ -276,7 +257,7 @@ fields: `LIST(DICT(ANY))` for `list[dict[str, Any]]`, `DICT(ANY)` for
 """
 
 # Pre-built bare-Any container codecs, used by `_encode_any`'s isinstance
-# dispatch. Building these once at module load avoids reconstructing a
+# dispatch. Building these once at module load time avoids reconstructing a
 # fresh `Codec` per recursive call.
 _DICT_OF_ANY: Final = DICT(ANY)
 _LIST_OF_ANY: Final = LIST(ANY)

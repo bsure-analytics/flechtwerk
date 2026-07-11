@@ -1,7 +1,9 @@
 """Tests for `state.serialize` / `state.deserialize`."""
-import pickle
+import json
 from datetime import datetime, timezone
 from typing import Final
+
+import pytest
 
 from flechtwerk.attribute import Attribute, DATETIME, SET, STR, TUPLE
 from flechtwerk.state import deserialize, serialize
@@ -59,54 +61,14 @@ def test_serialize_set_diff_stability():
     assert serialize(s1) == serialize(s2)
 
 
-# --- legacy pickle fallback ---
+# --- no fallback for undecodable bytes ---
 
 
-def test_deserialize_legacy_pickle_with_native_datetime():
-    """Pickle bytes from before the JSON era — native datetime in raw —
-    get walked through the encoder so subsequent attribute reads succeed."""
-    legacy_state = State()
-    legacy_state.raw = {"last_time": datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)}
-    bytes_ = pickle.dumps(legacy_state)
-    restored = deserialize(bytes_)
-    assert restored.raw == {"last_time": "2024-06-15T14:30:00Z"}
-    assert restored[LAST_TIME] == datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
-
-
-def test_deserialize_legacy_pickle_with_native_set():
-    legacy_state = State()
-    legacy_state.raw = {"hashes": {"a", "b", "c"}}
-    bytes_ = pickle.dumps(legacy_state)
-    restored = deserialize(bytes_)
-    assert restored.raw == {"hashes": ["a", "b", "c"]}
-    assert restored[HASHES] == {"a", "b", "c"}
-
-
-def test_deserialize_legacy_pickle_with_nested_datetime_and_tuple():
-    """Emotivo's case: dict-of-dicts containing datetime + tuple. The walker
-    recurses into the outer dict, hits inner values, applies leaf encoders."""
-    dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
-    legacy_state = State()
-    legacy_state.raw = {
-        "operation_state": {
-            "op1": {"last_release_time": dt, "result_ids": (1, 2)},
-            "op2": {"last_release_time": dt, "result_ids": (3,)},
-        }
-    }
-    bytes_ = pickle.dumps(legacy_state)
-    restored = deserialize(bytes_)
-    assert restored.raw == {
-        "operation_state": {
-            "op1": {"last_release_time": "2024-06-15T14:30:00Z", "result_ids": [1, 2]},
-            "op2": {"last_release_time": "2024-06-15T14:30:00Z", "result_ids": [3]},
-        }
-    }
-
-
-def test_deserialize_distinguishes_json_from_pickle():
-    """JSON bytes always decode as JSON; pickle bytes hit the fallback. The
-    chain-of-responsibility never tries pickle on JSON or vice versa."""
-    json_bytes = serialize(State.wrap({"x": 1}))
-    pickle_bytes = pickle.dumps(State.wrap({"x": 1}))
-    assert deserialize(json_bytes).raw == {"x": 1}
-    assert deserialize(pickle_bytes).raw == {"x": 1}
+def test_deserialize_rejects_non_json_bytes():
+    """JSON-only — there is no pickle fallback anymore. Undecodable bytes
+    (e.g. a pre-JSON-migration pickle record) are an unrecoverable data
+    error: crash, then reset the affected state."""
+    with pytest.raises(UnicodeDecodeError):
+        deserialize(b"\x80\x04\x95binary-pickle-garbage")
+    with pytest.raises(json.JSONDecodeError):
+        deserialize(b"not json")

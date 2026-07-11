@@ -343,8 +343,9 @@ class _FlechtwerkModule(Flechtwerk):
         """Shared non-transactional producer (extractor stages only) — no serializers.
 
         Runners encode output to bytes via encode_json().
-        ChangelogStateStore sends pickle bytes directly. No serializers
-        avoids the conflict between str-encoded output and bytes-encoded state.
+        ChangelogStateStore sends pre-encoded bytes directly. Omitting
+        serializers avoids the conflict between str-encoded output and
+        bytes-encoded state.
         Transformers don't use this — they build one transactional producer
         per task via ``create_task_producer``.
         """

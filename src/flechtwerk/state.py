@@ -1,7 +1,6 @@
 """State store port and adapters (RocksDB, changelog-backed) + JSON serialization."""
 import json
 import logging
-import pickle
 import shutil
 from abc import ABC, abstractmethod
 from functools import cached_property
@@ -11,12 +10,8 @@ from typing import Any
 from aiokafka import AIOKafkaProducer
 from reactor_di import lookup
 
-from .attribute import ANY, DICT
 from .kafka import encode_json, restore_changelog
 from .types import State
-
-# `dict[str, Any]` codec for the legacy-pickle deserialization path.
-_DICT_OF_ANY = DICT(ANY)
 
 log = logging.getLogger(__name__)
 
@@ -32,17 +27,12 @@ def serialize(state: State) -> bytes:
 
 
 def deserialize(b: bytes) -> State:
-    """Try JSON first; fall back to pickle for legacy bytes from before the
-    JSON migration. The pickle path walks raw values through `DICT(ANY)`
-    so any native datetime/set/tuple inside the legacy state lands in
-    JSON-native form before being returned."""
-    try:
-        return State.wrap(json.loads(b))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # TODO(legacy-pickle-state): remove this branch once all changelog
-        # topics in every environment have rolled over to JSON.
-        legacy = pickle.loads(b)  # noqa: S301
-        return State.wrap(_DICT_OF_ANY.encode(legacy.raw))
+    """JSON-only counterpart of `serialize`. Undecodable bytes are an
+    unrecoverable data error — crash, then reset the affected state. The
+    legacy pickle fallback is gone: the Fretworx→Flechtwerk rename made
+    pre-JSON pickle records unreadable anyway (pickle resolves classes by
+    the module path baked into the bytes)."""
+    return State.wrap(json.loads(b))
 
 
 # --- Stores ---
