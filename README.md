@@ -2,6 +2,7 @@
 
 <div align="center">
   <img src="assets/flechtwerk-ornament.svg" alt="Flechtwerk — Celtic interlace" width="100%" height="60">
+  <a href="https://bsure-analytics.github.io/flechtwerk/"><img src="https://img.shields.io/badge/docs-online-6d2530" alt="Documentation"></a>
   <a href="https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml"><img src="https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg" alt="CI"></a>
   <a href="https://codecov.io/gh/bsure-analytics/flechtwerk"><img src="https://codecov.io/gh/bsure-analytics/flechtwerk/branch/main/graph/badge.svg" alt="Coverage Status"></a>
   <a href="https://pypi.org/project/flechtwerk/"><img src="https://img.shields.io/pypi/v/flechtwerk.svg" alt="PyPI version"></a>
@@ -11,6 +12,8 @@
 </div>
 
 Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data.
+
+📖 **Documentation: [bsure-analytics.github.io/flechtwerk](https://bsure-analytics.github.io/flechtwerk/)** — guides, concepts, and the full API reference.
 
 ## What it is
 
@@ -249,6 +252,8 @@ uv run pytest                  # unit tier — Docker-free
 uv run pytest -m integration   # integration tier — ephemeral Kafka/Mosquitto via testcontainers
 uv run coverage run -m pytest -m "integration or not integration" && uv run coverage report
 ```
+
+These commands are also exposed as [poe](https://poethepoet.natn.io/) tasks — `uv run poe test | cov | build | docs | docs-build`. The documentation site is built with MkDocs Material; `uv run poe docs` serves it locally with live reload, and it deploys to [GitHub Pages](https://bsure-analytics.github.io/flechtwerk/) on every push to `main`.
 
 Releases are cut by tagging: pushing a `vX.Y.Z` tag runs the test suite, builds the package with the tag-derived version (hatch-vcs), and publishes it to PyPI via trusted publishing.
 

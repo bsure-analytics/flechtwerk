@@ -59,6 +59,7 @@ mqtt = [
 ]
 
 [project.urls]
+Documentation = "https://bsure-analytics.github.io/flechtwerk/"
 Homepage = "https://github.com/bsure-analytics/flechtwerk"
 Issues = "https://github.com/bsure-analytics/flechtwerk/issues"
 Repository = "https://github.com/bsure-analytics/flechtwerk"
