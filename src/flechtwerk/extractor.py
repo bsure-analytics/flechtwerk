@@ -125,8 +125,14 @@ class Extractor(Stage, ABC):
         pass
 
     @abstractmethod
-    async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
+    def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
         """Poll an external API and yield Messages.
+
+        Declared without ``async`` so that implementations — ``async def``
+        functions containing ``yield``, i.e. async generator functions whose
+        call returns an ``AsyncIterator`` directly — are compatible overrides
+        under strict type checking. A coroutine-typed abstract (``async def``
+        with no ``yield``) would make every real override incompatible.
 
         Yield a State to signal the desired state. The runner persists it only
         if it differs from the current state. If no State is yielded, nothing

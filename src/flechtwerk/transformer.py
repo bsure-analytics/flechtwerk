@@ -127,8 +127,14 @@ class Transformer(Stage, ABC):
         pass
 
     @abstractmethod
-    async def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+    def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
         """Transform an incoming message into zero or more output Messages.
+
+        Declared without ``async`` so that implementations — ``async def``
+        functions containing ``yield``, i.e. async generator functions whose
+        call returns an ``AsyncIterator`` directly — are compatible overrides
+        under strict type checking. A coroutine-typed abstract (``async def``
+        with no ``yield``) would make every real override incompatible.
 
         Yield a State to signal the desired state. The runner persists it only
         if it differs from the current state. If no State is yielded, nothing
