@@ -116,7 +116,7 @@ async def bootstrap_config_store(
         return {}
     # Prime the consumer's internal cluster metadata so partitions_for_topic()
     # returns data — same private-API coupling as restore_changelog, locked
-    # down by the integration tests under test/flechtwerk/integration/.
+    # down by the integration tests under tests/integration/.
     await consumer._client.set_topics(list(topics))
     tps = [
         aiokafka.TopicPartition(topic, partition)

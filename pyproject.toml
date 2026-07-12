@@ -5,11 +5,11 @@ requires = ["hatchling", "hatch-vcs"]
 [dependency-groups]
 dev = [
     "aiokafka[lz4,snappy,zstd]~=0.13",
+    "coverage>=7.6",
     "hypothesis>=6.100",
     "paho-mqtt~=2.1",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
-    "pytest-cov>=6.0.0",
     "testcontainers[kafka]>=4.8",
 ]
 

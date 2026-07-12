@@ -8,6 +8,7 @@ jobs:
     name: Publish to PyPI
     needs: test
     permissions:
+      contents: read # job-level permissions reset all unlisted scopes to none
       id-token: write # required for trusted publishing
     runs-on: ubuntu-latest
     steps:
