@@ -37,6 +37,9 @@ description = "An async Python port of the Kafka Streams operational model"
 dynamic = ["version"]
 keywords = ["aiokafka", "asyncio", "exactly-once", "kafka", "kafka-streams", "mqtt", "stream-processing"]
 license = { text = "MIT" }
+maintainers = [
+    { name = "b.sure GmbH" },
+]
 name = "flechtwerk"
 readme = "README.md"
 requires-python = ">=3.14"
