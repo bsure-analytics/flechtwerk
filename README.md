@@ -1,6 +1,6 @@
 # Flechtwerk
 
-<img src="assets/flechtwerk-weave.svg" alt="Flechtwerk — an endless interwoven braid" width="100%" height="60">
+<img src="assets/flechtwerk-hero.svg" alt="Flechtwerk — Celtic interlace with project badges" width="100%" height="88">
 
 [![CI](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg)](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml)
 [![Coverage Status](https://codecov.io/gh/bsure-analytics/flechtwerk/branch/main/graph/badge.svg)](https://codecov.io/gh/bsure-analytics/flechtwerk)
