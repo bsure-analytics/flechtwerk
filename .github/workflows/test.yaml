@@ -19,6 +19,11 @@ jobs:
         run: |
           uv run coverage run -m pytest -m 'integration or not integration'
           uv run coverage report
+          uv run coverage xml
+      - if: inputs.run-coverage && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -33,3 +38,6 @@ on:
       run-coverage:
         type: boolean
         default: true
+    secrets:
+      CODECOV_TOKEN:
+        required: false

@@ -1,6 +1,7 @@
 # Flechtwerk
 
 [![CI](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg)](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml)
+[![Coverage Status](https://codecov.io/gh/bsure-analytics/flechtwerk/branch/main/graph/badge.svg)](https://codecov.io/gh/bsure-analytics/flechtwerk)
 [![PyPI version](https://img.shields.io/pypi/v/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
 [![Python versions](https://img.shields.io/pypi/pyversions/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -9,7 +10,7 @@ Truly async Python stream processing with real Kafka transactions for exactly-on
 
 ## What it is
 
-Flechtwerk is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to modern async Python.
+Flechtwerk (German: *interlacing, wickerwork*) is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to modern async Python.
 
 If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
@@ -22,7 +23,7 @@ Existing Python options each fail one of the constraints that matter for I/O-bou
 - **Bytewax**: a Rust dataflow engine with Python bindings; excellent for CPU-bound partitioned dataflow, awkward for async I/O and heavier than the operational model needs.
 - **Apache Beam (on Flink)**: the Python SDK runs in a separate worker process and shuttles data to JVM operators over gRPC via the Beam portability framework. Setup is a maze of portable runners and SDK harnesses; failures span two runtimes and produce errors that are hard to localize. If Flink is the right answer, Java or Scala is a saner way to reach it.
 
-Flechtwerk assumes Python 3.14, `asyncio`, `aiokafka`, and `uvloop` are the right primitives and builds directly on them.
+Flechtwerk assumes modern Python, `asyncio`, `aiokafka`, and `uvloop` are the right primitives and builds directly on them.
 
 ## Installation
 
@@ -31,7 +32,7 @@ pip install flechtwerk            # or: uv add flechtwerk
 pip install "flechtwerk[mqtt]"    # with the MQTT→Kafka bridge (paho-mqtt)
 ```
 
-Python 3.14+. Runtime dependencies: `aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`. Run it on `uvloop` for best throughput — the framework works on stock `asyncio` (and therefore on Windows), but the event loop is the application's choice.
+Python 3.12+. Runtime dependencies: `aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`. Run it on `uvloop` for best throughput — the framework works on stock `asyncio` (and therefore on Windows), but the event loop is the application's choice.
 
 ## The API
 
