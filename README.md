@@ -1,6 +1,16 @@
 # Flechtwerk
 
-<img src="assets/flechtwerk-hero.svg" alt="Flechtwerk — Celtic interlace with project badges" width="100%" height="88">
+<img src="assets/flechtwerk-ornament.svg" alt="Flechtwerk — Celtic interlace" width="100%" height="60">
+
+<p align="center">
+  <a href="https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml"><img src="https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/bsure-analytics/flechtwerk"><img src="https://codecov.io/gh/bsure-analytics/flechtwerk/branch/main/graph/badge.svg" alt="Coverage Status"></a>
+  <a href="https://pypi.org/project/flechtwerk/"><img src="https://img.shields.io/pypi/v/flechtwerk.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/flechtwerk/"><img src="https://img.shields.io/pypi/pyversions/flechtwerk.svg" alt="Python versions"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
+
+<img src="assets/flechtwerk-ornament.svg" alt="Flechtwerk — Celtic interlace" width="100%" height="60">
 
 Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data.
 
