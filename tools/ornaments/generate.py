@@ -31,7 +31,7 @@ PAGES = {
     "concepts-architecture": ("twistknot", GARNET),
     "concepts-exactly-once": ("chain", LAPIS),
     "guides-index": ("threestrand", GARNET),
-    "guides-getting-started": ("spiral", VERDIGRIS),
+    "guides-getting-started": ("stepfret", VERDIGRIS),
     "api-index": ("triquetra", LAPIS),
 }
 
