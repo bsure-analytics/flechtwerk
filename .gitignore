@@ -1,4 +1,5 @@
 *.egg-info
+.cache/
 .coverage
 .coverage.*
 .hypothesis/
@@ -9,6 +10,7 @@
 /.claude/settings.local.json
 /CLAUDE.local.md
 /graphify-out/
+/site/
 __pycache__/
 build/
 coverage.xml

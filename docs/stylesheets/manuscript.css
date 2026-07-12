@@ -1,0 +1,191 @@
+/* ==========================================================================
+   Flechtwerk docs — an illuminated-manuscript skin for Material for MkDocs.
+   - Two colour schemes: "parchment" (light) and "vellum" (dark).
+   - Every page is bordered by an interlace ornament (left + right rails);
+     chapter openers get all four edges plus an illuminated masthead.
+   - The ornament is chosen per chapter via [data-chapter] (set in main.html).
+   ========================================================================== */
+
+/* EB Garamond + JetBrains Mono are loaded via theme.font; only the display
+   faces are pulled here. The `privacy` plugin self-hosts all of these at build. */
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=UnifrakturCook:wght@700&display=swap');
+
+/* ---- colour schemes ---------------------------------------------------- */
+
+[data-md-color-scheme="parchment"] {
+  --md-default-bg-color:        #f4ecdb;
+  --md-default-bg-color--light: #f8f2e5;
+  --md-default-fg-color:        #2c2318;
+  --md-default-fg-color--light: #5b4f3c;
+  --md-default-fg-color--lighter: #8a7c63;
+  --md-default-fg-color--lightest: #c9bda1;
+
+  --md-primary-fg-color:        #6d2530;   /* garnet header */
+  --md-primary-fg-color--light: #863240;
+  --md-primary-fg-color--dark:  #551b24;
+  --md-primary-bg-color:        #f6eeda;
+  --md-primary-bg-color--light: #f6eeda;
+
+  --md-accent-fg-color:         #8a5a1c;
+  --md-typeset-a-color:         #8a5a1c;
+
+  --md-code-bg-color:           #ece1c7;
+  --md-code-fg-color:           #40331f;
+
+  /* manuscript tokens */
+  --ms-gold:      #b08a3e;
+  --ms-dropcap:   #7f5f18;   /* darker gold: >=3:1 on parchment for the large initial */
+  --ms-heading:   #5b2029;
+  --ms-ink-soft:  #6b5c44;
+  --ms-rule:      #c9a24a;
+}
+
+[data-md-color-scheme="vellum"] {
+  --md-default-bg-color:        #201c16;
+  --md-default-bg-color--light: #2a251d;
+  --md-default-fg-color:        #e9ddc4;
+  --md-default-fg-color--light: #cbbe9f;
+  --md-default-fg-color--lighter: #9a8d72;
+  --md-default-fg-color--lightest: #5f5643;
+
+  --md-primary-fg-color:        #5a1d26;
+  --md-primary-fg-color--light: #7c2d3a;
+  --md-primary-fg-color--dark:  #431018;
+  --md-primary-bg-color:        #efe4cb;
+  --md-primary-bg-color--light: #efe4cb;
+
+  --md-accent-fg-color:         #d3ab55;
+  --md-typeset-a-color:         #cba14a;
+
+  --md-code-bg-color:           #2a241b;
+  --md-code-fg-color:           #e4d7bb;
+
+  --ms-gold:      #c9a24a;
+  --ms-dropcap:   #e6c98a;   /* light gold reads well on the dark vellum ground */
+  --ms-heading:   #e6c98a;
+  --ms-ink-soft:  #c8ba98;
+  --ms-rule:      #8a6d2e;
+}
+
+/* ---- typography -------------------------------------------------------- */
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-family: "Cinzel", var(--md-text-font-family, Georgia, serif);
+  color: var(--ms-heading);
+  letter-spacing: .015em;
+  font-weight: 600;
+}
+.md-typeset h2 {
+  border-bottom: 2px solid var(--ms-rule);
+  padding-bottom: .25rem;
+}
+.md-typeset { font-size: .8rem; }
+.md-typeset p, .md-typeset li { line-height: 1.75; }
+
+/* ---- the interlace frame ----------------------------------------------- */
+
+:root { --ms-railw: 44px; --ms-bandh: 44px; }
+
+.ms-frame[data-chapter="home"]     { --ms-rail: url(../assets/ornaments/rail-home.png);     --ms-band: url(../assets/ornaments/band-home.png); }
+.ms-frame[data-chapter="concepts"] { --ms-rail: url(../assets/ornaments/rail-concepts.png); --ms-band: url(../assets/ornaments/band-concepts.png); }
+.ms-frame[data-chapter="guides"]   { --ms-rail: url(../assets/ornaments/rail-guides.png);   --ms-band: url(../assets/ornaments/band-guides.png); }
+.ms-frame[data-chapter="api"]      { --ms-rail: url(../assets/ornaments/rail-api.png);      --ms-band: url(../assets/ornaments/band-api.png); }
+
+.ms-frame {
+  /* fallback ornament for any chapter without an explicit rule below */
+  --ms-rail: url(../assets/ornaments/rail-home.png);
+  --ms-band: url(../assets/ornaments/band-home.png);
+  position: relative;
+  padding-inline: calc(var(--ms-railw) + 1.7rem);
+}
+.ms-frame::before,
+.ms-frame::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--ms-railw);
+  background-image: var(--ms-rail);
+  background-repeat: repeat-y;
+  background-size: var(--ms-railw) auto;
+  pointer-events: none;
+}
+.ms-frame::before { left: 0; }
+.ms-frame::after  { right: 0; }
+
+/* chapter openers: add top + bottom bands (all four edges) */
+.ms-frame[data-opener] {
+  padding-block: calc(var(--ms-bandh) + 1.1rem);
+  background-image: var(--ms-band), var(--ms-band);
+  background-repeat: repeat-x, repeat-x;
+  background-position: center top, center bottom;
+  background-size: auto var(--ms-bandh), auto var(--ms-bandh);
+}
+
+/* ---- illuminated masthead (openers) ------------------------------------ */
+
+.ms-illumination {
+  text-align: center;
+  margin: .4rem 0 2.4rem;
+  padding-bottom: 1.3rem;
+  border-bottom: 2px solid var(--ms-gold);
+}
+.ms-title {
+  font-family: "Cinzel", serif;
+  font-weight: 700;
+  font-size: clamp(2.1rem, 5.5vw, 3.4rem);
+  line-height: 1.1;
+  color: var(--ms-heading);
+  margin: 0;
+  letter-spacing: .06em;
+}
+.ms-subtitle {
+  font-family: "EB Garamond", serif;
+  font-style: italic;
+  font-size: 1.2rem;
+  color: var(--ms-ink-soft);
+  margin: .7rem auto 0;
+  max-width: 46ch;
+}
+
+/* the article's own H1 is redundant on an opener (masthead shows the title) */
+.ms-frame[data-opener] > h1:first-of-type { display: none; }
+
+/* illuminated initial on the opening paragraph */
+.ms-frame[data-opener] > p:first-of-type::first-letter {
+  font-family: "UnifrakturCook", "Cinzel", serif;
+  float: left;
+  font-size: 3.7em;
+  line-height: .68;
+  padding: .06em .12em 0 0;
+  color: var(--ms-dropcap, var(--ms-gold));
+  text-shadow: 0 1px 0 rgba(0,0,0,.15);
+}
+
+/* ---- small manuscript touches ------------------------------------------ */
+
+.md-typeset a { text-decoration-color: var(--ms-rule); }
+.md-typeset blockquote {
+  border-left: .2rem solid var(--ms-gold);
+  color: var(--ms-ink-soft);
+  font-style: italic;
+}
+
+/* ---- responsive: fold the frame away on narrow screens ----------------- */
+
+@media screen and (max-width: 59.9375em) {
+  /* Side rails eat too much width on phones. Drop them, but keep a top +
+     bottom horizontal band so every page stays framed on at least two edges. */
+  .ms-frame {
+    padding-inline: 0;
+    padding-block: calc(var(--ms-bandh) + .6rem);
+    background-image: var(--ms-band), var(--ms-band);
+    background-repeat: repeat-x, repeat-x;
+    background-position: center top, center bottom;
+    background-size: auto var(--ms-bandh), auto var(--ms-bandh);
+  }
+  .ms-frame::before,
+  .ms-frame::after { display: none; }
+}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{#
+  Wrap every page's content in an interlace frame. `data-chapter` (set by
+  hooks/chapters.py) selects the ornament; `data-opener` (front matter
+  `opener: true`) upgrades the frame to all four edges and renders an
+  illuminated masthead from the page's front-matter title/tagline.
+#}
+{% block content %}
+  <div class="ms-frame" data-chapter="{{ page.meta.chapter | default('home') }}"{% if page.meta.opener %} data-opener{% endif %}>
+    {% if page.meta.opener %}
+      <div class="ms-illumination">
+        <h1 class="ms-title">{{ page.meta.title | default(page.title) }}</h1>
+        {% if page.meta.tagline %}<p class="ms-subtitle">{{ page.meta.tagline }}</p>{% endif %}
+      </div>
+    {% endif %}
+    {% include "partials/content.html" %}
+  </div>
+{% endblock %}
