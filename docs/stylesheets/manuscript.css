@@ -88,17 +88,18 @@
 
 :root { --ms-railw: 44px; --ms-bandh: 44px; }
 
-.ms-frame[data-chapter="home"]     { --ms-rail: url(../assets/ornaments/rail-home.png);     --ms-band: url(../assets/ornaments/band-home.png); }
-.ms-frame[data-chapter="concepts"] { --ms-rail: url(../assets/ornaments/rail-concepts.png); --ms-band: url(../assets/ornaments/band-concepts.png); }
-.ms-frame[data-chapter="guides"]   { --ms-rail: url(../assets/ornaments/rail-guides.png);   --ms-band: url(../assets/ornaments/band-guides.png); }
-.ms-frame[data-chapter="api"]      { --ms-rail: url(../assets/ornaments/rail-api.png);      --ms-band: url(../assets/ornaments/band-api.png); }
-
+/* The per-page ornament image is set by a small <style> block in
+   overrides/main.html (one distinct interlace per page); the background-image
+   URLs here are only the fallback. This rule owns the frame LAYOUT — a full
+   four-edge frame on EVERY page: side rails + top/bottom bands. */
 .ms-frame {
-  /* fallback ornament for any chapter without an explicit rule below */
-  --ms-rail: url(../assets/ornaments/rail-home.png);
-  --ms-band: url(../assets/ornaments/band-home.png);
   position: relative;
   padding-inline: calc(var(--ms-railw) + 1.7rem);
+  padding-block: calc(var(--ms-bandh) + 1.1rem);
+  background-image: url(../assets/ornaments/band-index.png), url(../assets/ornaments/band-index.png);
+  background-repeat: repeat-x, repeat-x;
+  background-position: center top, center bottom;
+  background-size: auto var(--ms-bandh), auto var(--ms-bandh);
 }
 .ms-frame::before,
 .ms-frame::after {
@@ -107,22 +108,13 @@
   top: 0;
   bottom: 0;
   width: var(--ms-railw);
-  background-image: var(--ms-rail);
+  background-image: url(../assets/ornaments/rail-index.png);
   background-repeat: repeat-y;
   background-size: var(--ms-railw) auto;
   pointer-events: none;
 }
 .ms-frame::before { left: 0; }
 .ms-frame::after  { right: 0; }
-
-/* chapter openers: add top + bottom bands (all four edges) */
-.ms-frame[data-opener] {
-  padding-block: calc(var(--ms-bandh) + 1.1rem);
-  background-image: var(--ms-band), var(--ms-band);
-  background-repeat: repeat-x, repeat-x;
-  background-position: center top, center bottom;
-  background-size: auto var(--ms-bandh), auto var(--ms-bandh);
-}
 
 /* ---- illuminated masthead (openers) ------------------------------------ */
 
@@ -176,15 +168,11 @@
 /* ---- responsive: fold the frame away on narrow screens ----------------- */
 
 @media screen and (max-width: 59.9375em) {
-  /* Side rails eat too much width on phones. Drop them, but keep a top +
-     bottom horizontal band so every page stays framed on at least two edges. */
+  /* Side rails eat too much width on phones — drop them; the top + bottom
+     bands (from the base rule) stay, so every page is still framed. */
   .ms-frame {
     padding-inline: 0;
     padding-block: calc(var(--ms-bandh) + .6rem);
-    background-image: var(--ms-band), var(--ms-band);
-    background-repeat: repeat-x, repeat-x;
-    background-position: center top, center bottom;
-    background-size: auto var(--ms-bandh), auto var(--ms-bandh);
   }
   .ms-frame::before,
   .ms-frame::after { display: none; }

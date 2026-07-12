@@ -1,12 +1,20 @@
 {% extends "base.html" %}
 
 {#
-  Wrap every page's content in an interlace frame. `data-chapter` (set by
-  hooks/chapters.py) selects the ornament; `data-opener` (front matter
-  `opener: true`) upgrades the frame to all four edges and renders an
-  illuminated masthead from the page's front-matter title/tagline.
+  Wrap every page's content in a full four-edge interlace frame. Each page gets
+  its OWN ornament: the `ornament` slug (set by hooks/chapters.py) selects the
+  per-page --ms-rail / --ms-band tiles injected inline below. `data-opener`
+  (front matter `opener: true`) additionally renders an illuminated masthead
+  from the page's front-matter title/tagline.
 #}
 {% block content %}
+  {% set orn = page.meta.ornament | default('index') %}
+  {#- per-page ornament: set background-image directly (URLs in a <style> block
+      resolve against the document, unlike url() inside a custom property) -#}
+  <style>
+    .ms-frame { background-image: url("{{ base_url }}/assets/ornaments/band-{{ orn }}.png"), url("{{ base_url }}/assets/ornaments/band-{{ orn }}.png"); }
+    .ms-frame::before, .ms-frame::after { background-image: url("{{ base_url }}/assets/ornaments/rail-{{ orn }}.png"); }
+  </style>
   <div class="ms-frame" data-chapter="{{ page.meta.chapter | default('home') }}"{% if page.meta.opener %} data-opener{% endif %}>
     {% if page.meta.opener %}
       <div class="ms-illumination">
