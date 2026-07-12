@@ -8,6 +8,7 @@
 .vscode/
 /.claude/settings.local.json
 /CLAUDE.local.md
+/graphify-out/
 __pycache__/
 build/
 coverage.xml

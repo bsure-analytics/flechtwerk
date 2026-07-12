@@ -171,3 +171,22 @@ UNSUBSCRIBE, and a decision about un-ACKed buffered messages (they were
 never written to Kafka). Until then: stop the publisher before removing a
 config, and recover a wedged session with a fresh `client_id` (a new broker
 session) or broker-side session cleanup.
+
+## graphify (optional, local)
+
+[graphify](https://pypi.org/project/graphifyy/) builds a queryable knowledge graph of this codebase (god nodes, community structure, cross-file relationships). It is a per-developer convenience, not part of the project: `graphify-out/` is gitignored, nothing in the build or CI depends on it, and its Claude Code hooks live in the machine-local `.claude/settings.local.json`. Skip this section entirely if `graphify-out/graph.json` does not exist.
+
+Initialization (once per clone, opt-in):
+
+```bash
+uv tool install graphifyy     # or: pip install graphifyy
+```
+
+Then run `/graphify .` in a Claude Code session to build the graph, and optionally `graphify hook install` to add git post-commit/post-checkout hooks that rebuild it automatically (AST-only, no API cost).
+
+Rules (only when graphify-out/graph.json exists):
+
+- For codebase questions, first run `graphify query "<question>"`. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
