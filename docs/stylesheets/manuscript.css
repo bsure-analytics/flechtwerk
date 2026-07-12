@@ -145,8 +145,8 @@
 /* the article's own H1 is redundant on an opener (masthead shows the title) */
 .ms-frame[data-opener] > h1:first-of-type { display: none; }
 
-/* illuminated initial on the opening paragraph */
-.ms-frame[data-opener] > p:first-of-type::first-letter {
+/* illuminated initial on the opening paragraph of EVERY page */
+.ms-frame > p:first-of-type::first-letter {
   font-family: "UnifrakturCook", "Cinzel", serif;
   float: left;
   font-size: 3.7em;
