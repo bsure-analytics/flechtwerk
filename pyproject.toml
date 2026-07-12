@@ -34,7 +34,7 @@ dependencies = [
     "reactor-di~=0.5",
     "rocksdict~=0.3",
 ]
-description = "Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data"
+description = "Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data."
 dynamic = ["version"]
 keywords = ["aiokafka", "asyncio", "exactly-once", "kafka", "kafka-streams", "mqtt", "stream-processing"]
 license = { text = "MIT" }

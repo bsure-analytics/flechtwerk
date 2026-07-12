@@ -5,7 +5,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data
+Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data.
 
 ## What it is
 
