@@ -13,12 +13,11 @@ jobs:
         run: uv sync
       - name: Run tests without coverage
         if: '!inputs.run-coverage'
-        run: uv run pytest -m 'integration or not integration'
+        run: uv run poe test-all
       - name: Run tests with coverage
         if: inputs.run-coverage
         run: |
-          uv run coverage run -m pytest -m 'integration or not integration'
-          uv run coverage report
+          uv run poe cov
           uv run coverage xml
       - if: inputs.run-coverage && matrix.python-version == '3.12'
         uses: codecov/codecov-action@v5
