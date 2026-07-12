@@ -122,7 +122,7 @@ class Flechtwerk(ABC):
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
         mqtt: MqttBrokerConfig | None = None,
-    ) -> Flechtwerk:
+    ) -> "Flechtwerk":
         """Build a fully-configured application handle.
 
         Use this when running Flechtwerk as the program's entry point.

@@ -59,7 +59,7 @@ class ConfigStore:
         return len(self._raw)
 
     @classmethod
-    def of(cls, entries: dict[str, Record]) -> ConfigStore:
+    def of(cls, entries: dict[str, Record]) -> "ConfigStore":
         """Build a pre-seeded store — the test-side entry point."""
         store = cls()
         store._raw = {key: encode_json(value) for key, value in entries.items()}

@@ -380,7 +380,7 @@ class MqttExtractor(Extractor, ABC):
             drain_limit: int = 1000,
             enrich: EnrichFn | None = None,
             extract_key: ExtractKeyFn | None = None,
-    ) -> MqttExtractor:
+    ) -> "MqttExtractor":
         """Build an MqttExtractor from a relay function and config topics.
 
         Mirrors ``Extractor.of``: patches the supplied callables in as

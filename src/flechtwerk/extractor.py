@@ -85,7 +85,7 @@ class Extractor(Stage, ABC):
             poll: PollFn,
             enrich: EnrichFn | None = None,
             extract_key: ExtractKeyFn | None = None,
-    ) -> Extractor:
+    ) -> "Extractor":
         """Build an Extractor from a poll function and config topics.
 
         ``enrich`` and ``extract_key`` are optional overrides; omit them

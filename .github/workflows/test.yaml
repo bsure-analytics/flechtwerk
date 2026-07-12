@@ -29,7 +29,7 @@ on:
     inputs:
       python-versions:
         type: string
-        default: '["3.14"]'
+        default: '["3.12", "3.13", "3.14"]'
       run-coverage:
         type: boolean
         default: true

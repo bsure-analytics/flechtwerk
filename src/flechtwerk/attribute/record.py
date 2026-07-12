@@ -84,7 +84,7 @@ class Record:
 
     raw: RawDict
 
-    def __init__(self, source: Record | dict[Attribute, Any] | None = None, /) -> None:
+    def __init__(self, source: "Record | dict[Attribute, Any] | None" = None, /) -> None:
         self.raw = {}
         if source is None:
             return
@@ -164,10 +164,10 @@ class Record:
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.raw!r})"
 
-    def __copy__(self) -> Record:
+    def __copy__(self) -> "Record":
         return type(self)(self)
 
-    def __deepcopy__(self, memo: dict) -> Record:
+    def __deepcopy__(self, memo: dict) -> "Record":
         new = type(self)()
         new.raw = deepcopy(self.raw, memo)
         return new
@@ -210,7 +210,7 @@ class Record:
                 return v
         return None
 
-    def update(self, other: Record) -> None:
+    def update(self, other: "Record") -> None:
         """Merge another `Record` into this one."""
         self.raw.update(other.raw)
 

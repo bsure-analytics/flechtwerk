@@ -94,7 +94,7 @@ class Transformer(Stage, ABC):
             transform: TransformFn,
             enrich: EnrichFn | None = None,
             extract_key: ExtractKeyFn | None = None,
-    ) -> Transformer:
+    ) -> "Transformer":
         """Build a Transformer from a transform function and input topics.
 
         Use this for stateless or simply-stateful stages that don't need
@@ -178,7 +178,7 @@ class TaskRebalanceListener(ConsumerRebalanceListener):
     runner's ``fatal`` slot and re-raised by the main loop instead.
     """
 
-    def __init__(self, runner: TransformerRunner) -> None:
+    def __init__(self, runner: "TransformerRunner") -> None:
         self.runner = runner
 
     async def on_partitions_revoked(self, revoked: set[TopicPartition]) -> None:
