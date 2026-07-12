@@ -47,8 +47,8 @@ class MqttBrokerConfig:
     Defined here rather than in ``flechtwerk/mqtt.py`` so the container can
     annotate its ``mqtt`` slot without importing paho: reactor-di evaluates
     all class annotations at decoration time, and paho must stay an opt-in
-    import confined to ``flechtwerk/mqtt.py`` (the seam for a ``flechtwerk[mqtt]``
-    extra at extraction time).
+    import confined to ``flechtwerk/mqtt.py`` (what makes the ``flechtwerk[mqtt]``
+    optional extra work).
 
     Deliberately broker-only: the identity of the instance's persistent MQTT
     session is the module-wide ``client_id`` (see ``Flechtwerk.of``), which
