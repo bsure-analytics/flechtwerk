@@ -8,6 +8,7 @@ dev = [
     "coverage>=7.6",
     "hypothesis>=6.100",
     "paho-mqtt~=2.1",
+    "poethepoet>=0.29",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
     "testcontainers[kafka]>=4.8",
@@ -84,6 +85,21 @@ packages = ["src/flechtwerk"]
 
 [tool.hatch.version]
 source = "vcs"
+
+[tool.poe.tasks]
+build = { cmd = "uv build", help = "Build the sdist and wheel" }
+docs = { cmd = "uv run --group docs mkdocs serve", help = "Serve the docs locally with live reload" }
+docs-build = { cmd = "uv run --group docs mkdocs build --strict", help = "Build the docs site (strict)" }
+test = { cmd = "pytest", help = "Run the unit tests (Docker-free)" }
+test-all = { cmd = "pytest -m 'integration or not integration'", help = "Run unit + integration tests (needs Docker)" }
+test-integration = { cmd = "pytest -m integration", help = "Run only the integration tests (needs Docker)" }
+
+[tool.poe.tasks.cov]
+help = "Run the full test suite with coverage, then print the report"
+sequence = [
+    { cmd = "coverage run -m pytest -m 'integration or not integration'" },
+    { cmd = "coverage report" },
+]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"
