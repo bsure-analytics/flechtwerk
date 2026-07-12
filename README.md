@@ -5,7 +5,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data.
+Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data
 
 ## What it is
 
@@ -39,17 +39,59 @@ The whole contract is two `yield` statements inside an async generator:
 
 - `yield Message(...)` to emit an output record.
 - `yield State(...)` to persist state for the current key.
-- `yield <falsy State>` to tombstone the key.
+  - `yield <falsy State>` to tombstone the key.
 
 That's it. There are no agents, no tables, no DSL, no `@app.topic` decorators, no fluent builders. An async generator is already the right shape — pull-based, backpressure-friendly, naturally composable — and every Python developer already knows how to read one.
 
 ```python
-async def transform(message, state):
-    event = enrich(message.value, state)
-    yield Message(topic="output", key=message.key, value=event)
-    yield State({LAST_SEEN: event[TIMESTAMP]})
+from collections.abc import AsyncIterator
 
-stage = Transformer.of(input_topics=["input"], transform=transform)
+from flechtwerk import Event, IncomingMessage, Message, State, Transformer
+from flechtwerk.attribute import Attribute, DATETIME, INT
+
+SEEN = Attribute("seen", INT)
+"""How many events this key has produced so far."""
+TIMESTAMP = Attribute("timestamp", DATETIME)
+"""When the event happened at the source."""
+
+
+async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+    seen = (state.get(SEEN) or 0) + 1
+    yield Message(key=msg.key, topic="my-output", value=Event({**msg.value, SEEN: seen}))
+    yield State({SEEN: seen, TIMESTAMP: msg.value[TIMESTAMP]})
+
+
+stage = Transformer.of(input_topics=["my-input"], transform=transform)
+```
+
+The typed `Attribute` handles indexing those records are explained in [Typed records, not bare dicts](#typed-records-not-bare-dicts) below.
+
+An `Extractor` is the same two-yield contract driven from the other end: `poll(config, state)` runs once per config record per poll cycle, pulls from the external source, and uses `State` as its resume cursor:
+
+```python
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+
+from flechtwerk import Config, Event, Extractor, Message, State
+from flechtwerk.attribute import Attribute, DATETIME, INT, STR
+
+CYCLE = Attribute("cycle", INT)
+"""Resume cursor — stands in for whatever your source pages by."""
+NAME = Attribute("name", STR)
+POLLED_AT = Attribute("polled_at", DATETIME)
+
+
+async def poll(config: Config, state: State) -> AsyncIterator[Message | State]:
+    cycle = (state.get(CYCLE) or 0) + 1               # your API call goes here
+    yield Message(
+        key=config[NAME],
+        topic="my-extract",
+        value=Event({CYCLE: cycle, POLLED_AT: datetime.now(timezone.utc)}),
+    )
+    yield State({CYCLE: cycle})
+
+
+stage = Extractor.of(config_topics=["my-config"], poll=poll)
 ```
 
 `Extractor` and `Transformer` are ABCs. Use the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management (HTTP clients, dedup instances, etc.) via `__aenter__` / `__aexit__`. Stateless stages simply never yield `State` and never open a RocksDB file.
@@ -57,18 +99,60 @@ stage = Transformer.of(input_topics=["input"], transform=transform)
 Running a stage is one call — all configuration is injected, nothing is read from the environment:
 
 ```python
-await Flechtwerk.of(
-    application_id="my-transformer",
-    bootstrap_servers="localhost:9092",
-    client_id="my-transformer-0",   # process identity: unique per instance, stable across restarts
-    poll_interval_seconds=60,
-    stage=stage,
-).run()
+import asyncio
+
+from flechtwerk import Flechtwerk
+
+
+async def main() -> None:
+    await Flechtwerk.of(
+        application_id="my-transformer",
+        bootstrap_servers="localhost:9092",
+        client_id="my-transformer-0",   # process identity: unique per instance, stable across restarts
+        poll_interval_seconds=60,
+        stage=stage,                    # from above
+    ).run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
+
+This plus one stage definition from above is the whole program — point it at any Kafka broker.
 
 ### Typed records, not bare dicts
 
-`Event`, `State`, and `Config` are `Record` subclasses — dict-like containers indexed by typed `Attribute` handles rather than string keys. (`Message` is a frozen dataclass envelope carrying a key, topic, `Event` value, and optional timestamp.) Each `Attribute[V]` carries an explicit `Codec[V]` that runs on every write, so the underlying `.raw` payload stays JSON-native by construction; wire encoding becomes a straight `json.dumps`, and decode is a straight `Record.wrap(raw)`. Codecs compose: atoms (`STR`, `INT`, `BOOL`, `DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`) plus constructors (`LIST`, `SET`, `TUPLE`, `DICT`). A required attribute (the default) rejects `None`; `Attribute(name, codec, optional=True)` accepts it — the read distinction (`V` vs `V | None`) is carried by the method (`[]` vs `.get`/`.pop`), not the attribute. Dict-spread (`Record({**other, NEW: value})`) is supported via polymorphic Attribute dispatch — no isinstance branches in the Record dict-ops.
+You met `Attribute` above. It exists because a stream processor lives on the JSON boundary: every input is a dict decoded from the wire, and every output and every state write goes back through `json.dumps`. Handled as bare dicts, that boundary leaks into everything — each read re-checks presence and re-parses timestamps, a `datetime` assigned three hops earlier blows up only when the record is finally serialized, and a field that silently became `null` surfaces as a `KeyError` in some consumer far from the code that dropped it.
+
+The `flechtwerk.attribute` library moves all of that to the write site. Each field is declared exactly once, as a typed handle pairing a wire name with an explicit `Codec[V]`:
+
+```python
+from datetime import datetime, timezone
+
+from flechtwerk import Event
+from flechtwerk.attribute import Attribute, DATETIME, LIST, STR
+
+DEVICE = Attribute("device", STR)
+LAST_SEEN = Attribute("last_seen", DATETIME)
+TAGS = Attribute("tags", LIST(STR), optional=True)
+
+event = Event({
+    DEVICE: "sensor-1",
+    LAST_SEEN: datetime(2026, 7, 12, 9, 30, tzinfo=timezone.utc),
+    TAGS: ["a", "b"],
+})
+
+event[LAST_SEEN]   # datetime(2026, 7, 12, 9, 30, tzinfo=timezone.utc) — a real datetime
+event.raw          # {'device': 'sensor-1', 'last_seen': '2026-07-12T09:30:00Z', 'tags': ['a', 'b']}
+
+# Both of these raise at the write site, not at serialization time:
+#   event[DEVICE] = 42     # expected str, got int
+#   event[DEVICE] = None   # cannot assign None to required Attribute('device')
+```
+
+`Event`, `State`, and `Config` are `Record` subclasses — dict-like containers indexed by these handles rather than string keys. (`Message` is a frozen dataclass envelope carrying a key, topic, `Event` value, and optional timestamp.) The codec runs on **every write**, so the underlying `.raw` payload stays JSON-native by construction: wire encoding is a straight `json.dumps(event.raw)`, decoding is a straight `Event.wrap(raw)`, and nothing in between ever needs to re-validate. A required attribute (the default) rejects `None` so a dropped value can't silently land as JSON `null`; declare fields where absence is legal with `optional=True`. The read distinction is carried by the method, not the declaration — `event[LAST_SEEN]` reads-or-raises, `event.get(TAGS)` tolerates absence and returns `V | None`.
+
+Codecs compose: atoms (`STR`, `INT`, `BOOL`, `DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`) plus constructors (`LIST(V)`, `SET(V)`, `TUPLE(V)`, `DICT(V)`). And records spread like dicts — `Event({**event, LAST_SEEN: later})` — so enrichment never has to mutate its input.
 
 The point isn't ceremony; it's that the boundary between "Python object graph" and "JSON on the wire" is enforced at assignment time, once per Attribute declaration, rather than re-derived on every serialize/deserialize.
 
@@ -77,19 +161,31 @@ The point isn't ceremony; it's that the boundary between "Python object graph" a
 A stage declares two kinds of topics. `input_topics` (transformers only) are partitioned: their records drive `transform()` and define the task model. `config_topics` are read **in full by every instance** into one per-process `ConfigStore` keyed by wire key — Kafka Streams' GlobalKTable, specialized to configuration:
 
 ```python
+from collections.abc import AsyncIterator
+
+from flechtwerk import Extractor, IncomingMessage, Message, State, Transformer
+
+
 class MyExtractor(Extractor):
     config_topics = ["my-config"]          # an extractor's inputs ARE config topics
+    ...                                    # plus your poll()
+
 
 class RequestDriven(Transformer):
     input_topics = ["my-requests"]         # partitioned, keyed stream
     config_topics = ["my-config"]          # config table, joined by key
 
-    async def transform(self, msg, state):
-        config = self.configs.get(msg.key)
-        ...
+    async def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+        config = self.configs.get(msg.key)  # eventually consistent lookup
+        if config is None:
+            return                          # no config for this key (yet)
+        yield Message(key=msg.key, topic="my-results", value=msg.value)
+
+
+stage = RequestDriven()
 ```
 
-For extractors this is simply how config handling has always worked, named. For transformers it is the escape hatch from the co-partitioning requirement: a config topic's partition placement and count are irrelevant, so any producer (Kafka UI included) can write configs without routing them to the "right" partition. The source topics are their own changelog — compacted, small, re-read on every startup — and lookups are eventually consistent, outside the task transaction (the GlobalKTable caveat).
+For extractors this is not an extra mechanism but the baseline: config topics are the only Kafka input an extractor has. For transformers it is the escape hatch from the co-partitioning requirement: a config topic's partition placement and count are irrelevant, so any producer (Kafka UI included) can write configs without routing them to the "right" partition. The source topics are their own changelog — compacted, small, re-read on every startup — and lookups are eventually consistent, outside the task transaction (the GlobalKTable caveat).
 
 `Stage.enrich(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it once per config record — never per poll tick or lookup — and both stage kinds inherit it. Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation; Flechtwerk re-reads the topics through the same enrich path on every startup, so the enriched store cannot diverge.
 
@@ -98,14 +194,26 @@ For extractors this is simply how config handling has always worked, named. For 
 `flechtwerk.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped — one shared paho connection per process driven by the asyncio event loop (no threads), persistent sessions with a stable client id, manual-ACK at-least-once (a batch is ACKed to the broker only once it is provably durable in Kafka — at the top of the next poll, per the runner's re-entry contract), per-topic subscriptions fed by config records, an arrival wakeup so delivery latency is sub-second rather than poll-interval-bound, and Prometheus metrics. An application writes one pure function:
 
 ```python
-def relay(config, topic, payload):          # -> Message | None
+from datetime import datetime, timezone
+
+from flechtwerk import Config, Event, Message
+from flechtwerk.attribute import Attribute, DATETIME, RECORD, Record, STR
+from flechtwerk.mqtt import MqttExtractor
+
+DATA = Attribute("data", RECORD)
+DEVICE_ID = Attribute("device_id", STR)
+PROCESSING_TIME = Attribute("processing_time", DATETIME)
+
+
+def relay(config: Config, topic: str, payload: Record) -> Message | None:
     return Message(
         key=payload[DEVICE_ID],             # missing → the framework poison-drops
-        topic=EXTRACT_TOPIC,
-        value=Event({DATA: payload, PROCESSING_TIME: now(), TYPE: "acme"}),
+        topic="my-extract",
+        value=Event({DATA: payload, PROCESSING_TIME: datetime.now(timezone.utc)}),
     )
 
-stage = MqttExtractor.of(config_topics=["acme-config"], relay=relay)
+
+stage = MqttExtractor.of(config_topics=["my-config"], relay=relay)
 ```
 
 Return a `Message` to forward, `None` to drop (ACKed immediately), or raise to poison-drop (logged, ACKed, counted — never a crash loop on a broken payload). Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template. Broker settings are injected via `Flechtwerk.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra.
@@ -137,7 +245,7 @@ This is a property of the model, not a feature of the framework — building a s
 - **Event-time windowing with watermarks** — if you need this, use Flink. Flechtwerk targets the much larger class of problems where processing-time semantics are sufficient.
 - **Stream-stream joins, complex topologies** — operators compose by writing to and reading from intermediate Kafka topics, not by chaining method calls.
 - **Savepoints / state migrations** — recovery is changelog replay; schema evolution is the application's responsibility.
-- **A DSL** — the API surface is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`, `ConfigStore`. That's the full vocabulary.
+- **A DSL** — the stream-processing vocabulary is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`, `ConfigStore`, plus the typed-record handles of `flechtwerk.attribute`. That's it.
 
 ## Development
 
