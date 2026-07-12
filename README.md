@@ -1,5 +1,7 @@
 # Flechtwerk
 
+<img src="assets/flechtwerk-weave.svg" alt="Flechtwerk — an endless interwoven braid" width="100%" height="60">
+
 [![CI](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg)](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml)
 [![Coverage Status](https://codecov.io/gh/bsure-analytics/flechtwerk/branch/main/graph/badge.svg)](https://codecov.io/gh/bsure-analytics/flechtwerk)
 [![PyPI version](https://img.shields.io/pypi/v/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
