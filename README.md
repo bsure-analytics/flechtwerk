@@ -1,10 +1,14 @@
 # Flechtwerk
 
-[![CI](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg)](https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml)
-[![Coverage Status](https://codecov.io/gh/bsure-analytics/flechtwerk/branch/main/graph/badge.svg)](https://codecov.io/gh/bsure-analytics/flechtwerk)
-[![PyPI version](https://img.shields.io/pypi/v/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
-[![Python versions](https://img.shields.io/pypi/pyversions/flechtwerk.svg)](https://pypi.org/project/flechtwerk/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<div align="center">
+  <img src="assets/flechtwerk-ornament.svg" alt="Flechtwerk — Celtic interlace" width="100%" height="60">
+  <a href="https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml"><img src="https://github.com/bsure-analytics/flechtwerk/actions/workflows/ci.yaml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/bsure-analytics/flechtwerk"><img src="https://codecov.io/gh/bsure-analytics/flechtwerk/branch/main/graph/badge.svg" alt="Coverage Status"></a>
+  <a href="https://pypi.org/project/flechtwerk/"><img src="https://img.shields.io/pypi/v/flechtwerk.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/flechtwerk/"><img src="https://img.shields.io/pypi/pyversions/flechtwerk.svg" alt="Python versions"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <img src="assets/flechtwerk-ornament.svg" alt="Flechtwerk — Celtic interlace" width="100%" height="60">
+</div>
 
 Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data.
 
@@ -55,12 +59,10 @@ SEEN = Attribute("seen", INT)
 TIMESTAMP = Attribute("timestamp", DATETIME)
 """When the event happened at the source."""
 
-
 async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
     seen = (state.get(SEEN) or 0) + 1
     yield Message(key=msg.key, topic="my-output", value=Event({**msg.value, SEEN: seen}))
     yield State({SEEN: seen, TIMESTAMP: msg.value[TIMESTAMP]})
-
 
 stage = Transformer.of(input_topics=["my-input"], transform=transform)
 ```
@@ -81,7 +83,6 @@ CYCLE = Attribute("cycle", INT)
 NAME = Attribute("name", STR)
 POLLED_AT = Attribute("polled_at", DATETIME)
 
-
 async def poll(config: Config, state: State) -> AsyncIterator[Message | State]:
     cycle = (state.get(CYCLE) or 0) + 1               # your API call goes here
     yield Message(
@@ -90,7 +91,6 @@ async def poll(config: Config, state: State) -> AsyncIterator[Message | State]:
         value=Event({CYCLE: cycle, POLLED_AT: datetime.now(timezone.utc)}),
     )
     yield State({CYCLE: cycle})
-
 
 stage = Extractor.of(config_topics=["my-config"], poll=poll)
 ```
@@ -104,7 +104,6 @@ import asyncio
 
 from flechtwerk import Flechtwerk
 
-
 async def main() -> None:
     await Flechtwerk.of(
         application_id="my-transformer",
@@ -113,7 +112,6 @@ async def main() -> None:
         poll_interval_seconds=60,
         stage=stage,                    # from above
     ).run()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -166,11 +164,9 @@ from collections.abc import AsyncIterator
 
 from flechtwerk import Extractor, IncomingMessage, Message, State, Transformer
 
-
 class MyExtractor(Extractor):
     config_topics = ["my-config"]          # an extractor's inputs ARE config topics
     ...                                    # plus your poll()
-
 
 class RequestDriven(Transformer):
     input_topics = ["my-requests"]         # partitioned, keyed stream
@@ -181,7 +177,6 @@ class RequestDriven(Transformer):
         if config is None:
             return                          # no config for this key (yet)
         yield Message(key=msg.key, topic="my-results", value=msg.value)
-
 
 stage = RequestDriven()
 ```
@@ -205,14 +200,12 @@ DATA = Attribute("data", RECORD)
 DEVICE_ID = Attribute("device_id", STR)
 PROCESSING_TIME = Attribute("processing_time", DATETIME)
 
-
 def relay(config: Config, topic: str, payload: Record) -> Message | None:
     return Message(
         key=payload[DEVICE_ID],             # missing → the framework poison-drops
         topic="my-extract",
         value=Event({DATA: payload, PROCESSING_TIME: datetime.now(timezone.utc)}),
     )
-
 
 stage = MqttExtractor.of(config_topics=["my-config"], relay=relay)
 ```
