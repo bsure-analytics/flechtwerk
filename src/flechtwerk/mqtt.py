@@ -56,6 +56,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from copy import deepcopy
 from typing import TYPE_CHECKING, AsyncIterator, Final, Self
 
 from paho.mqtt.client import CallbackAPIVersion, Client, MQTTMessage, topic_matches_sub
@@ -437,6 +438,9 @@ class MqttExtractor(Extractor, ABC):
         Message-level only: connection failures never reach this hook. Sources
         needing state, 1:N fan-out, or non-JSON payloads override ``poll()``
         instead.
+
+        ``config`` and ``payload`` are read-only and private to each call, so
+        mutating either in place has no effect and is silently discarded.
         """
 
     async def poll(self, config: Config, _: State) -> AsyncIterator[Message | State]:
@@ -462,7 +466,9 @@ class MqttExtractor(Extractor, ABC):
         log.info("Draining %d MQTT message(s) from topic %s", len(batch), sub.topic)
         for msg in batch:
             try:
-                message = self.relay(config, msg.topic, Record.wrap(json.loads(msg.payload)))
+                # A private config copy per call: relay() is a pure hook, so a
+                # mutation of any parameter must not leak to the next message.
+                message = self.relay(deepcopy(config), msg.topic, Record.wrap(json.loads(msg.payload)))
             except Exception:
                 log.warning("Dropping poison MQTT message from topic %s", msg.topic, exc_info=True)
                 self.observer.mqtt_message_dropped(sub.topic, "poison")

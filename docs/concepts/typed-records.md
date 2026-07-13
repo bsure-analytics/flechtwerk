@@ -62,7 +62,13 @@ enriched = Event({**event, LAST_SEEN: later})
 out = Event({**msg.value, SEEN: seen})
 ```
 
-This is why enrichment never has to mutate its input. `{**record, NEW: value}` builds a **fresh** record from the old one's fields plus your overrides, leaving the original untouched — so inside a `transform` you derive the next output `Event` or the next `State` by spreading `msg.value` and the current state rather than editing them in place. As a backstop, the runner hands `transform` a defensive deepcopy of the running **state**, so even an accidental in-place mutation there can't leak into a later record for the same key.
+This is why enrichment never has to mutate its input. `{**record, NEW: value}` builds a **fresh** record from the old one's fields plus your overrides, leaving the original untouched — so inside a `transform` (or a `poll`, or a `relay`) you derive the next output `Event` or the next `State` by spreading, rather than editing in place.
+
+And it is a backstop, not merely a convention:
+
+!!! warning "Parameters are read-only — mutations are ignored"
+
+    The runner hands every stage hook a **private copy of its mutable parameters** — the running `state`, and, for extractors, the `config` — and it never reuses the single-use `msg` after the call returns. **Mutating a passed parameter in place therefore has no effect; the change is silently discarded.** The only way to emit output or change state is to `yield`, and the way to enrich is to spread into a fresh record.
 
 And spreading is not an escape hatch around the type system: the spread runs through the **same typed-write path**, so every field — carried over or overridden — is codec-checked, and the result's `.raw` stays JSON-native by construction.
 

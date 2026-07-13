@@ -78,6 +78,13 @@ What each yield does here:
 - `yield State(...)` persists the running count for `msg.key`. On the next
   record for that key, `state.get(SEEN)` reads it back.
 
+!!! note "Parameters are read-only"
+
+    `msg` and `state` are yours to read, not to change: the runner hands
+    `transform` a private copy of `state` and discards any in-place edit, so the
+    only way to emit a record or persist state is to `yield`. Enrich by
+    spreading (`Event({**msg.value, SEEN: seen})`), never by mutating in place.
+
 !!! note "Typed Records, Not Bare Dicts"
 
     `SEEN` and `TIMESTAMP` are `Attribute` handles: each pairs a wire name with
