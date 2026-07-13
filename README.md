@@ -39,12 +39,12 @@ The whole contract is two `yield` statements inside an async generator:
 - `yield Message(...)` to emit an output record.
 - `yield State(...)` to persist state for the current key — or `yield` a falsy `State` to tombstone it.
 
-That's it. There are no agents, no tables, no DSL, no `@app.topic` decorators, no fluent builders — a stage is an async generator, and every Python developer already knows how to read one.
+That's it. There are no agents, no tables, no DSL, no global app to register against, no fluent builders — a stage is a plain async generator, and a single decorator names its topics and turns it into a runnable stage. Every Python developer already knows how to read one.
 
 ```python
 from collections.abc import AsyncIterator
 
-from flechtwerk import Event, IncomingMessage, Message, State, Transformer
+from flechtwerk import Event, IncomingMessage, Message, State, transformer
 from flechtwerk.attribute import Attribute, DATETIME, INT
 
 SEEN = Attribute("seen", INT)
@@ -52,12 +52,11 @@ SEEN = Attribute("seen", INT)
 TIMESTAMP = Attribute("timestamp", DATETIME)
 """When the event happened at the source."""
 
-async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+@transformer(input_topics=["my-input"])
+async def stage(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
     seen = (state.get(SEEN) or 0) + 1
     yield Message(key=msg.key, topic="my-output", value=Event({**msg.value, SEEN: seen}))
     yield State({SEEN: seen, TIMESTAMP: msg.value[TIMESTAMP]})
-
-stage = Transformer.of(input_topics=["my-input"], transform=transform)
 ```
 
 Running a stage is one call — all configuration is injected, nothing is read from the environment:

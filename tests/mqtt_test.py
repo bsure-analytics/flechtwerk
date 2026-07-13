@@ -7,7 +7,7 @@ import pytest
 
 from flechtwerk import Config, Event, Message, State
 from flechtwerk.attribute import Record
-from flechtwerk.mqtt import MqttBrokerConfig, MqttConnection, MqttExtractor
+from flechtwerk.mqtt import MqttBrokerConfig, MqttConnection, MqttExtractor, mqtt_extractor
 from flechtwerk.testing import FakeMqttConnection, RecordingObserver, make_mqtt_message as make_message
 
 DEFAULT_BROKER = MqttBrokerConfig(broker="localhost", port=1883, qos=1)
@@ -654,3 +654,38 @@ async def test_template_propagates_connection_errors():
 async def test_template_yields_nothing_when_no_messages():
     ext = make_template_extractor(forward_relay)
     assert await collect_poll(ext) == []
+
+
+# -- MqttExtractor: the decorator form ---------------------------------------
+
+
+def test_mqtt_extractor_decorator_builds_equivalent_stage():
+    """@mqtt_extractor binds a relay to its config topics, yielding an MqttExtractor."""
+
+    @mqtt_extractor(config_topics=["cfg"], drain_limit=7)
+    def stage(config: Config, topic: str, payload: Record) -> Message | None:
+        return Message(key=topic, topic="out", value=Event.wrap(payload.raw))
+
+    assert isinstance(stage, MqttExtractor)
+    assert stage.config_topics == ["cfg"]
+    assert stage.drain_limit == 7
+
+
+@pytest.mark.asyncio
+async def test_mqtt_extractor_decorator_drives_relay_template():
+    """The decorated relay rides the same template poll() as MqttExtractor.of."""
+
+    @mqtt_extractor(config_topics=["cfg"])
+    def stage(config: Config, topic: str, payload: Record) -> Message | None:
+        return Message(key=topic, topic="out", value=Event.wrap(payload.raw))
+
+    stage.connection = FakeMqttConnection()
+    stage.connection.subscribe(CONFIG.raw["topic"])
+    stage.observer = RecordingObserver()
+    stage.connection.publish(topic="t/aa/events", payload=b'{"x": 1}')
+
+    messages = [item async for item in stage.poll(CONFIG, State())]
+
+    assert len(messages) == 1
+    assert messages[0].key == "t/aa/events"
+    assert messages[0].value.raw == {"x": 1}

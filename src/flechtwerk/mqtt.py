@@ -74,7 +74,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-__all__ = ["MqttBrokerConfig", "MqttConnection", "MqttExtractor", "MqttSubscription", "TOPIC"]
+__all__ = ["MqttBrokerConfig", "MqttConnection", "MqttExtractor", "mqtt_extractor", "MqttSubscription", "TOPIC"]
 
 TOPIC: Final = Attribute("topic", STR)
 """Required config field: the MQTT topic filter a config subscribes to.
@@ -341,8 +341,9 @@ class MqttExtractor(Extractor, ABC):
     Opens the connection eagerly in ``__aenter__`` — so it is connected (and
     visible in the broker dashboard) even before any config arrives — and
     closes it in ``__aexit__``. Concrete stages declare ``config_topics`` and
-    implement ``relay()`` (or pass one to ``of``); the template ``poll()``
-    owns subscription, draining, JSON decoding, and the manual-ACK protocol.
+    implement ``relay()`` (or pass one to ``of`` / the ``@mqtt_extractor``
+    decorator); the template ``poll()`` owns subscription, draining, JSON
+    decoding, and the manual-ACK protocol.
     One config per topic: the connection routes inbound by topic and each
     per-topic view owns its buffer + pending-ACK list.
     """
@@ -490,3 +491,35 @@ class _FunctionalMqttExtractor(MqttExtractor):
     instance attribute on every call.
     """
     relay = None  # type: ignore[assignment]
+
+
+def mqtt_extractor(
+        *,
+        config_topics: list[str],
+        drain_limit: int = 1000,
+        enrich: EnrichFn | None = None,
+        extract_key: ExtractKeyFn | None = None,
+) -> Callable[[RelayFn], MqttExtractor]:
+    """Decorator form of `MqttExtractor.of` — bind a relay function to its config topics.
+
+    The decorated relay function becomes the built `MqttExtractor`, so the name
+    you define *is* the stage, ready to hand to ``Flechtwerk.of``::
+
+        @mqtt_extractor(config_topics=["my-config"])
+        def stage(config: Config, topic: str, payload: Record) -> Message | None:
+            ...
+
+    ``drain_limit``, ``enrich``, and ``extract_key`` are the same optional
+    overrides as on `MqttExtractor.of` — this is exactly that call with ``relay``
+    supplied by the decoration. Sources needing state, 1:N fan-out, or non-JSON
+    payloads subclass `MqttExtractor` and override ``poll()`` instead.
+    """
+    def decorator(relay: RelayFn) -> MqttExtractor:
+        return MqttExtractor.of(
+            config_topics=config_topics,
+            drain_limit=drain_limit,
+            enrich=enrich,
+            extract_key=extract_key,
+            relay=relay,
+        )
+    return decorator

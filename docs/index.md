@@ -12,17 +12,17 @@ If you've run Kafka Streams in production, the model is immediately familiar: st
 
 ## The Whole Contract Is Two Yields
 
-There are no agents, no tables, no DSL, no `@app.topic` decorators, no fluent builders. A stage is an async generator, and the entire contract is two `yield` statements:
+There are no agents, no tables, no DSL, no global app to register against, no fluent builders. A stage is an async generator, and the entire contract is two `yield` statements:
 
 - `yield Message(...)` to emit an output record.
 - `yield State(...)` to persist state for the current key — or `yield` a falsy `State` to tombstone the key.
 
-An async generator is already the right shape — pull-based, backpressure-friendly, naturally composable — and every Python developer already knows how to read one.
+An async generator is already the right shape — pull-based, backpressure-friendly, naturally composable — and every Python developer already knows how to read one. A single decorator names its topics and turns it into a runnable stage — no global app, no registry, just a constructor:
 
 ```python
 from collections.abc import AsyncIterator
 
-from flechtwerk import Event, IncomingMessage, Message, State, Transformer
+from flechtwerk import Event, IncomingMessage, Message, State, transformer
 from flechtwerk.attribute import Attribute, DATETIME, INT
 
 SEEN = Attribute("seen", INT)
@@ -30,19 +30,18 @@ SEEN = Attribute("seen", INT)
 TIMESTAMP = Attribute("timestamp", DATETIME)
 """When the event happened at the source."""
 
-async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+@transformer(input_topics=["my-input"])
+async def stage(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
     seen = (state.get(SEEN) or 0) + 1
     yield Message(key=msg.key, topic="my-output", value=Event({**msg.value, SEEN: seen}))
     yield State({SEEN: seen, TIMESTAMP: msg.value[TIMESTAMP]})
-
-stage = Transformer.of(input_topics=["my-input"], transform=transform)
 ```
 
 That plus one `Flechtwerk.of(...).run()` call is the whole program — point it at any Kafka broker.
 
 !!! tip "Two Shapes, One Contract"
 
-    An `Extractor` is the same two-yield contract driven from the other end: `poll(config, state)` pulls from an external source once per config record per poll cycle and uses `State` as its resume cursor. A `Transformer` consumes partitioned input topics and publishes with exactly-once delivery. Both are ABCs — reach for the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management. Stateless stages simply never yield `State` and never open a RocksDB file.
+    An `Extractor` is the same two-yield contract driven from the other end: `poll(config, state)` pulls from an external source once per config record per poll cycle and uses `State` as its resume cursor. A `Transformer` consumes partitioned input topics and publishes with exactly-once delivery. Both are ABCs — decorate a function with `@transformer(...)` / `@extractor(...)` (or call the `.of(...)` factory it wraps) for stateless or simply-stateful stages, or subclass directly when you need lifecycle management. Stateless stages simply never yield `State` and never open a RocksDB file.
 
 ## Where to Next
 

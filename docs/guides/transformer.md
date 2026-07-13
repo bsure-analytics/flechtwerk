@@ -38,12 +38,13 @@ transformer needs its topics in place:
 
 The example below counts how many events each key has produced, stamps that
 count onto every outgoing record, and remembers it as per-key state. Build the
-stage with the `Transformer.of(...)` factory — no subclass needed.
+stage by decorating a `transform` function with `@transformer(...)` — no
+subclass needed.
 
 ```python
 from collections.abc import AsyncIterator
 
-from flechtwerk import Event, IncomingMessage, Message, State, Transformer
+from flechtwerk import Event, IncomingMessage, Message, State, transformer
 from flechtwerk.attribute import Attribute, DATETIME, INT
 
 SEEN = Attribute("seen", INT)
@@ -51,12 +52,11 @@ SEEN = Attribute("seen", INT)
 TIMESTAMP = Attribute("timestamp", DATETIME)
 """When the event happened at the source."""
 
+@transformer(input_topics=["my-input"])
 async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
     seen = (state.get(SEEN) or 0) + 1
     yield Message(key=msg.key, topic="my-output", value=Event({**msg.value, SEEN: seen}))
     yield State({SEEN: seen, TIMESTAMP: msg.value[TIMESTAMP]})
-
-stage = Transformer.of(input_topics=["my-input"], transform=transform)
 ```
 
 What each yield does here:
@@ -83,19 +83,29 @@ What each yield does here:
     like dicts — `Event({**msg.value, SEEN: seen})` — so enrichment never
     mutates its input. See [Typed attributes & records](../concepts/typed-attributes.md).
 
-!!! tip "Factory or Subclass?"
+!!! tip "Decorator, Factory, or Subclass?"
 
-    `Transformer` and `Extractor` are ABCs. Use the `.of(...)` factory for
-    stateless or simply-stateful stages. Subclass directly when you need
-    lifecycle management (HTTP clients, dedup instances, etc.) via `__aenter__`
-    / `__aexit__`.
+    `Transformer` and `Extractor` are ABCs. Decorate a function with
+    `@transformer(...)` / `@extractor(...)` — or call the `.of(...)` factory it
+    wraps — for stateless or simply-stateful stages. Subclass directly when you
+    need lifecycle management (HTTP clients, dedup instances, etc.) via
+    `__aenter__` / `__aexit__`.
 
 ## Running It
 
 Build the stage as above and run it with the single `Flechtwerk.of(...).run()`
 call from [Getting Started → Running a Stage](getting-started.md#running-a-stage).
-A transformer takes no stage-specific run parameters — pass it as `stage` and
-you're done.
+A transformer takes no stage-specific run parameters — pass the decorated
+`transform` as the `stage` and you're done:
+
+```python
+await Flechtwerk.of(
+    application_id="my-transformer",
+    bootstrap_servers="localhost:9092",
+    client_id="my-transformer-0",
+    stage=transform,                     # the decorated transform above
+).run()
+```
 
 ## Next Steps
 

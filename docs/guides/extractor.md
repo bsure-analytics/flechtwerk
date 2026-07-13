@@ -53,14 +53,14 @@ with these differences:
 ## A Minimal Extractor
 
 The example below polls once per config record, advances a per-key cursor, and
-emits one record per cycle. Build it with the `Extractor.of(...)` factory — no
-subclass needed.
+emits one record per cycle. Build it by decorating a `poll` function with
+`@extractor(...)` — no subclass needed.
 
 ```python
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
-from flechtwerk import Config, Event, Extractor, Message, State
+from flechtwerk import Config, Event, extractor, Message, State
 from flechtwerk.attribute import Attribute, DATETIME, INT, STR
 
 CYCLE = Attribute("cycle", INT)
@@ -69,6 +69,7 @@ NAME = Attribute("name", STR)
 """Carried on the config record; names the thing this poll target extracts."""
 POLLED_AT = Attribute("polled_at", DATETIME)
 
+@extractor(config_topics=["my-config"])
 async def poll(config: Config, state: State) -> AsyncIterator[Message | State]:
     cycle = (state.get(CYCLE) or 0) + 1               # your API call goes here
     yield Message(
@@ -77,8 +78,6 @@ async def poll(config: Config, state: State) -> AsyncIterator[Message | State]:
         value=Event({CYCLE: cycle, POLLED_AT: datetime.now(timezone.utc)}),
     )
     yield State({CYCLE: cycle})
-
-stage = Extractor.of(config_topics=["my-config"], poll=poll)
 ```
 
 `poll` receives the `Config` record that selects this poll target and the `State`
@@ -148,11 +147,21 @@ each cycle simply never yields `State`.
 ## Running It
 
 An `Extractor` runs with the same single `Flechtwerk.of(...).run()` call as any
-stage — see [Getting Started → Running a Stage](getting-started.md#running-a-stage).
-The one knob an extractor must set is `poll_interval` (a positive `timedelta`):
-the interval between polls, and — for a push source like the
-[MQTT Extractor](mqtt.md) — the idle wait that the arrival wakeup cuts short.
-Startup fails fast if it is missing.
+stage — see [Getting Started → Running a Stage](getting-started.md#running-a-stage)
+for the shared knobs. The one extractor-specific knob is `poll_interval` (a
+positive `timedelta`): the interval between polls, and — for a push source like
+the [MQTT Extractor](mqtt.md) — the idle wait that the arrival wakeup cuts short.
+Startup fails fast if it is missing. Pass the decorated `poll` as the `stage`:
+
+```python
+await Flechtwerk.of(
+    application_id="my-extractor",
+    bootstrap_servers="localhost:9092",
+    client_id="my-extractor-0",
+    poll_interval=timedelta(minutes=1),  # required for extractors
+    stage=poll,                          # the decorated poll above
+).run()
+```
 
 ## Run Exactly One Instance
 

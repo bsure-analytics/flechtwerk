@@ -47,10 +47,11 @@ The whole contract is two `yield` statements inside an async generator:
 - `yield State(...)` to persist state for the current key.
     - `yield <falsy State>` to tombstone the key.
 
-That's it. There are no agents, no tables, no DSL, no `@app.topic`
-decorators, and no fluent builders. An async generator is already the right
+That's it. There are no agents, no tables, no DSL, no global app to register
+against, and no fluent builders. An async generator is already the right
 shape — pull-based, backpressure-friendly, naturally composable — and every
-Python developer already knows how to read one.
+Python developer already knows how to read one; a single decorator names its
+topics and turns it into a runnable stage.
 
 Both stage shapes apply this contract — an `Extractor` once per poll cycle, a
 `Transformer` once per input record. The runner persists a `State` only when it
@@ -68,12 +69,11 @@ nothing is read from the environment.
 import asyncio
 from collections.abc import AsyncIterator
 
-from flechtwerk import Flechtwerk, IncomingMessage, Message, State, Transformer
+from flechtwerk import Flechtwerk, IncomingMessage, Message, State, transformer
 
-async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+@transformer(input_topics=["my-input"])
+async def stage(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
     yield Message(key=msg.key, topic="my-output", value=msg.value)   # forward unchanged
-
-stage = Transformer.of(input_topics=["my-input"], transform=transform)
 
 async def main() -> None:
     await Flechtwerk.of(

@@ -18,20 +18,19 @@ from datetime import datetime, timezone
 
 from flechtwerk import Config, Event, Message
 from flechtwerk.attribute import Attribute, DATETIME, RECORD, Record, STR
-from flechtwerk.mqtt import MqttExtractor
+from flechtwerk.mqtt import mqtt_extractor
 
 DATA = Attribute("data", RECORD)
 DEVICE_ID = Attribute("device_id", STR)
 PROCESSING_TIME = Attribute("processing_time", DATETIME)
 
+@mqtt_extractor(config_topics=["my-config"])
 def relay(config: Config, topic: str, payload: Record) -> Message | None:
     return Message(
         key=payload[DEVICE_ID],             # missing → the framework poison-drops
         topic="my-extract",
         value=Event({DATA: payload, PROCESSING_TIME: datetime.now(timezone.utc)}),
     )
-
-stage = MqttExtractor.of(config_topics=["my-config"], relay=relay)
 ```
 
 The `relay` return value decides the record's fate:
@@ -53,7 +52,7 @@ await Flechtwerk.of(
     client_id="my-mqtt-source-0",       # also the MQTT session identity
     poll_interval=timedelta(minutes=1), # the arrival wakeup keeps latency sub-second
     mqtt=MqttBrokerConfig(broker="localhost", port=1883),
-    stage=stage,                        # from above
+    stage=relay,                        # the decorated relay above
 ).run()
 ```
 

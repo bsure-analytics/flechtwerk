@@ -37,10 +37,17 @@ class ConfigEntry:
 class Extractor(Stage, ABC):
     """Poll-driven data extractor (stateful or stateless).
 
-    Two ways to construct one:
+    Three ways to construct one:
 
-    * Functionally with ``Extractor.of(...)``, supplying a poll function
-      and the config topics::
+    * Declaratively with the ``@extractor(...)`` decorator, which binds a poll
+      function to its config topics — the decorated name becomes the stage::
+
+          @extractor(config_topics=["my-config"])
+          async def stage(config, state):
+              ...
+
+    * Functionally with ``Extractor.of(...)``, the factory the decorator wraps,
+      when the poll function must stay callable under its own name::
 
           stage = Extractor.of(
               config_topics=["my-config"],
@@ -156,6 +163,37 @@ class _FunctionalExtractor(Extractor):
     instance attribute on every call.
     """
     poll = None  # type: ignore[assignment]
+
+
+def extractor(
+        *,
+        config_topics: list[str],
+        enrich: EnrichFn | None = None,
+        extract_key: ExtractKeyFn | None = None,
+) -> Callable[[PollFn], Extractor]:
+    """Decorator form of `Extractor.of` — bind a poll function to its config topics.
+
+    The decorated async generator becomes the built `Extractor`, so the name you
+    define *is* the stage, ready to hand to `Flechtwerk.of`::
+
+        @extractor(config_topics=["my-config"])
+        async def stage(config: Config, state: State) -> AsyncIterator[Message | State]:
+            ...
+
+    ``enrich`` and ``extract_key`` are the same optional overrides as on
+    `Extractor.of` — this is exactly that call with ``poll`` supplied by the
+    decoration. Call `Extractor.of` directly when the poll function must stay
+    callable under its own name, and subclass `Extractor` when you need
+    lifecycle management (``__aenter__`` / ``__aexit__``).
+    """
+    def decorator(poll: PollFn) -> Extractor:
+        return Extractor.of(
+            config_topics=config_topics,
+            enrich=enrich,
+            extract_key=extract_key,
+            poll=poll,
+        )
+    return decorator
 
 
 class ExtractorRunner:

@@ -38,10 +38,18 @@ class BucketResult:
 class Transformer(Stage, ABC):
     """Event transformer (stateless or stateful).
 
-    Two ways to construct one:
+    Three ways to construct one:
 
-    * Functionally with ``Transformer.of(...)``, supplying a transform
-      function and the input topics::
+    * Declaratively with the ``@transformer(...)`` decorator, which binds a
+      transform function to its input topics — the decorated name becomes the
+      stage::
+
+          @transformer(input_topics=["my-topic"])
+          async def stage(msg, state):
+              ...
+
+    * Functionally with ``Transformer.of(...)``, the factory the decorator
+      wraps, when the transform function must stay callable under its own name::
 
           stage = Transformer.of(
               input_topics=["my-topic"],
@@ -160,6 +168,37 @@ class _FunctionalTransformer(Transformer):
     instance attribute on every call.
     """
     transform = None  # type: ignore[assignment]
+
+
+def transformer(
+        *,
+        input_topics: list[str],
+        enrich: EnrichFn | None = None,
+        extract_key: ExtractKeyFn | None = None,
+) -> Callable[[TransformFn], Transformer]:
+    """Decorator form of `Transformer.of` — bind a transform function to its input topics.
+
+    The decorated async generator becomes the built `Transformer`, so the name
+    you define *is* the stage, ready to hand to `Flechtwerk.of`::
+
+        @transformer(input_topics=["my-input"])
+        async def stage(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+            ...
+
+    ``enrich`` and ``extract_key`` are the same optional overrides as on
+    `Transformer.of` — this is exactly that call with ``transform`` supplied by
+    the decoration. Call `Transformer.of` directly when the transform function
+    must stay callable under its own name, and subclass `Transformer` when you
+    need lifecycle management (``__aenter__`` / ``__aexit__``).
+    """
+    def decorator(transform: TransformFn) -> Transformer:
+        return Transformer.of(
+            enrich=enrich,
+            extract_key=extract_key,
+            input_topics=input_topics,
+            transform=transform,
+        )
+    return decorator
 
 
 @dataclass(slots=True)

@@ -7,7 +7,7 @@ from typing import AsyncIterator, Final
 import pytest
 
 from flechtwerk.attribute import Attribute, BOOL, INT, STR
-from flechtwerk.extractor import ConfigEntry, Extractor
+from flechtwerk.extractor import ConfigEntry, Extractor, extractor
 from flechtwerk.module import _FlechtwerkModule
 from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 from flechtwerk.types import Config, Message, State
@@ -552,6 +552,53 @@ def test_functional_extractor_default_extract_key():
     from flechtwerk.kafka import parse_message
     msg = parse_message(json_record(key="tenant/channel", value={"api_key": "a"}))
     assert ext.extract_key(msg) == "tenant/channel"
+
+
+# --- Decorator API tests ---
+
+
+def test_extractor_decorator_builds_equivalent_stage():
+    """@extractor binds a poll function to its config topics, yielding an Extractor."""
+
+    @extractor(config_topics=["cfg"])
+    async def stage(config, state) -> AsyncIterator[Message | State]:
+        yield Message(key=config[API_KEY], topic="out", value={"polled": True})
+
+    assert isinstance(stage, Extractor)
+    assert stage.config_topics == ["cfg"]
+
+    async def run():
+        items = [item async for item in stage.poll(Config.wrap({"api_key": "k"}), State())]
+        assert len(items) == 1
+        assert items[0].value == {"polled": True}
+
+    asyncio.run(run())
+
+
+def test_extractor_decorator_threads_enrich_and_extract_key():
+    """@extractor forwards the same enrich / extract_key overrides as Extractor.of."""
+
+    async def my_enrich(config):
+        config[TAG] = "enriched"
+        return config
+
+    def my_extract_key(msg):
+        return msg.value.get(ID, msg.value.get(API_KEY))
+
+    @extractor(config_topics=["cfg"], enrich=my_enrich, extract_key=my_extract_key)
+    async def stage(config, state) -> AsyncIterator[Message | State]:
+        return
+        yield  # pragma: no cover
+
+    async def run():
+        enriched = await stage.enrich(Config.wrap({"api_key": "k"}))
+        assert enriched[TAG] == "enriched"
+
+        from flechtwerk.kafka import parse_message
+        msg = parse_message(json_record(key="ignored", value={"api_key": "a", "id": "custom"}))
+        assert stage.extract_key(msg) == "custom"
+
+    asyncio.run(run())
 
 
 def test_extractor_is_abstract():

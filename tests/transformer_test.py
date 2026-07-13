@@ -7,7 +7,7 @@ import pytest
 
 from flechtwerk.attribute import Attribute, BOOL, INT, LIST, RECORD, STR
 from flechtwerk.module import _FlechtwerkModule
-from flechtwerk.transformer import Task, Transformer
+from flechtwerk.transformer import Task, Transformer, transformer
 from flechtwerk.types import Event, Message, State
 from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
@@ -211,6 +211,52 @@ def test_functional_transformer_default_extract_key():
     t = Transformer.of(input_topics=["in"], transform=my_transform)
     msg = make_incoming(key="my-key")
     assert t.extract_key(msg) == "my-key"
+
+
+# --- Decorator API tests ---
+
+
+def test_transformer_decorator_builds_equivalent_stage():
+    """@transformer binds a transform function to its input topics, yielding a Transformer."""
+
+    @transformer(input_topics=["in"])
+    async def stage(msg, _):
+        yield Message(key=msg.key, topic="out", value=msg.value)
+
+    assert isinstance(stage, Transformer)
+    assert stage.input_topics == ["in"]
+
+    async def run():
+        result = [m async for m in stage.transform(make_incoming(value={"x": 1}), State())]
+        assert len(result) == 1
+        assert result[0].value.raw == {"x": 1}
+
+    asyncio.run(run())
+
+
+def test_transformer_decorator_threads_enrich_and_extract_key():
+    """@transformer forwards the same enrich / extract_key overrides as Transformer.of."""
+
+    async def my_enrich(config):
+        config.raw["enriched"] = True
+        return config
+
+    def my_extract_key(msg):
+        return msg.value.raw.get("id", msg.key)
+
+    @transformer(input_topics=["in"], enrich=my_enrich, extract_key=my_extract_key)
+    async def stage(msg, state) -> AsyncIterator[Message]:
+        return
+        yield  # pragma: no cover
+
+    assert stage.extract_key(make_incoming(value={"id": "custom-key"})) == "custom-key"
+
+    async def run():
+        from flechtwerk.types import Config
+        enriched = await stage.enrich(Config.wrap({"a": 1}))
+        assert enriched.raw == {"a": 1, "enriched": True}
+
+    asyncio.run(run())
 
 
 def test_transformer_is_abstract():

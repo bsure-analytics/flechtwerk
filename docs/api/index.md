@@ -12,7 +12,11 @@ Flechtwerk's public surface is small and settled in shape. Every entry below is 
 
 ::: flechtwerk.Transformer
 
+::: flechtwerk.transformer.transformer
+
 ::: flechtwerk.Extractor
+
+::: flechtwerk.extractor.extractor
 
 ## Records &amp; Messages
 

@@ -1,8 +1,8 @@
 """Flechtwerk — async stream processing framework for Kafka."""
 from .configs import ConfigStore
-from .extractor import Extractor
+from .extractor import Extractor, extractor
 from .module import CompressionType, Flechtwerk, MqttBrokerConfig
-from .transformer import Transformer
+from .transformer import Transformer, transformer
 from .types import Config, Event, IncomingMessage, Message, State
 
 __all__ = [
@@ -11,10 +11,12 @@ __all__ = [
     "ConfigStore",
     "Event",
     "Extractor",
+    "extractor",
     "Flechtwerk",
     "IncomingMessage",
     "Message",
     "MqttBrokerConfig",
     "State",
     "Transformer",
+    "transformer",
 ]
