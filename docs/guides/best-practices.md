@@ -70,6 +70,55 @@ once per record, ever.
     refined write idempotent on that key). Duplicates in the raw log are cheap;
     duplicates leaking into the query model are not.
 
+## Defer Aggregation to Query Time
+
+The split above pushes downstream change from "re-ingest the source" to "replay
+the raw topic" — cheaper, but not free: a replay still costs wall-clock time
+proportional to how much history you hold, and on a large dataset that is hours,
+not seconds. So push one rung further. Anything you *can* compute at the moment
+the question is asked — **windowed aggregations, running totals, rankings,
+rollups** — leave out of the transformer and let your OLAP query engine (e.g.
+[Apache Druid](https://druid.apache.org/)) compute it at query time.
+
+```
+… ──▶ refined topic  ──▶  [ OLAP query engine ] ──▶ your apps
+      clean, granular,    aggregates, windows,
+      not pre-aggregated  ranks — at query time
+```
+
+The payoff is the replayability argument taken to its limit: a query is
+recomputed from scratch every time it runs, so **changing an aggregation is
+instant and reprocesses nothing.** Windowing is exactly where this matters most.
+It is error-prone, and you *will* rewrite it repeatedly — especially early on,
+before its shape has settled. Bake it into the transformer and every tweak,
+however small, triggers a full replay before you can see the result; keep it at
+query time and the same tweak is a one-line edit to a query. This is not merely
+convenient, it is strategic: **KISS** (no window state, no window abstraction to
+maintain) and **YAGNI** (materialize a view only once its shape has stopped
+moving).
+
+!!! note "You Moved the Cost — You Didn't Delete It"
+
+    Query-time aggregation trades re-transformation cost for query-time compute
+    and for storing finer-grained data. The trade wins because a columnar OLAP
+    engine is built for exactly this: ingestion-time rollup, fast scans, and
+    aggregation as a first-class operation. So the lesson is *defer aggregation
+    to the engine built to aggregate* — not "defer everything to query time"
+    regardless of where it lands.
+
+!!! warning "When a Window Must Live in the Pipeline"
+
+    Query time absorbs any window that produces a **read-side view** — a
+    dashboard, a report, an aggregate your apps read. It cannot absorb a window
+    that must **drive an action inside the pipeline**: alerting on a threshold,
+    deduplicating within a time gap, stitching sessions in a way that changes
+    *what gets stored*. Those need stateful stream processing, and a
+    [transformer](transformer.md) can do them with its RocksDB state and event
+    timestamps — Flechtwerk simply ships no window *abstraction*, so you build
+    the state machine explicitly. Rule of thumb: aggregate at query time when the
+    window feeds a **dashboard**; keep it in the transformer when it feeds a
+    **decision**.
+
 ## Next Steps
 
 - **[Extractors](extractor.md)** — build the ingestion half that writes the raw topic.
