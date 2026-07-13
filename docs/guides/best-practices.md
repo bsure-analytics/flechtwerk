@@ -20,6 +20,16 @@ external source ──▶ [Extractor] ──▶ raw topic ──▶ [Transformer
   your applications actually query — enriched, reshaped, validated, joined against
   config, keyed the way you want.
 
+!!! tip "Wrap the Source Verbatim"
+
+    The extractor's job is to preserve, not interpret. Take the raw JSON the source
+    returns and wrap it with `Event.wrap(payload)` — the wire-format entry point
+    that brings a `dict[str, Any]` across the JSON boundary unchanged — then spread
+    on your ingestion metadata: `Event({**Event.wrap(payload), FETCHED_AT: now})`.
+    Resist reshaping here: every transformation you do in the extractor is one you
+    can't redo from the raw topic without going back to the source. See
+    [Wrapping the source payload](extractor.md#wrapping-the-source-payload).
+
 ### Why the Split Pays Off
 
 The external source is the one input you may not be able to get back: it

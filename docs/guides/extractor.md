@@ -93,6 +93,42 @@ where the comment is; everything around it is the framework contract.
     any producer will do, Kafka UI included — and remove one by tombstoning its
     key.
 
+## Wrapping the Source Payload
+
+The example above builds its `Event` from a **typed literal** —
+`Event({CYCLE: cycle, ...})`, a `dict` keyed by `Attribute` handles, for values
+*you* construct. But what an extractor gets back from a real source is **raw
+JSON**: a `dict[str, Any]` with string keys you didn't choose. To bring that
+across the JSON boundary into a typed record, use the `wrap` classmethod — the
+wire-format entry point inherited by `Event`, `State`, and `Config`:
+
+```python
+raw = await your_api_call(config, state)   # dict[str, Any] straight from the source
+event = Event.wrap(raw)                    # verbatim, JSON-boundary-checked
+```
+
+`Event.wrap(raw)` stores each value under its original wire key after running it
+through the same JSON-native check every write goes through, so the record is safe
+to serialize and to read back through `Attribute` handles whose names match the
+JSON keys. It is the exact entry point the framework itself uses to decode every
+inbound record (`parse_message` → `Event.wrap`).
+
+Two constructor paths, picked by the shape of your input:
+
+- **`Event({ATTR: value, ...})`** — a typed literal keyed by `Attribute`s, for values you build (synthetic or computed fields).
+- **`Event.wrap(raw)`** — raw JSON you received, keyed by strings.
+
+To keep the payload as-is *and* stamp on your own fields, wrap then spread:
+
+```python
+event = Event({**Event.wrap(raw), POLLED_AT: datetime.now(timezone.utc)})
+```
+
+This "wrap the source verbatim, add ingestion metadata" shape is the backbone of
+the raw-then-refined pattern in [Best Practices](best-practices.md). See also
+[Typed attributes & records](../concepts/typed-records.md) for the `wrap` vs.
+typed-literal distinction in full.
+
 ## State Is a Resume Cursor Here — but State Is Shape-Agnostic
 
 State behaves exactly as it does for a transformer: `yield State(...)` persists it
