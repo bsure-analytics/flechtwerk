@@ -27,10 +27,10 @@ VERDIGRIS = "47,109,94"
 # One DISTINCT (style, accent) per page slug — no two pages share a style.
 PAGES = {
     "index": ("plait", LAPIS),
-    "concepts-index": ("gridknot", VERDIGRIS),
-    "concepts-architecture": ("twistknot", GARNET),
+    "concepts-index": ("spiral", VERDIGRIS),
+    "concepts-architecture": ("gridknot", GARNET),
     "concepts-exactly-once": ("chain", LAPIS),
-    "guides-index": ("threestrand", GARNET),
+    "guides-index": ("twistknot", GARNET),
     "guides-getting-started": ("stepfret", VERDIGRIS),
     "api-index": ("triquetra", LAPIS),
 }
