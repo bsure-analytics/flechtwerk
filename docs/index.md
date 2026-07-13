@@ -10,7 +10,7 @@ Flechtwerk (German: *interlacing, wickerwork*) is a small async stream processin
 
 If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via real Kafka transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
-## The whole contract is two yields
+## The Whole Contract Is Two Yields
 
 There are no agents, no tables, no DSL, no `@app.topic` decorators, no fluent builders. A stage is an async generator, and the entire contract is two `yield` statements:
 
@@ -40,10 +40,10 @@ stage = Transformer.of(input_topics=["my-input"], transform=transform)
 
 That plus one `Flechtwerk.of(...).run()` call is the whole program — point it at any Kafka broker.
 
-!!! tip "Two shapes, one contract"
+!!! tip "Two Shapes, One Contract"
 
     An `Extractor` is the same two-yield contract driven from the other end: `poll(config, state)` pulls from an external source once per config record per poll cycle and uses `State` as its resume cursor. A `Transformer` consumes partitioned input topics and publishes with exactly-once delivery. Both are ABCs — reach for the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management. Stateless stages simply never yield `State` and never open a RocksDB file.
 
-## Where to next
+## Where to Next
 
 From here, dig into the typed-record boundary that keeps the JSON wire honest, the task model behind exactly-once delivery, config topics as shared lookup tables, and the MQTT bridge that ACKs only once Kafka has the data.

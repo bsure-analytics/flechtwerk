@@ -1,4 +1,4 @@
-# Getting started
+# Getting Started
 
 This guide takes you from an empty environment to a working stream processor:
 install Flechtwerk, write a minimal `Transformer`, and run it against a Kafka
@@ -15,19 +15,19 @@ pip install "flechtwerk[mqtt]"    # with the MQTT→Kafka bridge (paho-mqtt)
 Flechtwerk requires **Python 3.12+**. Its runtime dependencies are
 `aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`.
 
-!!! tip "The `mqtt` extra is optional"
+!!! tip "The `mqtt` Extra Is Optional"
 
     Install `flechtwerk[mqtt]` only if you plan to build a push-driven source
     with the MQTT→Kafka bridge. It pulls in `paho-mqtt`, which stays confined to
     `flechtwerk.mqtt` — a plain `import flechtwerk` never loads it.
 
-!!! note "Event loop"
+!!! note "Event Loop"
 
     Run it on `uvloop` for best throughput. The framework works on stock
     `asyncio` too (and therefore on Windows) — the event loop is the
     application's choice.
 
-## The two-yield contract
+## The Two-Yield Contract
 
 The whole contract is two `yield` statements inside an async generator:
 
@@ -45,7 +45,7 @@ record; the runner only persists a `State` when it differs from the current one,
 so a stage that never yields `State` is stateless and never opens a RocksDB
 file.
 
-## A minimal transformer
+## A Minimal Transformer
 
 The example below counts how many events each key has produced, stamps that
 count onto every outgoing record, and remembers it as per-key state. Build the
@@ -78,7 +78,7 @@ What each yield does here:
 - `yield State(...)` persists the running count for `msg.key`. On the next
   record for that key, `state.get(SEEN)` reads it back.
 
-!!! note "Typed records, not bare dicts"
+!!! note "Typed Records, Not Bare Dicts"
 
     `SEEN` and `TIMESTAMP` are `Attribute` handles: each pairs a wire name with
     an explicit codec (`INT`, `DATETIME`, …) so the JSON boundary is enforced at
@@ -87,14 +87,14 @@ What each yield does here:
     like dicts — `Event({**msg.value, SEEN: seen})` — so enrichment never
     mutates its input.
 
-!!! tip "Factory or subclass?"
+!!! tip "Factory or Subclass?"
 
     `Transformer` and `Extractor` are ABCs. Use the `.of(...)` factory for
     stateless or simply-stateful stages. Subclass directly when you need
     lifecycle management (HTTP clients, dedup instances, etc.) via `__aenter__`
     / `__aexit__`.
 
-## Running it
+## Running It
 
 Running a stage is one call. All configuration is injected — nothing is read
 from the environment:
@@ -120,13 +120,13 @@ if __name__ == "__main__":
 This plus one stage definition is the whole program — point it at any Kafka
 broker.
 
-!!! warning "`client_id` is the process identity"
+!!! warning "`client_id` Is the Process Identity"
 
     Give each instance a `client_id` that is unique per instance but stable
     across restarts (in Kubernetes, the pod name works well). It anchors the
     transactional producer's fencing and the MQTT session identity.
 
-## An extractor
+## An Extractor
 
 An `Extractor` is the same two-yield contract driven from the other end.
 `poll(config, state)` runs once per config record per poll cycle, pulls from the
@@ -160,7 +160,7 @@ stage = Extractor.of(config_topics=["my-config"], poll=poll)
 Run it exactly like the transformer above — `Flechtwerk.of(...).run()` doesn't
 care which shape the stage is.
 
-## Next steps
+## Next Steps
 
 - **[Typed records](../concepts/typed-records.md)** — the `Attribute` library that keeps the JSON boundary honest.
 - **[Config topics](../concepts/config-topics.md)** — a shared, eventually-consistent lookup table for every instance (Kafka Streams' GlobalKTable).

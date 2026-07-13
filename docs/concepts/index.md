@@ -10,7 +10,7 @@ Flechtwerk (German: *interlacing, wickerwork*) is a small async stream processin
 
 If you have run Kafka Streams, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via transactions, and ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
-## Two stage shapes
+## Two Stage Shapes
 
 An application builds stages in one of two shapes. Both express their whole contract as an async generator that yields `Message` (emit an output record) and `State` (persist state for the current key; a falsy `State` tombstones the key).
 
@@ -19,23 +19,23 @@ An application builds stages in one of two shapes. Both express their whole cont
 
 Both are ABCs. Use the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management (HTTP clients, dedup instances) via `__aenter__` / `__aexit__`. Stateless stages simply never yield `State` and never open a RocksDB file.
 
-## The operational model
+## The Operational Model
 
 - **Consumer groups** drive partition assignment and rebalancing — standard Kafka semantics, no custom coordination.
 - **Changelog topics** (compacted) are the durable state of record. RocksDB is a local cache rebuilt by replay on startup. Pods are ephemeral; no PVCs.
 - **Kafka transactions** span all output messages, all state changelog writes, and offset commits for a single processing batch. Transformer work is split into per-input-partition tasks; each task owns a transactional producer (static transactional ID — EOS-v1 fencing) shared with its changelog state store via DI.
 - **Per-batch parallelism by state key.** Within a `getmany()` batch, records are bucketed by state key within each task. Buckets run concurrently via `asyncio.gather` so I/O-bound `transform` calls overlap, while records sharing a key run serially inside their bucket — each one sees the previous one's yielded state. Cross-key ordering is not preserved.
 
-!!! note "Let it crash"
+!!! note "Let It Crash"
     There is no framework-level retry logic. The line is recoverable vs non-recoverable, not transient vs persistent: catch only when the handler can actually *remedy* the problem (refresh an expired token, skip a 400 on an endpoint that does not exist for this tenant). Timeouts and 5xx crash — recovery is infrastructure: orchestrator restart, changelog replay, transaction abort. Never catch-and-skip a data error; that is silent data loss.
 
-## Where state lives
+## Where State Lives
 
 State lives in ephemeral RocksDB instances backed by a compacted Kafka changelog topic. Because all durable state lives in Kafka — input topics, output topics, and changelogs — a killed pod restarts, replays its changelog into a fresh RocksDB, and resumes exactly where it left off. There are no PVCs to snapshot and no opaque local state directories to copy.
 
 The same property that makes pods disposable in production makes them reproducible on a laptop: mirror the relevant topics and committed consumer-group offsets into a local Kafka cluster, and a locally-run stage replays the changelog into a fresh RocksDB and resumes exactly where its production counterpart left off. Frameworks that hide state in framework-managed local stores cannot offer this cleanly; the Kafka Streams model can, and Flechtwerk inherits it. It is a property of the model, not a feature of the framework — the small mirror script lives in application code.
 
-## Why Flechtwerk exists
+## Why Flechtwerk Exists
 
 Existing Python options each fail one of the constraints that matter for I/O-bound, transactional, multi-instance stream processing:
 
@@ -46,7 +46,7 @@ Existing Python options each fail one of the constraints that matter for I/O-bou
 
 Flechtwerk assumes modern Python, `asyncio`, and `aiokafka` are the right primitives and builds directly on them.
 
-## What's deliberately not here
+## What's Deliberately Not Here
 
 - **Event-time windowing with watermarks** — if you need this, use Flink. Flechtwerk targets the much larger class of problems where processing-time semantics are sufficient.
 - **Stream–stream joins, complex topologies** — operators compose by writing to and reading from intermediate Kafka topics, not by chaining method calls.

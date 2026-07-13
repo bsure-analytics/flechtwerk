@@ -14,7 +14,7 @@ Flechtwerk's public surface is small and settled in shape. Every entry below is 
 
 ::: flechtwerk.Extractor
 
-## Records &amp; messages
+## Records &amp; Messages
 
 ::: flechtwerk.Event
 
@@ -26,11 +26,11 @@ Flechtwerk's public surface is small and settled in shape. Every entry below is 
 
 ::: flechtwerk.IncomingMessage
 
-## Typed attributes
+## Typed Attributes
 
 ::: flechtwerk.attribute.Attribute
 
-## Runtime &amp; configuration
+## Runtime &amp; Configuration
 
 ::: flechtwerk.Flechtwerk
 

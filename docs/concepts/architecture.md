@@ -2,7 +2,7 @@
 
 Flechtwerk is built as a **hexagonal architecture** — ports and adapters. The core is a pure async stream-processing engine that depends only on abstract ports; every concrete piece of infrastructure plugs in from the outside as an adapter, wired through dependency injection.
 
-## Ports and adapters
+## Ports and Adapters
 
 The core (`Extractor`, `Transformer`, and their runners) depends only on abstract ports: `StateStore`, `Observer`, and the `aiokafka` consumer/producer interfaces. It knows nothing about RocksDB, Prometheus, MQTT, or where configuration comes from.
 
@@ -15,12 +15,12 @@ Adapters plug into those ports:
 
 Wiring is done through **reactor-di**. `Flechtwerk.of(...)` returns a private `_FlechtwerkModule` DI container typed as the narrow public `Flechtwerk` ABC, so an application never sees the wiring — the same idiom as `Extractor.of(...)` and `Transformer.of(...)`. All consumers run `read_committed`.
 
-!!! note "When a transport belongs in the framework"
+!!! note "When a Transport Belongs in the Framework"
     A transport adapter earns a place in the framework only when its correctness depends on runner delivery semantics. MQTT qualifies because its manual-ACK protocol (ACK only after Kafka durability) leans on the extractor runner's re-entry contract; a plain HTTP poller does not, and stays in application code.
 
 The framework has no CLI, no module-level `os.getenv`, no `load_dotenv`, and no opinions about how applications are packaged or deployed. All configuration is injected by the caller.
 
-## Module map
+## Module Map
 
 Everything ships under `src/flechtwerk/`.
 
@@ -38,13 +38,13 @@ Everything ships under `src/flechtwerk/`.
 | `metrics.py` / `observer.py` | The `Observer` port and its `PrometheusObserver` adapter. Runners emit observer events; label *names* are caller-provided via `metrics_labels`. |
 | `testing.py` | Duck-typed test doubles (`FakeKafkaConsumer` / `FakeKafkaProducer`, `make_record()`, `RecordingObserver`, `InMemoryStateStore`, and MQTT doubles). Imports no paho. |
 
-## The two stage engines
+## The Two Stage Engines
 
 ### Extractor
 
 A plain `Extractor` consumes only its `config_topics`. Config handling rides the config machinery in `configs.py`: a `group_id=None` consumer is assigned all partitions of every config topic, bootstrapped to the end offsets captured at startup, then drained non-blocking each poll cycle. `poll(config, state)` yields `Message | State`; the runner persists `State` only when it differs from the current value, and a falsy `State` deletes the entry.
 
-!!! warning "Extractors are single-instance"
+!!! warning "Extractors Are Single-Instance"
     Nothing fences concurrent extractor instances — each one reads all configs and polls every external API redundantly, and a slow instance can overwrite an advanced cursor with a stale one. Extractor output is deliberately non-transactional (at-least-once). Run exactly one replica per extractor.
 
 The runner also exposes an optional `wakeup` event so a push-driven stage (MQTT) can end the between-cycles wait early; `poll_interval_seconds` then degrades to the idle / config-drain cadence.
@@ -57,6 +57,6 @@ Exactly-once delivery is one Kafka transaction per task per `getmany()` batch, c
 
 A transformer may additionally declare `config_topics` and look entries up via `self.configs.get(wire_key)`. Config topics are read by a dedicated group-less consumer and never participate in any task transaction; lookups are eventually consistent (the GlobalKTable caveat).
 
-## Application lifecycle
+## Application Lifecycle
 
 `Flechtwerk` is an async context manager. On entry the Prometheus scrape server starts (outermost layer), then `validate_topics` runs (a transformer needs at least one input topic, an extractor at least one config topic, and the two lists must be disjoint), input and changelog partition counts are validated for transformers (config topics are exempt), and config topics are existence-checked so a missing one fails fast. `compression_type` defaults to `"zstd"` — JSON compresses roughly 13x, which is why the package depends on `aiokafka[zstd]`.

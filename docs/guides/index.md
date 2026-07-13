@@ -15,7 +15,7 @@ there, the rest of the guides branch out into the parts of Flechtwerk you reach
 for as your stages grow — stateful processing, config topics as shared lookup
 tables, and the MQTT bridge for push-driven sources.
 
-!!! tip "The whole contract is two `yield` statements"
+!!! tip "The Whole Contract Is Two `yield` Statements"
 
     Everything here is built on one idea: a stage is an async generator that
     `yield`s a `Message` to emit a record and `yield`s a `State` to persist

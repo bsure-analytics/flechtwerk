@@ -1,4 +1,4 @@
-# MQTT sources — push into the poll loop
+# MQTT Sources — Push Into the Poll Loop
 
 `flechtwerk.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped:
 
@@ -40,6 +40,6 @@ The `relay` return value decides the record's fate:
 
 Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template.
 
-!!! note "Broker settings and the optional extra"
+!!! note "Broker Settings and the Optional Extra"
 
     Broker settings are injected via `Flechtwerk.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting started](getting-started.md#installation)).
