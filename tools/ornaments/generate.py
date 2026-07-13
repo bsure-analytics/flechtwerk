@@ -34,12 +34,12 @@ PAGES = {
     "concepts-exactly-once": ("chain", LAPIS),
     "guides-index": ("twistknot", GARNET),
     "guides-getting-started": ("stepfret", VERDIGRIS),
-    "guides-extractor": ("spiral", LAPIS),
-    "guides-mqtt": ("plait", GARNET),
-    "guides-transformer": ("threestrand", LAPIS),
-    "guides-best-practices": ("gridknot", VERDIGRIS),
-    "guides-observability": ("chain", GARNET),
-    "api-index": ("triquetra", LAPIS),
+    "guides-extractor": ("braid4", GARNET),
+    "guides-mqtt": ("weave", LAPIS),
+    "guides-transformer": ("chevron", VERDIGRIS),
+    "guides-best-practices": ("twill", GARNET),
+    "guides-observability": ("chevron5", LAPIS),
+    "api-index": ("braid6", VERDIGRIS),
 }
 
 
