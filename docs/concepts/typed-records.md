@@ -62,7 +62,7 @@ enriched = Event({**event, LAST_SEEN: later})
 out = Event({**msg.value, SEEN: seen})
 ```
 
-This is why enrichment never has to mutate its input. `{**record, NEW: value}` builds a **fresh** record from the old one's fields plus your overrides, leaving the original exactly as it was — which is precisely what you want inside a `transform`, where the runner hands you a defensive copy of both the running `State` and `msg.value`. Derive the next record or the next `State` by spreading; the thing you were given is never touched.
+This is why enrichment never has to mutate its input. `{**record, NEW: value}` builds a **fresh** record from the old one's fields plus your overrides, leaving the original untouched — so inside a `transform` you derive the next output `Event` or the next `State` by spreading `msg.value` and the current state rather than editing them in place. As a backstop, the runner hands `transform` a defensive deepcopy of the running **state**, so even an accidental in-place mutation there can't leak into a later record for the same key.
 
 And spreading is not an escape hatch around the type system: the spread runs through the **same typed-write path**, so every field — carried over or overridden — is codec-checked, and the result's `.raw` stays JSON-native by construction.
 

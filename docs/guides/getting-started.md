@@ -5,6 +5,12 @@ install Flechtwerk, write a minimal `Transformer`, and run it against a Kafka
 broker with a single call. Everything is injected by the caller — the framework
 reads nothing from the environment.
 
+## Prerequisites
+
+- **Python 3.12+.**
+- **A running Kafka broker** reachable at the `bootstrap_servers` you pass below — any broker works, and a local single-node cluster is fine for development.
+- **Your input and output topics created.** At startup Flechtwerk reads each input topic's partition count (so the input topics must already exist) and creates a matching compacted changelog topic for you. Output topics are created on first write only if your broker has topic auto-creation enabled — otherwise create them too.
+
 ## Installation
 
 ```bash
@@ -112,7 +118,8 @@ if __name__ == "__main__":
 ```
 
 This plus one stage definition is the whole program — point it at any Kafka
-broker.
+broker. Produce a record to `my-input` and it comes straight back out on
+`my-output` with a running `seen` count attached.
 
 !!! note "Event Loop"
 
