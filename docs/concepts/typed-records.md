@@ -30,6 +30,10 @@ event.raw          # {'device': 'sensor-1', 'last_seen': '2026-07-12T09:30:00Z',
 
 `Event`, `State`, and `Config` are `Record` subclasses — dict-like containers indexed by these handles rather than string keys. (`Message` is a frozen dataclass envelope carrying a key, topic, `Event` value, and optional timestamp.) The codec runs on **every write**, so the underlying `.raw` payload stays JSON-native by construction: wire encoding is a straight `json.dumps(event.raw)`, decoding is a straight `Event.wrap(raw)`, and nothing in between ever needs to re-validate.
 
+!!! note "JSON Is the Only Wire Format — For Now"
+
+    JSON is currently the only supported wire format for Kafka messages, and it covers every `Event`, `State`, and `Config`. Support for other serialization protocols (Avro, Protobuf, and the like) is a possible future extension, but is not currently planned.
+
 ## Required vs. Optional
 
 A required attribute (the default) rejects `None` so a dropped value can't silently land as JSON `null`; declare fields where absence is legal with `optional=True`.
