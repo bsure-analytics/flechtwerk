@@ -21,12 +21,6 @@ Flechtwerk requires **Python 3.12+**. Its runtime dependencies are
     with the MQTT→Kafka bridge. It pulls in `paho-mqtt`, which stays confined to
     `flechtwerk.mqtt` — a plain `import flechtwerk` never loads it.
 
-!!! note "Event Loop"
-
-    Run it on `uvloop` for best throughput. The framework works on stock
-    `asyncio` too (and therefore on Windows) — the event loop is the
-    application's choice.
-
 ## The Two-Yield Contract
 
 The whole contract is two `yield` statements inside an async generator:
@@ -119,6 +113,12 @@ if __name__ == "__main__":
 
 This plus one stage definition is the whole program — point it at any Kafka
 broker.
+
+!!! note "Event Loop"
+
+    Run it on `uvloop` for best throughput. The framework works on stock
+    `asyncio` too (and therefore on Windows) — the event loop is the
+    application's choice.
 
 !!! warning "`client_id` Is the Process Identity"
 
