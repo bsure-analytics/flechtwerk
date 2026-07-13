@@ -5,6 +5,24 @@ install Flechtwerk, write a minimal `Transformer`, and run it against a Kafka
 broker with a single call. Everything is injected by the caller — the framework
 reads nothing from the environment.
 
+A `Transformer` is the workhorse for **stream-to-stream** processing: it consumes
+one or more input topics and publishes derived records to another. Typical jobs
+are enriching records with extra fields, filtering or reshaping them, aggregating
+a stream (running counts, sessionization, deduplication), or joining a stream
+against a [config table](../concepts/config-topics.md). The minimal example below
+does a small aggregation — a per-key running count.
+
+!!! note "Exactly-Once Delivery for Free"
+
+    Every transformer gets exactly-once delivery for free — no opt-in, no extra
+    configuration, no transaction code to write: the output records, state changes,
+    and input-offset commits of each batch all ride a single Kafka transaction, so
+    a record is never lost and never double-counted — even across restarts and
+    rebalances. You write the per-record logic; the framework owns the transaction.
+    See [Exactly-once delivery](../concepts/exactly-once.md) for the full mechanism.
+    (Free *for transformers* — an [extractor](extractor.md) can't have it; see
+    below on that page.)
+
 ## Prerequisites
 
 - **Python 3.12+.**
@@ -128,6 +146,9 @@ This plus one stage definition is the whole program — point it at any Kafka
 broker. Produce a record to `my-input` and it comes straight back out on
 `my-output` with a running `seen` count attached.
 
+The same `Flechtwerk.of(...).run()` call runs *any* stage — swap the transformer
+for an [Extractor](extractor.md) and nothing about the invocation changes.
+
 !!! note "Event Loop"
 
     Run it on `uvloop` for best throughput. The framework works on stock
@@ -140,42 +161,9 @@ broker. Produce a record to `my-input` and it comes straight back out on
     across restarts (in Kubernetes, the pod name works well). It anchors the
     transactional producer's fencing and the MQTT session identity.
 
-## An Extractor
-
-An `Extractor` is the same two-yield contract driven from the other end.
-`poll(config, state)` runs once per config record per poll cycle, pulls from the
-external source, and uses `State` as its resume cursor — its only Kafka input is
-its `config_topics`.
-
-```python
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
-
-from flechtwerk import Config, Event, Extractor, Message, State
-from flechtwerk.attribute import Attribute, DATETIME, INT, STR
-
-CYCLE = Attribute("cycle", INT)
-"""Resume cursor — stands in for whatever your source pages by."""
-NAME = Attribute("name", STR)
-POLLED_AT = Attribute("polled_at", DATETIME)
-
-async def poll(config: Config, state: State) -> AsyncIterator[Message | State]:
-    cycle = (state.get(CYCLE) or 0) + 1               # your API call goes here
-    yield Message(
-        key=config[NAME],
-        topic="my-extract",
-        value=Event({CYCLE: cycle, POLLED_AT: datetime.now(timezone.utc)}),
-    )
-    yield State({CYCLE: cycle})
-
-stage = Extractor.of(config_topics=["my-config"], poll=poll)
-```
-
-Run it exactly like the transformer above — `Flechtwerk.of(...).run()` doesn't
-care which shape the stage is.
-
 ## Next Steps
 
+- **[Extractor](extractor.md)** — the same two-yield contract driven from the other end: poll an external source on a timer instead of consuming an input topic.
 - **[Typed records](../concepts/typed-records.md)** — the `Attribute` library that keeps the JSON boundary honest.
 - **[Config topics](../concepts/config-topics.md)** — a shared, eventually-consistent lookup table for every instance (Kafka Streams' GlobalKTable).
 - **[MQTT Extractor](mqtt.md)** — push into the poll loop with `MqttExtractor.of(...)`, ACKing to the broker only once a batch is durable in Kafka.

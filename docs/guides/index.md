@@ -11,9 +11,11 @@ them — task-focused, worked end to end, and safe to copy from.
 
 Start with **Getting started**: install the framework, write a minimal
 `Transformer`, and run it against any Kafka broker with a single call. From
-there, the rest of the guides branch out into the parts of Flechtwerk you reach
-for as your stages grow — stateful processing, config topics as shared lookup
-tables, and the MQTT bridge for push-driven sources.
+there the guides branch out from general to specific — the **Extractor** guide
+picks up the same two-yield contract from the other end (poll an external source
+instead of consuming a topic), and **MQTT Extractor** specializes that further
+into a push-driven source. The concept pages fill in the rest: stateful
+processing, config topics as shared lookup tables, and exactly-once delivery.
 
 !!! tip "The Whole Contract Is Two `yield` Statements"
 

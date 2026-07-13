@@ -1,5 +1,7 @@
 # MQTT Extractor — Push Into the Poll Loop
 
+An `MqttExtractor` is a push-driven [`Extractor`](extractor.md): instead of polling on a timer, messages arrive over MQTT and wake the poll loop. Read the [Extractor guide](extractor.md) first for the base model — this guide covers only the MQTT-specific surface.
+
 `flechtwerk.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped:
 
 - one shared paho connection per process driven by the asyncio event loop (no threads);

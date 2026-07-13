@@ -34,6 +34,7 @@ PAGES = {
     "concepts-exactly-once": ("chain", LAPIS),
     "guides-index": ("twistknot", GARNET),
     "guides-getting-started": ("stepfret", VERDIGRIS),
+    "guides-extractor": ("spiral", LAPIS),
     "guides-mqtt": ("plait", GARNET),
     "api-index": ("triquetra", LAPIS),
 }

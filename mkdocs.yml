@@ -74,6 +74,7 @@ nav:
   - Guides:
       - guides/index.md
       - Getting Started: guides/getting-started.md
+      - Extractor: guides/extractor.md
       - MQTT Extractor: guides/mqtt.md
   - Concepts:
       - concepts/index.md
