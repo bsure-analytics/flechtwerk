@@ -72,7 +72,6 @@ async def main() -> None:
         application_id="my-transformer",
         bootstrap_servers="localhost:9092",
         client_id="my-transformer-0",   # process identity: unique per instance, stable across restarts
-        poll_interval_seconds=60,
         stage=stage,                    # from above
     ).run()
 

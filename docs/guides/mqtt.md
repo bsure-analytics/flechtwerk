@@ -51,7 +51,7 @@ await Flechtwerk.of(
     application_id="my-mqtt-source",
     bootstrap_servers="localhost:9092",
     client_id="my-mqtt-source-0",       # also the MQTT session identity
-    poll_interval_seconds=60,           # the arrival wakeup keeps latency sub-second
+    poll_interval=timedelta(minutes=1), # the arrival wakeup keeps latency sub-second
     mqtt=MqttBrokerConfig(broker="localhost", port=1883),
     stage=stage,                        # from above
 ).run()

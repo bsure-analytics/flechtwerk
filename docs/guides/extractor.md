@@ -113,8 +113,8 @@ each cycle simply never yields `State`.
 
 An `Extractor` runs with the same single `Flechtwerk.of(...).run()` call as any
 stage — see [Getting Started → Running a Stage](getting-started.md#running-a-stage).
-The one knob an extractor must set is `poll_interval_seconds` (a positive number
-of seconds): the interval between polls, and — for a push source like the
+The one knob an extractor must set is `poll_interval` (a positive `timedelta`):
+the interval between polls, and — for a push source like the
 [MQTT Extractor](mqtt.md) — the idle wait that the arrival wakeup cuts short.
 Startup fails fast if it is missing.
 

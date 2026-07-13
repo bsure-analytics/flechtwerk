@@ -8,6 +8,7 @@ a different partition (see the Co-Partitioning Trap section in CLAUDE.md).
 """
 import asyncio
 from contextlib import suppress
+from datetime import timedelta
 from typing import AsyncIterator
 
 import pytest
@@ -253,7 +254,7 @@ async def test_missing_config_topic_fails_startup(
         application_id=unique_group_id,
         bootstrap_servers=kafka_bootstrap,
         client_id=unique_group_id,
-        poll_interval_seconds=1,
+        poll_interval=timedelta(seconds=1),
         stage=transformer,
     )
     with pytest.raises(KafkaError):

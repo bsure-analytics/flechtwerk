@@ -1,6 +1,7 @@
 """Tests for Flechtwerk Extractor and ExtractorRunner."""
 import asyncio
 import json
+from datetime import timedelta
 from typing import AsyncIterator, Final
 
 import pytest
@@ -92,7 +93,7 @@ def make_module(extractor, consumer=None, producer=None, state_store=None):
     mod.metrics_labels = {}
     mod.metrics_port = 0
     mod.mqtt = None
-    mod.poll_interval_seconds = 0
+    mod.poll_interval = timedelta(0)
     mod.stage = extractor
     mod.consumer = consumer or FakeKafkaConsumer()
     mod.producer = producer or FakeKafkaProducer()
@@ -629,7 +630,7 @@ def test_run_loop_honors_wakeup():
         ext.wakeup = asyncio.Event()
         record = json_record(key="k", value={"api_key": "a"})
         mod = make_module(ext, FakeKafkaConsumer([record]))
-        mod.poll_interval_seconds = 3600  # a plain sleep would hang here
+        mod.poll_interval = timedelta(seconds=3600)  # a plain sleep would hang here
 
         with pytest.raises(StopRunner):
             await asyncio.wait_for(mod.runner.run(), timeout=5)
@@ -645,7 +646,7 @@ def test_idle_sleeps_when_no_wakeup():
     async def run():
         mod = make_module(SimpleExtractor())
         assert mod.stage.wakeup is None
-        await mod.runner.idle()  # poll_interval_seconds=0 → returns immediately
+        await mod.runner.idle()  # poll_interval=timedelta(0) → returns immediately
 
     asyncio.run(run())
 
@@ -657,7 +658,7 @@ def test_idle_returns_early_on_wakeup():
         ext = SimpleExtractor()
         ext.wakeup = asyncio.Event()
         mod = make_module(ext)
-        mod.poll_interval_seconds = 3600  # would block for an hour without the wakeup
+        mod.poll_interval = timedelta(seconds=3600)  # would block for an hour without the wakeup
 
         ext.wakeup.set()
         await asyncio.wait_for(mod.runner.idle(), timeout=1)
@@ -671,7 +672,7 @@ def test_idle_times_out_at_interval_when_wakeup_never_fires():
     async def run():
         ext = SimpleExtractor()
         ext.wakeup = asyncio.Event()
-        mod = make_module(ext)  # poll_interval_seconds=0 → immediate timeout
+        mod = make_module(ext)  # poll_interval=timedelta(0) → immediate timeout
 
         await asyncio.wait_for(mod.runner.idle(), timeout=1)
 

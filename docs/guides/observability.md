@@ -17,7 +17,6 @@ await Flechtwerk.of(
     application_id="my-stage",
     bootstrap_servers="localhost:9092",
     client_id="my-stage-0",
-    poll_interval_seconds=60,
     metrics_port=9000,                                # >0 starts the scrape server; 0 disables
     metrics_labels={"service": "my-stage", "env": "prod"},
     stage=stage,
@@ -100,7 +99,7 @@ publish topic.
   arrive?"* If a config you wrote to the topic isn't reflected here, the store
   never accepted it (wrong topic, tombstoned, or malformed — a bad value decodes
   to empty). See [Config topics](../concepts/config-topics.md).
-- **`poll_cycle_seconds` approaching `poll_interval_seconds`** — the extractor is
+- **`poll_cycle_seconds` approaching your `poll_interval`** — the extractor is
   barely keeping up. A poll cycle nearly as long as the interval is the documented
   signal to consider config-level sharding across deployments (see
   [Extractors](extractor.md) and [Architecture](../concepts/architecture.md)).

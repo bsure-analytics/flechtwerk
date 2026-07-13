@@ -1,6 +1,6 @@
 """Tests for Flechtwerk state store."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Final
 
 import pytest
@@ -385,7 +385,7 @@ def test_module_lookups_resolve_from_parent():
         client_id: str
         metrics_labels: dict
         metrics_port: int
-        poll_interval_seconds: int
+        poll_interval: timedelta | None
         stage: Extractor
 
         # Child component — reactor-di instantiates the private concrete
@@ -399,7 +399,7 @@ def test_module_lookups_resolve_from_parent():
     app.client_id = "cid"
     app.metrics_labels = {"env": "test"}
     app.metrics_port = 9464
-    app.poll_interval_seconds = 30
+    app.poll_interval = timedelta(seconds=30)
     app.stage = stage
 
     f = app.flechtwerk
@@ -409,7 +409,7 @@ def test_module_lookups_resolve_from_parent():
     assert f.client_id == "cid"
     assert f.metrics_labels == {"env": "test"}
     assert f.metrics_port == 9464
-    assert f.poll_interval_seconds == 30
+    assert f.poll_interval == timedelta(seconds=30)
     assert f.stage is stage
 
 
@@ -431,7 +431,7 @@ def test_app_factory_defaults_metrics_when_omitted():
         application_id="g",
         bootstrap_servers="b:9092",
         client_id="c",
-        poll_interval_seconds=60,
+        poll_interval=timedelta(seconds=60),
         stage=StubExtractor(),
     )
 
@@ -454,7 +454,7 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
         "metrics_labels",
         "metrics_port",
         "mqtt",
-        "poll_interval_seconds",
+        "poll_interval",
         "stage",
     ):
         assert name not in f.__dict__

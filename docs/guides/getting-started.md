@@ -101,8 +101,8 @@ Optional knobs: `compression_type` (defaults to `"zstd"` — JSON compresses ~13
 pass `None` to disable), `metrics_port` / `metrics_labels`
 ([Prometheus](observability.md); disabled while `metrics_port` is `0`), `mqtt`
 (broker settings, used only by an [MQTT Extractor](mqtt.md)), and
-`poll_interval_seconds` (an [extractor](extractor.md)'s poll cadence — required
-for extractors, ignored by transformers). Like `mqtt`, the last two are
+`poll_interval` (a `timedelta` — an [extractor](extractor.md)'s poll cadence,
+required for extractors, ignored by transformers). Like `mqtt`, the last two are
 shape-specific and may be passed unconditionally. See the
 [API reference](../api/index.md) for the full signature.
 

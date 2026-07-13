@@ -34,7 +34,6 @@ async def test_producer_constructs_with_configured_compression(codec: Compressio
         application_id="t",
         bootstrap_servers="localhost:9092",
         client_id="t",
-        poll_interval_seconds=0,
         stage=StubExtractor(),
         compression_type=codec,
     )

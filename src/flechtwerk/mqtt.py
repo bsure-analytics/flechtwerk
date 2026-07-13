@@ -255,7 +255,7 @@ class MqttConnection:
             self.observer.mqtt_disconnected()
             self.error = ConnectionError("MQTT disconnected: " + str(reason_code))
             # Wake the runner so the error surfaces from the next drain() now
-            # instead of up to poll_interval_seconds later — the wakeup makes
+            # instead of up to poll_interval later — the wakeup makes
             # long intervals the norm, and a dead connection shouldn't wait
             # one out before crashing.
             self.wake()

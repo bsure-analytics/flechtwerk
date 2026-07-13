@@ -17,6 +17,7 @@ import logging
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import timedelta
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal, Never, Self
@@ -78,15 +79,15 @@ def validate_topics(stage: Extractor | Transformer) -> None:
         raise ValueError("an extractor needs at least one config topic")
 
 
-def validate_poll_interval(stage: Extractor | Transformer, poll_interval_seconds: int) -> None:
+def validate_poll_interval(stage: Extractor | Transformer, poll_interval: timedelta | None) -> None:
     """An extractor needs a positive poll cadence — broker-free.
 
-    ``poll_interval_seconds`` defaults to 0 ("unset") and only extractors
-    consume it (the runner's idle / wakeup wait), so a transformer may leave it
-    0 while an extractor must set a positive value.
+    ``poll_interval`` defaults to ``None`` ("unset") and only extractors consume
+    it (the runner's idle / wakeup wait), so a transformer may leave it unset
+    while an extractor must set a positive duration.
     """
-    if isinstance(stage, Extractor) and poll_interval_seconds <= 0:
-        raise ValueError("an extractor needs a positive poll_interval_seconds")
+    if isinstance(stage, Extractor) and (poll_interval is None or poll_interval <= timedelta(0)):
+        raise ValueError("an extractor needs a positive poll_interval")
 
 
 class Flechtwerk(ABC):
@@ -99,7 +100,7 @@ class Flechtwerk(ABC):
             application_id="my-extractor",
             bootstrap_servers="localhost:9092",
             client_id="my-extractor-0",
-            poll_interval_seconds=60,
+            poll_interval=timedelta(minutes=1),
             stage=my_extractor,
         ).run()
 
@@ -132,7 +133,7 @@ class Flechtwerk(ABC):
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
         mqtt: MqttBrokerConfig | None = None,
-        poll_interval_seconds: int = 0,
+        poll_interval: timedelta | None = None,
     ) -> "Flechtwerk":
         """Build a fully-configured application handle.
 
@@ -148,10 +149,10 @@ class Flechtwerk(ABC):
         (Prometheus disabled). ``mqtt`` carries the platform's shared MQTT
         broker settings; it is used only by MQTT-sourced stages and ignored
         everywhere else, so the caller may pass it unconditionally.
-        ``poll_interval_seconds`` is likewise consumed only by extractors —
-        the poll cadence (the runner's idle / wakeup wait). It defaults to 0
-        ("unset"); an extractor requires a positive value and a transformer
-        ignores it, so this too may be passed unconditionally.
+        ``poll_interval`` is likewise consumed only by extractors — the poll
+        cadence (the runner's idle / wakeup wait). It defaults to ``None``
+        ("unset"); an extractor requires a positive ``timedelta`` and a
+        transformer ignores it, so this too may be passed unconditionally.
         ``application_id``, ``bootstrap_servers``, ``client_id`` and ``stage``
         are required.
         """
@@ -163,7 +164,7 @@ class Flechtwerk(ABC):
         instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
         instance.metrics_port = metrics_port
         instance.mqtt = mqtt
-        instance.poll_interval_seconds = poll_interval_seconds
+        instance.poll_interval = poll_interval
         instance.stage = stage
         return instance
 
@@ -214,7 +215,7 @@ class _FlechtwerkModule(Flechtwerk):
     metrics_labels: lookup[dict[str, str]]
     metrics_port: lookup[int]
     mqtt: lookup[MqttBrokerConfig | None]
-    poll_interval_seconds: lookup[int]
+    poll_interval: lookup[timedelta | None]
     prometheus_observer: PrometheusObserver
     registry: CollectorRegistry = REGISTRY
     stage: lookup[Extractor | Transformer]
@@ -390,7 +391,7 @@ class _FlechtwerkModule(Flechtwerk):
         _ = self.metrics_server
 
         validate_topics(self.stage)
-        validate_poll_interval(self.stage, self.poll_interval_seconds)
+        validate_poll_interval(self.stage, self.poll_interval)
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         await admin.start()
         try:

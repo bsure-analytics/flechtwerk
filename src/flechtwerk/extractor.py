@@ -6,6 +6,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import AsyncIterator, Never, Self
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
@@ -70,7 +71,7 @@ class Extractor(Stage, ABC):
     """Optional wakeup for push-driven sources.
 
     ``None`` (the default) keeps the runner on a plain
-    ``poll_interval_seconds`` sleep between cycles. A stage whose input
+    ``poll_interval`` sleep between cycles. A stage whose input
     arrives asynchronously (e.g. an MQTT subscription) sets this in
     ``__aenter__`` and fires it on arrival; the runner then treats the
     interval as an upper bound, polling as soon as the event is set —
@@ -175,7 +176,7 @@ class ExtractorRunner:
     consumer: AIOKafkaConsumer
     extractor: lookup[Extractor, "configured_stage"]  # noqa: PyUnresolvedReferences
     observer: Observer
-    poll_interval_seconds: int
+    poll_interval: timedelta
     producer: AIOKafkaProducer
     state_store: StateStore
 
@@ -225,10 +226,10 @@ class ExtractorRunner:
         """
         wakeup = self.extractor.wakeup
         if wakeup is None:
-            await asyncio.sleep(self.poll_interval_seconds)
+            await asyncio.sleep(self.poll_interval.total_seconds())
             return
         with suppress(TimeoutError):
-            await asyncio.wait_for(wakeup.wait(), self.poll_interval_seconds)
+            await asyncio.wait_for(wakeup.wait(), self.poll_interval.total_seconds())
         wakeup.clear()
 
     async def load_initial_configs(self) -> None:

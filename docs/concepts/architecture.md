@@ -47,7 +47,7 @@ A plain `Extractor` consumes only its `config_topics`. Config handling rides the
 !!! warning "Extractors Are Single-Instance"
     Nothing fences concurrent extractor instances — each one reads all configs and polls every external API redundantly, and a slow instance can overwrite an advanced cursor with a stale one. Extractor output is deliberately non-transactional (at-least-once). Run exactly one replica per extractor.
 
-The runner also exposes an optional `wakeup` event so a push-driven stage (MQTT) can end the between-cycles wait early; `poll_interval_seconds` then degrades to the idle / config-drain cadence.
+The runner also exposes an optional `wakeup` event so a push-driven stage (MQTT) can end the between-cycles wait early; `poll_interval` then degrades to the idle / config-drain cadence.
 
 ### Transformer
 

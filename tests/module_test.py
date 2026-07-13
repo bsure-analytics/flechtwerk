@@ -1,4 +1,5 @@
 """Tests for flechtwerk.module topic-declaration validation and MQTT wiring."""
+from datetime import timedelta
 from typing import AsyncIterator
 
 import pytest
@@ -59,15 +60,16 @@ def test_valid_declarations_pass():
 
 def test_extractor_requires_positive_poll_interval():
     stage = Extractor.of(config_topics=["cfg"], poll=noop_poll)
-    with pytest.raises(ValueError, match="positive poll_interval_seconds"):
-        validate_poll_interval(stage, 0)
+    for bad in (None, timedelta(0)):
+        with pytest.raises(ValueError, match="positive poll_interval"):
+            validate_poll_interval(stage, bad)
 
 
 def test_poll_interval_optional_for_transformer_positive_for_extractor():
-    # a transformer never reads poll_interval_seconds, so the default 0 is fine
-    validate_poll_interval(Transformer.of(input_topics=["in"], transform=noop_transform), 0)
-    # a positive value satisfies an extractor
-    validate_poll_interval(Extractor.of(config_topics=["cfg"], poll=noop_poll), 60)
+    # a transformer never reads poll_interval, so leaving it unset is fine
+    validate_poll_interval(Transformer.of(input_topics=["in"], transform=noop_transform), None)
+    # a positive duration satisfies an extractor
+    validate_poll_interval(Extractor.of(config_topics=["cfg"], poll=noop_poll), timedelta(seconds=60))
 
 
 # -- configured_stage ----------------------------------------------------------
