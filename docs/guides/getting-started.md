@@ -80,7 +80,6 @@ async def main() -> None:
         application_id="my-stage",
         bootstrap_servers="localhost:9092",
         client_id="my-stage-0",          # process identity: unique per instance, stable across restarts
-        poll_interval_seconds=60,
         stage=stage,
     ).run()
 
@@ -96,14 +95,16 @@ only the `stage` you pass changes. The required knobs:
 - **`application_id`** — the stage's application identity: a transformer's Kafka consumer group, and the prefix of its changelog topic and transactional IDs.
 - **`bootstrap_servers`** — your broker.
 - **`client_id`** — the process identity (see the warning below).
-- **`poll_interval_seconds`** — the cadence of the work loop; for an extractor, the interval between polls (a push source such as MQTT wakes earlier).
 - **`stage`** — the `Transformer` or `Extractor` you built.
 
 Optional knobs: `compression_type` (defaults to `"zstd"` — JSON compresses ~13×;
 pass `None` to disable), `metrics_port` / `metrics_labels`
-([Prometheus](observability.md); disabled while `metrics_port` is `0`), and `mqtt`
-(broker settings, used only by an [MQTT Extractor](mqtt.md) and ignored otherwise).
-See the [API reference](../api/index.md) for the full signature.
+([Prometheus](observability.md); disabled while `metrics_port` is `0`), `mqtt`
+(broker settings, used only by an [MQTT Extractor](mqtt.md)), and
+`poll_interval_seconds` (an [extractor](extractor.md)'s poll cadence — required
+for extractors, ignored by transformers). Like `mqtt`, the last two are
+shape-specific and may be passed unconditionally. See the
+[API reference](../api/index.md) for the full signature.
 
 !!! note "Event Loop"
 

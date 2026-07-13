@@ -78,6 +78,17 @@ def validate_topics(stage: Extractor | Transformer) -> None:
         raise ValueError("an extractor needs at least one config topic")
 
 
+def validate_poll_interval(stage: Extractor | Transformer, poll_interval_seconds: int) -> None:
+    """An extractor needs a positive poll cadence — broker-free.
+
+    ``poll_interval_seconds`` defaults to 0 ("unset") and only extractors
+    consume it (the runner's idle / wakeup wait), so a transformer may leave it
+    0 while an extractor must set a positive value.
+    """
+    if isinstance(stage, Extractor) and poll_interval_seconds <= 0:
+        raise ValueError("an extractor needs a positive poll_interval_seconds")
+
+
 class Flechtwerk(ABC):
     """The application-facing handle for a Flechtwerk stage.
 
@@ -116,12 +127,12 @@ class Flechtwerk(ABC):
         application_id: str,
         bootstrap_servers: str,
         client_id: str,
-        poll_interval_seconds: int,
         stage: Extractor | Transformer,
         compression_type: CompressionType | None = "zstd",
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
         mqtt: MqttBrokerConfig | None = None,
+        poll_interval_seconds: int = 0,
     ) -> "Flechtwerk":
         """Build a fully-configured application handle.
 
@@ -137,7 +148,12 @@ class Flechtwerk(ABC):
         (Prometheus disabled). ``mqtt`` carries the platform's shared MQTT
         broker settings; it is used only by MQTT-sourced stages and ignored
         everywhere else, so the caller may pass it unconditionally.
-        Everything else is required.
+        ``poll_interval_seconds`` is likewise consumed only by extractors —
+        the poll cadence (the runner's idle / wakeup wait). It defaults to 0
+        ("unset"); an extractor requires a positive value and a transformer
+        ignores it, so this too may be passed unconditionally.
+        ``application_id``, ``bootstrap_servers``, ``client_id`` and ``stage``
+        are required.
         """
         instance = _FlechtwerkModule()
         instance.application_id = application_id
@@ -374,6 +390,7 @@ class _FlechtwerkModule(Flechtwerk):
         _ = self.metrics_server
 
         validate_topics(self.stage)
+        validate_poll_interval(self.stage, self.poll_interval_seconds)
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         await admin.start()
         try:

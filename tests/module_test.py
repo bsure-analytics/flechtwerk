@@ -4,7 +4,12 @@ from typing import AsyncIterator
 import pytest
 
 from flechtwerk.extractor import Extractor
-from flechtwerk.module import MqttBrokerConfig, _FlechtwerkModule, validate_topics
+from flechtwerk.module import (
+    MqttBrokerConfig,
+    _FlechtwerkModule,
+    validate_poll_interval,
+    validate_topics,
+)
 from flechtwerk.mqtt import MqttExtractor
 from flechtwerk.observer import Observer
 from flechtwerk.transformer import Transformer
@@ -50,6 +55,19 @@ def test_valid_declarations_pass():
     mixed = Transformer.of(input_topics=["in"], transform=noop_transform)
     mixed.config_topics = ["cfg"]
     validate_topics(mixed)
+
+
+def test_extractor_requires_positive_poll_interval():
+    stage = Extractor.of(config_topics=["cfg"], poll=noop_poll)
+    with pytest.raises(ValueError, match="positive poll_interval_seconds"):
+        validate_poll_interval(stage, 0)
+
+
+def test_poll_interval_optional_for_transformer_positive_for_extractor():
+    # a transformer never reads poll_interval_seconds, so the default 0 is fine
+    validate_poll_interval(Transformer.of(input_topics=["in"], transform=noop_transform), 0)
+    # a positive value satisfies an extractor
+    validate_poll_interval(Extractor.of(config_topics=["cfg"], poll=noop_poll), 60)
 
 
 # -- configured_stage ----------------------------------------------------------
