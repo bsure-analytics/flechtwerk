@@ -95,7 +95,7 @@ only the `stage` you pass changes. The required knobs:
 - **`application_id`** — the stage's application identity: a transformer's Kafka consumer group, and the prefix of its changelog topic and transactional IDs.
 - **`bootstrap_servers`** — your broker.
 - **`client_id`** — the process identity (see the warning below).
-- **`stage`** — the `Transformer` or `Extractor` you built.
+- **`stage`** — the `Extractor` or `Transformer` you've built.
 
 Optional knobs: `compression_type` (defaults to `"zstd"` — JSON compresses ~13×;
 pass `None` to disable), `metrics_port` / `metrics_labels`
