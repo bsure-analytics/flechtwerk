@@ -74,7 +74,7 @@ nav:
   - Guides:
       - guides/index.md
       - Getting Started: guides/getting-started.md
-      - MQTT Sources: guides/mqtt.md
+      - MqttExtractor: guides/mqtt.md
   - Concepts:
       - concepts/index.md
       - Typed Records: concepts/typed-records.md

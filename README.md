@@ -89,7 +89,7 @@ The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full 
 - **[Typed records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-records/)** — the `flechtwerk.attribute` library that enforces the JSON boundary at the write site, once per field declaration.
 - **[Config topics](https://bsure-analytics.github.io/flechtwerk/concepts/config-topics/)** — shared, eventually-consistent lookup tables (Kafka Streams' GlobalKTable, specialized to configuration).
 - **[Getting started](https://bsure-analytics.github.io/flechtwerk/guides/getting-started/)** — install, a minimal transformer and extractor, and running a stage.
-- **[MQTT sources](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — push-driven extractors that ACK to the broker only once a batch is durable in Kafka.
+- **[MqttExtractor](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — a push-driven MQTT source that ACKs to the broker only once a batch is durable in Kafka.
 - **[Concepts](https://bsure-analytics.github.io/flechtwerk/concepts/)** — the operational model, the exactly-once task model, and the hexagonal architecture.
 - **[API reference](https://bsure-analytics.github.io/flechtwerk/api/)** — generated from the source docstrings.
 

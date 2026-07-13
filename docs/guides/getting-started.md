@@ -164,4 +164,4 @@ care which shape the stage is.
 
 - **[Typed records](../concepts/typed-records.md)** — the `Attribute` library that keeps the JSON boundary honest.
 - **[Config topics](../concepts/config-topics.md)** — a shared, eventually-consistent lookup table for every instance (Kafka Streams' GlobalKTable).
-- **[MQTT sources](mqtt.md)** — push into the poll loop with `MqttExtractor.of(...)`, ACKing to the broker only once a batch is durable in Kafka.
+- **[MqttExtractor](mqtt.md)** — push into the poll loop with `MqttExtractor.of(...)`, ACKing to the broker only once a batch is durable in Kafka.

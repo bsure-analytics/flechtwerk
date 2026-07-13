@@ -1,4 +1,4 @@
-# MQTT Sources — Push Into the Poll Loop
+# MqttExtractor — Push Into the Poll Loop
 
 `flechtwerk.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped:
 
@@ -40,6 +40,23 @@ The `relay` return value decides the record's fate:
 
 Sources that don't fit the one-in-at-most-one-out shape override `poll()`; the connection layer works without the template.
 
+## Running It
+
+An `MqttExtractor` is just an extractor, so you run it exactly like any other stage — a single `Flechtwerk.of(...).run()` call, with the broker settings injected alongside the rest of the configuration:
+
+```python
+await Flechtwerk.of(
+    application_id="my-mqtt-source",
+    bootstrap_servers="localhost:9092",
+    client_id="my-mqtt-source-0",       # also the MQTT session identity
+    poll_interval_seconds=60,           # the arrival wakeup keeps latency sub-second
+    mqtt=MqttBrokerConfig(broker="localhost", port=1883),
+    stage=stage,                        # from above
+).run()
+```
+
+See [Running a stage](getting-started.md#running-it) in Getting Started for the full walkthrough — an `MqttExtractor` runs the same way.
+
 !!! note "Broker Settings and the Optional Extra"
 
-    Broker settings are injected via `Flechtwerk.of(mqtt=MqttBrokerConfig(...))`, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting started](getting-started.md#installation)).
+    `MqttBrokerConfig` carries the broker settings, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting Started](getting-started.md#installation)).
