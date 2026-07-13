@@ -1,4 +1,4 @@
-# MqttExtractor — Push Into the Poll Loop
+# MQTT Extractor — Push Into the Poll Loop
 
 `flechtwerk.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped:
 
