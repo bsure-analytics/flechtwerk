@@ -48,4 +48,4 @@ That plus one `Flechtwerk.of(...).run()` call is the whole program — point it 
 
 New here? **[Get started](guides/getting-started.md)** — install Flechtwerk and run your first stage against a Kafka broker in a few minutes.
 
-From there, dig into the [typed-record boundary](concepts/typed-records.md) that keeps the JSON wire honest, the [task model](concepts/exactly-once.md) behind exactly-once delivery, [config topics](concepts/config-topics.md) as shared lookup tables, and the [MQTT extractor](guides/mqtt.md) that ACKs only once Kafka has the data.
+From there, dig into the [typed-record boundary](concepts/typed-attributes.md) that keeps the JSON wire honest, the [task model](concepts/exactly-once.md) behind exactly-once delivery, [config topics](concepts/config-topics.md) as shared lookup tables, and the [MQTT extractor](guides/mqtt.md) that ACKs only once Kafka has the data.

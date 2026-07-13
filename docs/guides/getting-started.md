@@ -125,5 +125,5 @@ shape-specific and may be passed unconditionally. See the
 - **[Transformers](transformer.md)** — consume topics and publish derived records, with exactly-once delivery.
 - **[Best Practices](best-practices.md)** — pair an extractor with a transformer into a raw-then-refined pipeline you can reprocess without re-ingesting.
 - **[Observability](observability.md)** — Prometheus metrics for throughput, transactions, config arrival, and MQTT health.
-- **[Typed attributes & records](../concepts/typed-records.md)** — the `Attribute` library that keeps the JSON boundary honest.
+- **[Typed attributes & records](../concepts/typed-attributes.md)** — the `Attribute` library that keeps the JSON boundary honest.
 - **[Config topics](../concepts/config-topics.md)** — a shared, eventually-consistent lookup table for every instance (Kafka Streams' GlobalKTable).

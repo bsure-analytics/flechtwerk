@@ -81,7 +81,7 @@ What each yield does here:
     assignment time. `Event`, `State`, and `Config` are dict-like `Record`
     containers indexed by these handles rather than string keys. Records spread
     like dicts — `Event({**msg.value, SEEN: seen})` — so enrichment never
-    mutates its input. See [Typed attributes & records](../concepts/typed-records.md).
+    mutates its input. See [Typed attributes & records](../concepts/typed-attributes.md).
 
 !!! tip "Factory or Subclass?"
 
@@ -102,4 +102,4 @@ you're done.
 - **[Extractors](extractor.md)** — the same contract from the other end: bring an external source into Kafka.
 - **[Best Practices](best-practices.md)** — pair a transformer with an extractor so you can reprocess without re-ingesting.
 - **[Exactly-once delivery](../concepts/exactly-once.md)** — how the per-batch transaction ties output, state, and offsets together.
-- **[Typed attributes & records](../concepts/typed-records.md)** — the `Attribute` library behind `Event`, `State`, and `Config`.
+- **[Typed attributes & records](../concepts/typed-attributes.md)** — the `Attribute` library behind `Event`, `State`, and `Config`.

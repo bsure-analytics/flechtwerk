@@ -126,7 +126,7 @@ event = Event({**Event.wrap(raw), POLLED_AT: datetime.now(timezone.utc)})
 
 This "wrap the source verbatim, add ingestion metadata" shape is the backbone of
 the raw-then-refined pattern in [Best Practices](best-practices.md). See also
-[Typed attributes & records](../concepts/typed-records.md) for the `wrap` vs.
+[Typed attributes & records](../concepts/typed-attributes.md) for the `wrap` vs.
 typed-literal distinction in full.
 
 ## State Is a Resume Cursor Here — but State Is Shape-Agnostic
@@ -181,5 +181,5 @@ for the full rationale.
 - **[Config topics](../concepts/config-topics.md)** — how the config topic that
   drives your poll targets is read into a shared, eventually-consistent lookup
   table (Kafka Streams' GlobalKTable).
-- **[Typed attributes & records](../concepts/typed-records.md)** — the `Attribute`
+- **[Typed attributes & records](../concepts/typed-attributes.md)** — the `Attribute`
   library that keeps the JSON boundary honest.

@@ -15,7 +15,7 @@ Truly async Python stream processing with real Kafka transactions for exactly-on
 
 📖 **Documentation: [bsure-analytics.github.io/flechtwerk](https://bsure-analytics.github.io/flechtwerk/)** — guides, concepts, and the full API reference.
 
-## What it is
+## What It Is
 
 Flechtwerk (German: *interlacing, wickerwork*) is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to modern async Python.
 
@@ -81,16 +81,27 @@ if __name__ == "__main__":
 
 That plus one stage definition is the whole program — point it at any Kafka broker. The same two-yield contract drives an `Extractor` from the other end (polling an external source, with `State` as its resume cursor), and an `MqttExtractor` pushes into the poll loop.
 
-## Learn more
+## Learn More
 
-The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full story:
+The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full story.
 
-- **[Typed Attributes & Records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-records/)** — the `flechtwerk.attribute` library that enforces the JSON boundary at the write site, once per field declaration.
-- **[Config Topics](https://bsure-analytics.github.io/flechtwerk/concepts/config-topics/)** — shared, eventually-consistent lookup tables (Kafka Streams' GlobalKTable, specialized to configuration).
+**Guides**
+
 - **[Getting Started](https://bsure-analytics.github.io/flechtwerk/guides/getting-started/)** — install, a minimal transformer and extractor, and running a stage.
-- **[MQTT Extractor](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — a push-driven MQTT source that ACKs to the broker only once a batch is durable in Kafka.
-- **[Concepts](https://bsure-analytics.github.io/flechtwerk/concepts/)** — the operational model, the exactly-once task model, and the hexagonal architecture.
-- **[API Reference](https://bsure-analytics.github.io/flechtwerk/api/)** — generated from the source docstrings.
+- **[Extractors](https://bsure-analytics.github.io/flechtwerk/guides/extractor/)** — poll an external source into Kafka, with `State` as the resume cursor.
+- **[MQTT Extractors](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — a push-driven MQTT source that ACKs to the broker only once a batch is durable in Kafka.
+- **[Transformers](https://bsure-analytics.github.io/flechtwerk/guides/transformer/)** — stream-to-stream processing with partitioned, exactly-once tasks.
+- **[Best Practices](https://bsure-analytics.github.io/flechtwerk/guides/best-practices/)** — co-partitioning, the let-it-crash error strategy, and the operational rules that keep a multi-instance deployment correct.
+- **[Observability](https://bsure-analytics.github.io/flechtwerk/guides/observability/)** — the Prometheus metrics the runners emit.
+
+**Concepts**
+
+- **[Typed Attributes & Records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-attributes/)** — the `flechtwerk.attribute` library that enforces the JSON boundary at the write site, once per field declaration.
+- **[Config Topics](https://bsure-analytics.github.io/flechtwerk/concepts/config-topics/)** — shared, eventually-consistent lookup tables (Kafka Streams' GlobalKTable, specialized to configuration).
+- **[Exactly-Once Delivery](https://bsure-analytics.github.io/flechtwerk/concepts/exactly-once/)** — the task model tying output messages, state writes, and offset commits into one Kafka transaction per batch.
+- **[Architecture](https://bsure-analytics.github.io/flechtwerk/concepts/architecture/)** — the hexagonal (ports and adapters) design and the operational model.
+
+**[API Reference](https://bsure-analytics.github.io/flechtwerk/api/)** — generated from the source docstrings.
 
 ## Development
 

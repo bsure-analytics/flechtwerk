@@ -28,7 +28,7 @@ VERDIGRIS = "47,109,94"
 PAGES = {
     "index": ("plait", LAPIS),
     "concepts-index": ("spiral", VERDIGRIS),
-    "concepts-typed-records": ("threestrand", LAPIS),
+    "concepts-typed-attributes": ("threestrand", LAPIS),
     "concepts-architecture": ("gridknot", GARNET),
     "concepts-config-topics": ("triquetra", GARNET),
     "concepts-exactly-once": ("chain", LAPIS),

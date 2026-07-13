@@ -81,7 +81,7 @@ nav:
       - Observability: guides/observability.md
   - Concepts:
       - concepts/index.md
-      - "Typed Attributes & Records": concepts/typed-records.md
+      - "Typed Attributes & Records": concepts/typed-attributes.md
       - Config Topics: concepts/config-topics.md
       - Exactly-Once Delivery: concepts/exactly-once.md
       - Architecture: concepts/architecture.md
