@@ -8,8 +8,8 @@ For any external datasource, run **two** stages, not one: an
 
 ```
 external source ──▶ [Extractor] ──▶ raw topic ──▶ [Transformer] ──▶ refined topic ──▶ your apps
-                    at-least-once    (faithful      exactly-once     (query model)
-                                      backup)
+                    at-least-once   (faithful     exactly-once      (query model)
+                                     backup)
 ```
 
 - The **extractor** writes the source data to a **raw topic** as faithfully as
