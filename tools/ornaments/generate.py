@@ -28,10 +28,17 @@ VERDIGRIS = "47,109,94"
 PAGES = {
     "index": ("plait", LAPIS),
     "concepts-index": ("spiral", VERDIGRIS),
+    "concepts-typed-records": ("threestrand", LAPIS),
     "concepts-architecture": ("gridknot", GARNET),
+    "concepts-config-topics": ("triquetra", GARNET),
     "concepts-exactly-once": ("chain", LAPIS),
     "guides-index": ("twistknot", GARNET),
     "guides-getting-started": ("stepfret", VERDIGRIS),
+    "guides-extractor": ("spiral", LAPIS),
+    "guides-mqtt": ("plait", GARNET),
+    "guides-transformer": ("threestrand", LAPIS),
+    "guides-best-practices": ("gridknot", VERDIGRIS),
+    "guides-observability": ("chain", GARNET),
     "api-index": ("triquetra", LAPIS),
 }
 

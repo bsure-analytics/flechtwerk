@@ -67,6 +67,16 @@ class ContextManagerExtractor(Extractor):
         yield Message(key="k", topic="t", value={"entered": self.entered})
 
 
+class ConfigMutatingExtractor(Extractor):
+    config_topics = ["test-config"]
+
+    async def poll(self, config, state) -> AsyncIterator[Message | State]:
+        # Report the current cursor, then mutate the config parameter in place.
+        # The runner must discard that mutation so the next poll sees the original.
+        yield Message(key="k", topic="out", value={"cursor": config.get(CURSOR, 0)})
+        config[CURSOR] = config.get(CURSOR, 0) + 1
+
+
 def json_record(key="k", value=None, topic="test-config", offset=0, partition=0):
     if value is None:
         value = {}
@@ -137,6 +147,28 @@ def test_extractor_runner_polls_configs():
 
         # State should be persisted under msg.key (extract_key default)
         assert (await state_store.get("tenant/channel")).raw == {"cursor": 1}
+
+    asyncio.run(run())
+
+
+def test_poll_config_mutation_does_not_leak_across_polls():
+    """A poll() that mutates its config in place must not corrupt the cached
+    config: the runner hands each poll a private copy, so the mutation is
+    discarded and the next poll sees the original."""
+
+    async def run():
+        record = json_record(key="k", value={"api_key": "key1", "cursor": 0})
+        mod = make_module(ConfigMutatingExtractor(), FakeKafkaConsumer([record]))
+        runner = mod.runner
+        await runner.load_initial_configs()
+
+        entry = runner.configs["k"]
+        await runner.poll_one(entry)
+        await runner.poll_one(entry)
+
+        cursors = [json.loads(payload["value"])["cursor"] for _, payload in mod.producer.sent]
+        assert cursors == [0, 0]          # each poll saw the original cursor
+        assert entry.config[CURSOR] == 0  # the cached config was never mutated
 
     asyncio.run(run())
 

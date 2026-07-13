@@ -71,11 +71,18 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Concepts:
-      - concepts/index.md
-      - Architecture: concepts/architecture.md
-      - Exactly-once delivery: concepts/exactly-once.md
   - Guides:
       - guides/index.md
-      - Getting started: guides/getting-started.md
-  - API reference: api/index.md
+      - Getting Started: guides/getting-started.md
+      - Extractors: guides/extractor.md
+      - MQTT Extractors: guides/mqtt.md
+      - Transformers: guides/transformer.md
+      - Best Practices: guides/best-practices.md
+      - Observability: guides/observability.md
+  - Concepts:
+      - concepts/index.md
+      - "Typed Attributes & Records": concepts/typed-records.md
+      - Config Topics: concepts/config-topics.md
+      - Exactly-Once Delivery: concepts/exactly-once.md
+      - Architecture: concepts/architecture.md
+  - API Reference: api/index.md

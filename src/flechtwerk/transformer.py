@@ -143,6 +143,12 @@ class Transformer(Stage, ABC):
         is persisted (stateless behavior). Yielding an empty/falsy State deletes
         the entry from the state store (and writes a Kafka tombstone to the
         changelog) atomically with the output messages.
+
+        Both parameters are read-only. The runner hands ``state`` a defensive
+        copy and never reuses ``msg`` after the call, so mutating either in
+        place has no effect — it is silently discarded. Produce output only by
+        yielding, and enrich by spreading (``Event({**msg.value, ...})``) rather
+        than mutating in place.
         """
 
 

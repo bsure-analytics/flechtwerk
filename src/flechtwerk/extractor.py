@@ -139,6 +139,11 @@ class Extractor(Stage, ABC):
         is persisted. Yielding an empty/falsy State deletes the entry from the
         state store (and writes a Kafka tombstone to the changelog). On crash,
         the last-persisted state is retained.
+
+        Both parameters are read-only. The runner hands each poll a private copy
+        of ``config`` and ``state``, so mutating either in place has no effect —
+        it is silently discarded. Emit records by yielding a ``Message`` and
+        persist your resume cursor by yielding a ``State``.
         """
 
 
@@ -283,7 +288,11 @@ class ExtractorRunner:
         messages: list[Message] = []
         new_state: State | None = None
         with self.observer.dispatch_scope():
-            async for item in self.extractor.poll(entry.config, state):
+            # Hand poll() a private copy of both mutable inputs. `state` is a
+            # fresh read above; `entry.config` is cached and reused across every
+            # poll cycle, so without this copy an in-place edit would leak into
+            # later polls. Mutating a parameter is thus a no-op by construction.
+            async for item in self.extractor.poll(deepcopy(entry.config), state):
                 if isinstance(item, State):
                     new_state = item
                 elif isinstance(item, Message):
