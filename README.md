@@ -85,7 +85,7 @@ That plus one stage definition is the whole program — point it at any Kafka br
 
 The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full story:
 
-- **[Typed records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-records/)** — the `flechtwerk.attribute` library that enforces the JSON boundary at the write site, once per field declaration.
+- **[Typed Attributes & Records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-records/)** — the `flechtwerk.attribute` library that enforces the JSON boundary at the write site, once per field declaration.
 - **[Config topics](https://bsure-analytics.github.io/flechtwerk/concepts/config-topics/)** — shared, eventually-consistent lookup tables (Kafka Streams' GlobalKTable, specialized to configuration).
 - **[Getting started](https://bsure-analytics.github.io/flechtwerk/guides/getting-started/)** — install, a minimal transformer and extractor, and running a stage.
 - **[MQTT Extractor](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — a push-driven MQTT source that ACKs to the broker only once a batch is durable in Kafka.
