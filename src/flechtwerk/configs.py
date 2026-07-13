@@ -47,6 +47,16 @@ class ConfigStore:
     returns a fresh `Config` (a protective copy by construction). Malformed
     values decode to an empty `Config` with a warning, so they flow into
     the caller's validation instead of masquerading as a missing key.
+
+    From a stage's perspective the store is **read-only**: query it with
+    `get()` (and ``in`` / ``len``). `put`/`delete` exist for the config
+    machinery alone — calling them, or otherwise mutating the store, from
+    application code is an error. The store is a projection of the config
+    topics, fed exclusively by `bootstrap_config_store` /
+    `drain_config_updates`; a stage-side write never reaches Kafka (see the
+    "config topics never participate in a Kafka transaction" invariant),
+    corrupts only this instance, and is silently reverted on the next record
+    for the key or on the next restart.
     """
 
     def __init__(self) -> None:

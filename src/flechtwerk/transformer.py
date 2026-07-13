@@ -81,7 +81,9 @@ class Transformer(Stage, ABC):
     Lookups are eventually consistent: the store is updated between batches
     and is NOT part of any task transaction (Kafka Streams' GlobalKTable
     caveat) — a record produced to a config topic is visible here no later
-    than the next batch. Tests seed this directly::
+    than the next batch. Treat it as **read-only** — look entries up with
+    ``configs.get(key)``; mutating the store (``put``/``delete``) from stage
+    code is an error (see `ConfigStore`). Tests seed this directly::
 
         stage.configs = ConfigStore.of({key: config})
     """
