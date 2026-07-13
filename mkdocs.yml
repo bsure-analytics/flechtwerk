@@ -73,9 +73,12 @@ nav:
   - Home: index.md
   - Concepts:
       - concepts/index.md
+      - Typed records: concepts/typed-records.md
       - Architecture: concepts/architecture.md
+      - Config topics: concepts/config-topics.md
       - Exactly-once delivery: concepts/exactly-once.md
   - Guides:
       - guides/index.md
       - Getting started: guides/getting-started.md
+      - MQTT sources: guides/mqtt.md
   - API reference: api/index.md

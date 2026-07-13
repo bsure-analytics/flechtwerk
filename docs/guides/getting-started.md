@@ -126,14 +126,42 @@ broker.
     across restarts (in Kubernetes, the pod name works well). It anchors the
     transactional producer's fencing and the MQTT session identity.
 
+## An extractor
+
+An `Extractor` is the same two-yield contract driven from the other end.
+`poll(config, state)` runs once per config record per poll cycle, pulls from the
+external source, and uses `State` as its resume cursor — its only Kafka input is
+its `config_topics`.
+
+```python
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+
+from flechtwerk import Config, Event, Extractor, Message, State
+from flechtwerk.attribute import Attribute, DATETIME, INT, STR
+
+CYCLE = Attribute("cycle", INT)
+"""Resume cursor — stands in for whatever your source pages by."""
+NAME = Attribute("name", STR)
+POLLED_AT = Attribute("polled_at", DATETIME)
+
+async def poll(config: Config, state: State) -> AsyncIterator[Message | State]:
+    cycle = (state.get(CYCLE) or 0) + 1               # your API call goes here
+    yield Message(
+        key=config[NAME],
+        topic="my-extract",
+        value=Event({CYCLE: cycle, POLLED_AT: datetime.now(timezone.utc)}),
+    )
+    yield State({CYCLE: cycle})
+
+stage = Extractor.of(config_topics=["my-config"], poll=poll)
+```
+
+Run it exactly like the transformer above — `Flechtwerk.of(...).run()` doesn't
+care which shape the stage is.
+
 ## Next steps
 
-- **Extractors** apply the same two-yield contract from the other end:
-  `poll(config, state)` runs once per config record per poll cycle, pulls from
-  an external source, and uses `State` as its resume cursor. Build one with
-  `Extractor.of(config_topics=..., poll=...)`.
-- **Config topics** give every instance a shared, eventually-consistent lookup
-  table (Kafka Streams' GlobalKTable, specialized to configuration).
-- **MQTT sources** push into the poll loop out of the box with
-  `MqttExtractor.of(config_topics=..., relay=...)`, ACKing to the broker only
-  once a batch is durable in Kafka.
+- **[Typed records](../concepts/typed-records.md)** — the `Attribute` library that keeps the JSON boundary honest.
+- **[Config topics](../concepts/config-topics.md)** — a shared, eventually-consistent lookup table for every instance (Kafka Streams' GlobalKTable).
+- **[MQTT sources](mqtt.md)** — push into the poll loop with `MqttExtractor.of(...)`, ACKing to the broker only once a batch is durable in Kafka.
