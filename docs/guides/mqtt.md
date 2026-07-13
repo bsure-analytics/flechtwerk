@@ -1,4 +1,4 @@
-# MQTT Extractor — Push Into the Poll Loop
+# MQTT Extractors — Push Into the Poll Loop
 
 An `MqttExtractor` is a push-driven [`Extractor`](extractor.md): instead of polling on a timer, messages arrive over MQTT and wake the poll loop. Read the [Extractor guide](extractor.md) first for the base model — this guide covers only the MQTT-specific surface.
 
@@ -57,8 +57,15 @@ await Flechtwerk.of(
 ).run()
 ```
 
-See [Running a stage](getting-started.md#running-it) in Getting Started for the full walkthrough — an `MqttExtractor` runs the same way.
+See [Getting Started → Running a Stage](getting-started.md#running-a-stage) for the full walkthrough — an `MqttExtractor` runs the same way, plus the `mqtt=` broker settings shown above.
 
 !!! note "Broker Settings and the Optional Extra"
 
     `MqttBrokerConfig` carries the broker settings, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting Started](getting-started.md#installation)).
+
+## Next Steps
+
+- **[Extractors](extractor.md)** — the poll-based base model an `MqttExtractor` specializes.
+- **[Best Practices](best-practices.md)** — back the pushed data up to a raw topic and refine it with a transformer, so you can reprocess without losing what the devices sent.
+- **[Observability](observability.md)** — the `mqtt_*` Prometheus metrics for connection health, drops, and buffering.
+- **[Getting Started](getting-started.md)** — the install, the two-yield contract, and how any stage is run.

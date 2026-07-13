@@ -36,6 +36,9 @@ PAGES = {
     "guides-getting-started": ("stepfret", VERDIGRIS),
     "guides-extractor": ("spiral", LAPIS),
     "guides-mqtt": ("plait", GARNET),
+    "guides-transformer": ("threestrand", LAPIS),
+    "guides-best-practices": ("gridknot", VERDIGRIS),
+    "guides-observability": ("chain", GARNET),
     "api-index": ("triquetra", LAPIS),
 }
 

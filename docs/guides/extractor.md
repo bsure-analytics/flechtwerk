@@ -1,7 +1,7 @@
-# Extractor — Poll an External Source Into Kafka
+# Extractors — Poll External Sources Into Kafka
 
 An `Extractor` is the [same two-yield contract](getting-started.md#the-two-yield-contract)
-as a `Transformer`, driven from the other end. A transformer consumes an input
+as a [`Transformer`](transformer.md), driven from the other end. A transformer consumes an input
 topic and reacts to each record; an extractor has no input topic — it polls an
 external source on a timer and turns what it finds into Kafka records. Its only
 Kafka input is its `config_topics`: one config record per thing to poll (a
@@ -111,10 +111,10 @@ each cycle simply never yields `State`.
 
 ## Running It
 
-An `Extractor` runs exactly like any other stage — the invocation is
-shape-agnostic. See [Running a stage](getting-started.md#running-it) in Getting
-Started for the full walkthrough; nothing about `Flechtwerk.of(...).run()`
-changes when the stage is an extractor.
+An `Extractor` runs with the same single `Flechtwerk.of(...).run()` call as any
+stage — see [Getting Started → Running a Stage](getting-started.md#running-a-stage).
+There are no extractor-specific run parameters; `poll_interval_seconds` sets the
+interval between polls.
 
 ## Run Exactly One Instance
 
@@ -133,11 +133,15 @@ for the full rationale.
 
 ## Next Steps
 
-- **[MQTT Extractor](mqtt.md)** — a push-driven extractor: instead of polling on a
+- **[MQTT Extractors](mqtt.md)** — a push-driven extractor: instead of polling on a
   timer, messages arrive over MQTT and wake the poll loop, ACKed to the broker
   only once a batch is durable in Kafka.
+- **[Best Practices](best-practices.md)** — pair this extractor with a transformer
+  so you can reprocess and adapt to schema changes without re-ingesting.
+- **[Transformers](transformer.md)** — the same contract on the consuming end, with
+  exactly-once delivery.
 - **[Config topics](../concepts/config-topics.md)** — how the config topic that
   drives your poll targets is read into a shared, eventually-consistent lookup
   table (Kafka Streams' GlobalKTable).
-- **[Typed records](../concepts/typed-records.md)** — the `Attribute` library that
-  keeps the JSON boundary honest.
+- **[Typed attributes & records](../concepts/typed-records.md)** — the `Attribute`
+  library that keeps the JSON boundary honest.

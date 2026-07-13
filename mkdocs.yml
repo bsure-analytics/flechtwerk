@@ -74,11 +74,14 @@ nav:
   - Guides:
       - guides/index.md
       - Getting Started: guides/getting-started.md
-      - Extractor: guides/extractor.md
-      - MQTT Extractor: guides/mqtt.md
+      - Extractors: guides/extractor.md
+      - MQTT Extractors: guides/mqtt.md
+      - Transformers: guides/transformer.md
+      - Best Practices: guides/best-practices.md
+      - Observability: guides/observability.md
   - Concepts:
       - concepts/index.md
-      - Typed Records: concepts/typed-records.md
+      - "Typed Attributes & Records": concepts/typed-records.md
       - Config Topics: concepts/config-topics.md
       - Exactly-Once Delivery: concepts/exactly-once.md
       - Architecture: concepts/architecture.md

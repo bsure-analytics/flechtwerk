@@ -1,4 +1,4 @@
-# Typed Records, Not Bare Dicts
+# Typed Attributes & Records, Not Bare Dicts
 
 A stream processor lives on the JSON boundary: every input is a dict decoded from the wire, and every output and every state write goes back through `json.dumps`. Handled as bare dicts, that boundary leaks into everything — each read re-checks presence and re-parses timestamps, a `datetime` assigned three hops earlier blows up only when the record is finally serialized, and a field that silently became `null` surfaces as a `KeyError` in some consumer far from the code that dropped it.
 

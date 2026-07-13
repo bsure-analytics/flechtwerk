@@ -1,33 +1,27 @@
 # Getting Started
 
-This guide takes you from an empty environment to a working stream processor:
-install Flechtwerk, write a minimal `Transformer`, and run it against a Kafka
-broker with a single call. Everything is injected by the caller — the framework
-reads nothing from the environment.
+This guide takes you from an empty environment to a running stage: install
+Flechtwerk, learn the one contract every stage is built on, and run a complete
+stage against a Kafka broker with a single call. Everything is injected by the
+caller — the framework reads nothing from the environment.
 
-A `Transformer` is the workhorse for **stream-to-stream** processing: it consumes
-one or more input topics and publishes derived records to another. Typical jobs
-are enriching records with extra fields, filtering or reshaping them, aggregating
-a stream (running counts, sessionization, deduplication), or joining a stream
-against a [config table](../concepts/config-topics.md). The minimal example below
-does a small aggregation — a per-key running count.
+Flechtwerk has exactly two stage shapes, both built on the same contract:
 
-!!! note "Exactly-Once Delivery for Free"
+- an **[Extractor](extractor.md)** brings an external source into Kafka — polling
+  it on a timer, or receiving pushed messages with the
+  **[MQTT Extractor](mqtt.md)** — at-least-once;
+- a **[Transformer](transformer.md)** consumes Kafka topics and publishes derived
+  records, with exactly-once delivery.
 
-    Every transformer gets exactly-once delivery for free — no opt-in, no extra
-    configuration, no transaction code to write: the output records, state changes,
-    and input-offset commits of each batch all ride a single Kafka transaction, so
-    a record is never lost and never double-counted — even across restarts and
-    rebalances. You write the per-record logic; the framework owns the transaction.
-    See [Exactly-once delivery](../concepts/exactly-once.md) for the full mechanism.
-    (Free *for transformers* — an [extractor](extractor.md) can't have it; see
-    below on that page.)
+Read this page once for the basics — the contract and how any stage is run. Each
+stage guide then covers only what is specific to its shape, and
+**[Best Practices](best-practices.md)** shows how the two shapes work together.
 
 ## Prerequisites
 
 - **Python 3.12+.**
 - **A running Kafka broker** reachable at the `bootstrap_servers` you pass below — any broker works, and a local single-node cluster is fine for development.
-- **Your input and output topics created.** At startup Flechtwerk reads each input topic's partition count (so the input topics must already exist) and creates a matching compacted changelog topic for you. Output topics are created on first write only if your broker has topic auto-creation enabled — otherwise create them too.
+- **The topics your stage needs, created up front.** Which topics depend on the shape — each stage guide lists them. Flechtwerk reads their partition counts at startup, creates the compacted changelog topic for any stateful stage, and (if your broker has topic auto-creation enabled) writes output topics on first use.
 
 ## Installation
 
@@ -58,96 +52,58 @@ decorators, and no fluent builders. An async generator is already the right
 shape — pull-based, backpressure-friendly, naturally composable — and every
 Python developer already knows how to read one.
 
-A `Transformer` consumes partitioned input topics and applies this contract per
-record; the runner only persists a `State` when it differs from the current one,
-so a stage that never yields `State` is stateless and never opens a RocksDB
-file.
+Both stage shapes apply this contract — an `Extractor` once per poll cycle, a
+`Transformer` once per input record. The runner persists a `State` only when it
+differs from the current one, so a stage that never yields `State` is stateless
+and never opens a RocksDB file.
 
-## A Minimal Transformer
+## Running a Stage
 
-The example below counts how many events each key has produced, stamps that
-count onto every outgoing record, and remembers it as per-key state. Build the
-stage with the `Transformer.of(...)` factory — no subclass needed.
-
-```python
-from collections.abc import AsyncIterator
-
-from flechtwerk import Event, IncomingMessage, Message, State, Transformer
-from flechtwerk.attribute import Attribute, DATETIME, INT
-
-SEEN = Attribute("seen", INT)
-"""How many events this key has produced so far."""
-TIMESTAMP = Attribute("timestamp", DATETIME)
-"""When the event happened at the source."""
-
-async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
-    seen = (state.get(SEEN) or 0) + 1
-    yield Message(key=msg.key, topic="my-output", value=Event({**msg.value, SEEN: seen}))
-    yield State({SEEN: seen, TIMESTAMP: msg.value[TIMESTAMP]})
-
-stage = Transformer.of(input_topics=["my-input"], transform=transform)
-```
-
-What each yield does here:
-
-- `yield Message(...)` emits an output record. `Message` is a frozen dataclass
-  envelope carrying a `key`, a `topic`, an `Event` value, and an optional
-  timestamp.
-- `yield State(...)` persists the running count for `msg.key`. On the next
-  record for that key, `state.get(SEEN)` reads it back.
-
-!!! note "Parameters are read-only"
-
-    `msg` and `state` are yours to read, not to change: the runner hands
-    `transform` a private copy of `state` and discards any in-place edit, so the
-    only way to emit a record or persist state is to `yield`. Enrich by
-    spreading (`Event({**msg.value, SEEN: seen})`), never by mutating in place.
-
-!!! note "Typed Records, Not Bare Dicts"
-
-    `SEEN` and `TIMESTAMP` are `Attribute` handles: each pairs a wire name with
-    an explicit codec (`INT`, `DATETIME`, …) so the JSON boundary is enforced at
-    assignment time. `Event`, `State`, and `Config` are dict-like `Record`
-    containers indexed by these handles rather than string keys. Records spread
-    like dicts — `Event({**msg.value, SEEN: seen})` — so enrichment never
-    mutates its input.
-
-!!! tip "Factory or Subclass?"
-
-    `Transformer` and `Extractor` are ABCs. Use the `.of(...)` factory for
-    stateless or simply-stateful stages. Subclass directly when you need
-    lifecycle management (HTTP clients, dedup instances, etc.) via `__aenter__`
-    / `__aexit__`.
-
-## Running It
-
-Running a stage is one call. All configuration is injected — nothing is read
-from the environment:
+Running a stage is one call, whatever its shape. Below is a complete, runnable
+program: a trivial **identity transformer** that forwards every input record to
+an output topic unchanged, wired to a broker. All configuration is injected —
+nothing is read from the environment.
 
 ```python
 import asyncio
+from collections.abc import AsyncIterator
 
-from flechtwerk import Flechtwerk
+from flechtwerk import Flechtwerk, IncomingMessage, Message, State, Transformer
+
+async def transform(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
+    yield Message(key=msg.key, topic="my-output", value=msg.value)   # forward unchanged
+
+stage = Transformer.of(input_topics=["my-input"], transform=transform)
 
 async def main() -> None:
     await Flechtwerk.of(
-        application_id="my-transformer",
+        application_id="my-stage",
         bootstrap_servers="localhost:9092",
-        client_id="my-transformer-0",   # process identity: unique per instance, stable across restarts
+        client_id="my-stage-0",          # process identity: unique per instance, stable across restarts
         poll_interval_seconds=60,
-        stage=stage,                    # from above
+        stage=stage,
     ).run()
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-This plus one stage definition is the whole program — point it at any Kafka
-broker. Produce a record to `my-input` and it comes straight back out on
-`my-output` with a running `seen` count attached.
+Produce a record to `my-input` and it comes straight back out on `my-output`.
+That is the whole program. To do real work, swap in a stage from one of the
+guides below — the `Flechtwerk.of(...).run()` call is identical for every shape;
+only the `stage` you pass changes. The required knobs:
 
-The same `Flechtwerk.of(...).run()` call runs *any* stage — swap the transformer
-for an [Extractor](extractor.md) and nothing about the invocation changes.
+- **`application_id`** — the stage's application identity: a transformer's Kafka consumer group, and the prefix of its changelog topic and transactional IDs.
+- **`bootstrap_servers`** — your broker.
+- **`client_id`** — the process identity (see the warning below).
+- **`poll_interval_seconds`** — the cadence of the work loop; for an extractor, the interval between polls (a push source such as MQTT wakes earlier).
+- **`stage`** — the `Transformer` or `Extractor` you built.
+
+Optional knobs: `compression_type` (defaults to `"zstd"` — JSON compresses ~13×;
+pass `None` to disable), `metrics_port` / `metrics_labels`
+([Prometheus](observability.md); disabled while `metrics_port` is `0`), and `mqtt`
+(broker settings, used only by an [MQTT Extractor](mqtt.md) and ignored otherwise).
+See the [API reference](../api/index.md) for the full signature.
 
 !!! note "Event Loop"
 
@@ -163,7 +119,10 @@ for an [Extractor](extractor.md) and nothing about the invocation changes.
 
 ## Next Steps
 
-- **[Extractor](extractor.md)** — the same two-yield contract driven from the other end: poll an external source on a timer instead of consuming an input topic.
-- **[Typed records](../concepts/typed-records.md)** — the `Attribute` library that keeps the JSON boundary honest.
+- **[Extractors](extractor.md)** — bring an external source into Kafka on a timer.
+- **[MQTT Extractors](mqtt.md)** — a push-driven extractor fed over MQTT.
+- **[Transformers](transformer.md)** — consume topics and publish derived records, with exactly-once delivery.
+- **[Best Practices](best-practices.md)** — pair an extractor with a transformer into a raw-then-refined pipeline you can reprocess without re-ingesting.
+- **[Observability](observability.md)** — Prometheus metrics for throughput, transactions, config arrival, and MQTT health.
+- **[Typed attributes & records](../concepts/typed-records.md)** — the `Attribute` library that keeps the JSON boundary honest.
 - **[Config topics](../concepts/config-topics.md)** — a shared, eventually-consistent lookup table for every instance (Kafka Streams' GlobalKTable).
-- **[MQTT Extractor](mqtt.md)** — push into the poll loop with `MqttExtractor.of(...)`, ACKing to the broker only once a batch is durable in Kafka.
