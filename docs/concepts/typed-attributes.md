@@ -1,8 +1,10 @@
-# Typed Attributes & Records, Not Bare Dicts
+# Typed Attributes & Records: Between Dicts and Dataclasses
 
 A stream processor lives on the JSON boundary: every input is a dict decoded from the wire, and every output and every state write goes back through `json.dumps`. Handled as bare dicts, that boundary leaks into everything — each read re-checks presence and re-parses timestamps, a `datetime` assigned three hops earlier blows up only when the record is finally serialized, and a field that silently became `null` surfaces as a `KeyError` in some consumer far from the code that dropped it.
 
-The `flechtwerk.attribute` library moves all of that to the **write site**. Each field is declared exactly once, as a typed handle pairing a wire name with an explicit `Codec[V]`:
+The conventional fix is custom dataclasses, and most frameworks lean into it: register a class (plus serialization glue) per message shape and let the framework marshal it to and from the wire. In a pipeline, that convention turns into cruft fast — every transformation step produces a new intermediate shape (the input plus one enrichment field, a state record of two counters, a trimmed projection for the output topic), and each wants its own class definition even when it exists only between two hops.
+
+The `flechtwerk.attribute` library is the middle ground between those two poles. Each **field** — not each shape — is declared exactly once, as a typed handle pairing a wire name with an explicit `Codec[V]`, and validation moves to the **write site**. Records combine any subset of these handles as freely as dicts combine keys, so intermediate shapes need no class definitions at all — yet every field access is type-safe:
 
 ```python
 from datetime import datetime, timezone
@@ -78,4 +80,4 @@ And spreading is not an escape hatch around the type system: the spread runs thr
 
 !!! tip "Why It Matters"
 
-    The point isn't ceremony; it's that the boundary between "Python object graph" and "JSON on the wire" is enforced at assignment time, once per `Attribute` declaration, rather than re-derived on every serialize/deserialize.
+    The point isn't ceremony; it's that the boundary between "Python object graph" and "JSON on the wire" is enforced at assignment time, once per `Attribute` declaration, rather than re-derived on every serialize/deserialize — and without a dataclass per message shape. Fields are the unit of declaration; shapes stay free.

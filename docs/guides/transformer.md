@@ -74,14 +74,15 @@ What each yield does here:
     only way to emit a record or persist state is to `yield`. Enrich by
     spreading (`Event({**msg.value, SEEN: seen})`), never by mutating in place.
 
-!!! note "Typed Records, Not Bare Dicts"
+!!! note "Typed Records, No Dataclass per Shape"
 
     `SEEN` and `TIMESTAMP` are `Attribute` handles: each pairs a wire name with
     an explicit codec (`INT`, `DATETIME`, …) so the JSON boundary is enforced at
     assignment time. `Event`, `State`, and `Config` are dict-like `Record`
     containers indexed by these handles rather than string keys. Records spread
     like dicts — `Event({**msg.value, SEEN: seen})` — so enrichment never
-    mutates its input. See [Typed attributes & records](../concepts/typed-attributes.md).
+    mutates its input, and the enriched shape needs no class definition of its
+    own. See [Typed attributes & records](../concepts/typed-attributes.md).
 
 !!! tip "Decorator, Factory, or Subclass?"
 

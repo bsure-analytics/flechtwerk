@@ -95,7 +95,7 @@ The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full 
 
 **Concepts**
 
-- **[Typed Attributes & Records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-attributes/)** — the `flechtwerk.attribute` library that enforces the JSON boundary at the write site, once per field declaration.
+- **[Typed Attributes & Records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-attributes/)** — the middle ground between dicts and dataclasses: the `flechtwerk.attribute` library enforces the JSON boundary at the write site, once per field declaration, with no dataclass per message shape.
 - **[Config Topics](https://bsure-analytics.github.io/flechtwerk/concepts/config-topics/)** — shared, eventually-consistent lookup tables (Kafka Streams' GlobalKTable, specialized to configuration).
 - **[Exactly-Once Delivery](https://bsure-analytics.github.io/flechtwerk/concepts/exactly-once/)** — the task model tying output messages, state writes, and offset commits into one Kafka transaction per batch.
 - **[Architecture](https://bsure-analytics.github.io/flechtwerk/concepts/architecture/)** — the hexagonal (ports and adapters) design and the operational model.
