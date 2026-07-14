@@ -91,7 +91,6 @@ The line to draw is **recoverable vs non-recoverable**, not transient vs persist
 
 ## Constraints
 
-- **Equal partition counts.** All input topics of a transformer must have equal partition counts. This is validated at startup, and a matching changelog topic is created.
+- **Equal partition counts.** All input topics of a transformer must have equal partition counts — the changelog is created with that same count. It must match *exactly* (not a multiple or a sum): each task writes its changelog to its own partition number, so partition `N` of the inputs maps one-to-one to partition `N` of the changelog. If a changelog already exists at a different count, startup fails — repartitioning requires a state migration.
 - **Co-partitioning is the application's job.** If one logical state entry must see records from several input topics, those topics must be co-partitioned by key — same key bytes, same partitioner, same partition count. Only the partition count is checked; key and partitioner alignment cannot be, exactly as in Kafka Streams. Get it wrong and the same `extract_key` arrives on different partition numbers, producing independent state shards owned by different tasks — a silent split, not an error.
-- **Partition count is frozen once state exists.** Repartitioning requires a state migration.
 - **Idle instances are fine.** Instances beyond the partition count sit idle; when a partition moves to one of them, the fencing above makes the handover safe.
