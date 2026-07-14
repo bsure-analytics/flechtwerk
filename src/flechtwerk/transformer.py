@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import AsyncIterator, Never, Self
+from typing import AsyncIterator, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.abc import ConsumerRebalanceListener
@@ -14,13 +14,13 @@ from reactor_di import lookup
 from .configs import ConfigStore, EnrichFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
+from .stage import ExtractKeyFn, Stage
 from .state import ChangelogStateStore, StateStore
-from .types import IncomingMessage, Message, Stage, State
+from .types import IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
 TransformFn = Callable[[IncomingMessage, State], AsyncIterator[Message | State]]
-ExtractKeyFn = Callable[[IncomingMessage], str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,16 +125,6 @@ class Transformer(Stage, ABC):
         if extract_key is not None:
             instance.extract_key = extract_key
         return instance
-
-    def extract_key(self, msg: IncomingMessage) -> str:
-        """Extract the state key from the incoming message. Default: msg.key."""
-        return msg.key
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *exc_info: object) -> None:
-        pass
 
     @abstractmethod
     def transform(self, msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:

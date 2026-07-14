@@ -64,9 +64,10 @@ from paho.mqtt.reasoncodes import ReasonCode
 
 from .attribute import Attribute, Record, STR
 from .configs import EnrichFn
-from .extractor import ExtractKeyFn, Extractor
+from .extractor import Extractor
 from .module import MqttBrokerConfig
 from .observer import Observer
+from .stage import ExtractKeyFn
 from .types import Config, Message, State
 
 if TYPE_CHECKING:
