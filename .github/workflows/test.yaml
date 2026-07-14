@@ -37,6 +37,3 @@ on:
       run-coverage:
         type: boolean
         default: true
-    secrets:
-      CODECOV_TOKEN:
-        required: false

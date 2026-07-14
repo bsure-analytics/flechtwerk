@@ -1,7 +1,6 @@
 jobs:
   test:
-    secrets:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    secrets: inherit
     uses: ./.github/workflows/test.yaml
 name: CI
 on:
