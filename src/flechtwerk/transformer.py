@@ -11,10 +11,10 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.abc import ConsumerRebalanceListener
 from reactor_di import lookup
 
-from .configs import ConfigStore, EnrichFn, bootstrap_config_store, drain_config_updates
+from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
-from .stage import ExtractKeyFn, Stage
+from .stage import ExtractStateKeyFn, Stage
 from .state import ChangelogStateStore, StateStore
 from .types import IncomingMessage, Message, State
 
@@ -102,8 +102,8 @@ class Transformer(Stage, ABC):
             *,
             input_topics: list[str],
             transform: TransformFn,
-            enrich: EnrichFn | None = None,
-            extract_key: ExtractKeyFn | None = None,
+            enrich_config: EnrichConfigFn | None = None,
+            extract_state_key: ExtractStateKeyFn | None = None,
     ) -> "Transformer":
         """Build a Transformer from a transform function and input topics.
 
@@ -113,17 +113,17 @@ class Transformer(Stage, ABC):
 
         Patches the supplied callables in as instance attributes that
         shadow the class-level abstract method ``transform`` (and, when
-        provided, the default ``enrich`` / ``extract_key``). The ABC
+        provided, the default ``enrich_config`` / ``extract_state_key``). The ABC
         discipline still applies to every other construction path —
         ``Transformer()`` and any abstract subclass remain uninstantiable.
         """
         instance = _FunctionalTransformer()
         instance.input_topics = input_topics
         instance.transform = transform
-        if enrich is not None:
-            instance.enrich = enrich
-        if extract_key is not None:
-            instance.extract_key = extract_key
+        if enrich_config is not None:
+            instance.enrich_config = enrich_config
+        if extract_state_key is not None:
+            instance.extract_state_key = extract_state_key
         return instance
 
     @abstractmethod
@@ -163,8 +163,8 @@ class _FunctionalTransformer(Transformer):
 def transformer(
         *,
         input_topics: list[str],
-        enrich: EnrichFn | None = None,
-        extract_key: ExtractKeyFn | None = None,
+        enrich_config: EnrichConfigFn | None = None,
+        extract_state_key: ExtractStateKeyFn | None = None,
 ) -> Callable[[TransformFn], Transformer]:
     """Decorator form of `Transformer.of` — bind a transform function to its input topics.
 
@@ -175,7 +175,7 @@ def transformer(
         async def stage(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
             ...
 
-    ``enrich`` and ``extract_key`` are the same optional overrides as on
+    ``enrich_config`` and ``extract_state_key`` are the same optional overrides as on
     `Transformer.of` — this is exactly that call with ``transform`` supplied by
     the decoration. Call `Transformer.of` directly when the transform function
     must stay callable under its own name, and subclass `Transformer` when you
@@ -183,8 +183,8 @@ def transformer(
     """
     def decorator(transform: TransformFn) -> Transformer:
         return Transformer.of(
-            enrich=enrich,
-            extract_key=extract_key,
+            enrich_config=enrich_config,
+            extract_state_key=extract_state_key,
             input_topics=input_topics,
             transform=transform,
         )
@@ -199,8 +199,8 @@ class Task:
     producer whose static transactional ID fences any previous owner of the
     same task (Kafka Streams EOS-v1 — aiokafka has no KIP-447 generation
     fencing), and a partition-scoped state store restored from the matching
-    changelog partition. State identity is *(partition, extract_key)* — the
-    framework makes no assumptions about what ``extract_key()`` returns.
+    changelog partition. State identity is *(partition, extract_state_key)* — the
+    framework makes no assumptions about what ``extract_state_key()`` returns.
     """
     partition: int
     producer: AIOKafkaProducer
@@ -301,7 +301,7 @@ class TransformerRunner:
         if self.config_consumer is not None:
             await bootstrap_config_store(
                 self.config_consumer, self.transformer.config_topics,
-                self.config_store, self.transformer.enrich,
+                self.config_store, self.transformer.enrich_config,
             )
             self.observer.config_store_restored(len(self.config_store))
             self.observer.config_store_entries(len(self.config_store))
@@ -338,7 +338,7 @@ class TransformerRunner:
         """
         if self.config_consumer is None:
             return
-        records = await drain_config_updates(self.config_consumer, self.config_store, self.transformer.enrich)
+        records = await drain_config_updates(self.config_consumer, self.config_store, self.transformer.enrich_config)
         for msg in records:
             self.observer.config_message_in(msg.topic)
         if records:
@@ -408,7 +408,7 @@ class TransformerRunner:
             task_offsets = offsets.setdefault(tp.partition, {})
             for raw_msg in records[tp]:
                 msg = parse_message(raw_msg)
-                key = self.transformer.extract_key(msg)
+                key = self.transformer.extract_state_key(msg)
                 buckets.setdefault((tp.partition, key), []).append(msg)
                 task_offsets[tp] = max(task_offsets.get(tp, 0), msg.offset + 1)
 

@@ -147,7 +147,7 @@ async def test_bootstrap_compacts_by_key_and_drops_tombstoned():
 async def test_bootstrap_enriches_once_per_surviving_entry():
     calls: list[dict] = []
 
-    async def spy_enrich(config: Config) -> Config:
+    async def spy_enrich_config(config: Config) -> Config:
         calls.append(dict(config.raw))
         config.raw["enriched"] = True
         return config
@@ -162,7 +162,7 @@ async def test_bootstrap_enriches_once_per_surviving_entry():
         partitions_by_topic={"cfg": {0}},
     )
 
-    await bootstrap_config_store(consumer, ["cfg"], store, spy_enrich)
+    await bootstrap_config_store(consumer, ["cfg"], store, spy_enrich_config)
 
     # Compaction first: only the surviving record is enriched.
     assert calls == [{"a": 2}]
@@ -189,7 +189,7 @@ async def test_bootstrap_topic_without_partitions_yields_empty_store():
 
 
 async def test_drain_applies_enriches_and_returns_records():
-    async def tagging_enrich(config: Config) -> Config:
+    async def tagging_enrich_config(config: Config) -> Config:
         config.raw["enriched"] = True
         return config
 
@@ -203,7 +203,7 @@ async def test_drain_applies_enriches_and_returns_records():
     consumer = MagicMock()
     consumer.getmany = AsyncMock(return_value=records)
 
-    drained = await drain_config_updates(consumer, store, tagging_enrich)
+    drained = await drain_config_updates(consumer, store, tagging_enrich_config)
 
     consumer.getmany.assert_awaited_once_with(timeout_ms=0)
     assert [msg.key for msg in drained] == [b"k1", b"gone"]

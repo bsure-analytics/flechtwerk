@@ -13,10 +13,10 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from reactor_di import lookup
 
 from flechtwerk.attribute import Attribute, BOOL
-from .configs import ConfigStore, EnrichFn, bootstrap_config_store, drain_config_updates
+from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
-from .stage import ExtractKeyFn, Stage
+from .stage import ExtractStateKeyFn, Stage
 from .state import StateStore
 from .types import Config, IncomingMessage, Message, State
 
@@ -91,28 +91,28 @@ class Extractor(Stage, ABC):
             *,
             config_topics: list[str],
             poll: PollFn,
-            enrich: EnrichFn | None = None,
-            extract_key: ExtractKeyFn | None = None,
+            enrich_config: EnrichConfigFn | None = None,
+            extract_state_key: ExtractStateKeyFn | None = None,
     ) -> "Extractor":
         """Build an Extractor from a poll function and config topics.
 
-        ``enrich`` and ``extract_key`` are optional overrides; omit them
-        to use the defaults (no enrichment, ``extract_key`` returns the
+        ``enrich_config`` and ``extract_state_key`` are optional overrides; omit them
+        to use the defaults (no enrichment, ``extract_state_key`` returns the
         Kafka message key).
 
         Patches the supplied callables in as instance attributes that
         shadow the class-level abstract method ``poll`` (and, when
-        provided, the default ``enrich`` / ``extract_key`` methods). The
+        provided, the default ``enrich_config`` / ``extract_state_key`` methods). The
         ABC discipline still applies to every other construction path —
         ``Extractor()`` and any abstract subclass remain uninstantiable.
         """
         instance = _FunctionalExtractor()
         instance.config_topics = config_topics
         instance.poll = poll
-        if enrich is not None:
-            instance.enrich = enrich
-        if extract_key is not None:
-            instance.extract_key = extract_key
+        if enrich_config is not None:
+            instance.enrich_config = enrich_config
+        if extract_state_key is not None:
+            instance.extract_state_key = extract_state_key
         return instance
 
     @abstractmethod
@@ -151,8 +151,8 @@ class _FunctionalExtractor(Extractor):
 def extractor(
         *,
         config_topics: list[str],
-        enrich: EnrichFn | None = None,
-        extract_key: ExtractKeyFn | None = None,
+        enrich_config: EnrichConfigFn | None = None,
+        extract_state_key: ExtractStateKeyFn | None = None,
 ) -> Callable[[PollFn], Extractor]:
     """Decorator form of `Extractor.of` — bind a poll function to its config topics.
 
@@ -163,7 +163,7 @@ def extractor(
         async def stage(config: Config, state: State) -> AsyncIterator[Message | State]:
             ...
 
-    ``enrich`` and ``extract_key`` are the same optional overrides as on
+    ``enrich_config`` and ``extract_state_key`` are the same optional overrides as on
     `Extractor.of` — this is exactly that call with ``poll`` supplied by the
     decoration. Call `Extractor.of` directly when the poll function must stay
     callable under its own name, and subclass `Extractor` when you need
@@ -172,8 +172,8 @@ def extractor(
     def decorator(poll: PollFn) -> Extractor:
         return Extractor.of(
             config_topics=config_topics,
-            enrich=enrich,
-            extract_key=extract_key,
+            enrich_config=enrich_config,
+            extract_state_key=extract_state_key,
             poll=poll,
         )
     return decorator
@@ -263,7 +263,7 @@ class ExtractorRunner:
         a config.
         """
         latest = await bootstrap_config_store(
-            self.consumer, self.extractor.config_topics, self.config_store, self.extractor.enrich,
+            self.consumer, self.extractor.config_topics, self.config_store, self.extractor.enrich_config,
         )
         for raw_msg in latest.values():
             await self.apply_config(parse_message(raw_msg))
@@ -273,7 +273,7 @@ class ExtractorRunner:
 
     async def check_config_updates(self) -> None:
         """Non-blocking check for config changes."""
-        records = await drain_config_updates(self.consumer, self.config_store, self.extractor.enrich)
+        records = await drain_config_updates(self.consumer, self.config_store, self.extractor.enrich_config)
         for raw_msg in records:
             self.observer.config_message_in(raw_msg.topic)
             await self.apply_config(parse_message(raw_msg))
@@ -298,7 +298,7 @@ class ExtractorRunner:
         present = key in self.configs
         self.configs[key] = ConfigEntry(
             config=config,
-            state_key=self.extractor.extract_key(msg),
+            state_key=self.extractor.extract_state_key(msg),
         )
         log.info("%s config for key %s", "Updated" if present else "Added", key)
 

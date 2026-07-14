@@ -30,8 +30,8 @@ The source topics are their own changelog — compacted, small, re-read on every
 
 ## Enrichment on the Way In
 
-`Stage.enrich(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it **once per config record** — never per poll tick or lookup — and both stage kinds inherit it.
+`Stage.enrich_config(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it **once per config record** — never per poll tick or lookup — and both stage kinds inherit it.
 
 !!! note "Why Re-Reading Is Safe"
 
-    Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation. Flechtwerk re-reads the topics through the same `enrich` path on every startup, so the enriched store cannot diverge.
+    Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation. Flechtwerk re-reads the topics through the same `enrich_config` path on every startup, so the enriched store cannot diverge.

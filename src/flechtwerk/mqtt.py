@@ -63,11 +63,11 @@ from paho.mqtt.client import CallbackAPIVersion, Client, MQTTMessage, topic_matc
 from paho.mqtt.reasoncodes import ReasonCode
 
 from .attribute import Attribute, Record, STR
-from .configs import EnrichFn
+from .configs import EnrichConfigFn
 from .extractor import Extractor
 from .module import MqttBrokerConfig
 from .observer import Observer
-from .stage import ExtractKeyFn
+from .stage import ExtractStateKeyFn
 from .types import Config, Message, State
 
 if TYPE_CHECKING:
@@ -381,25 +381,25 @@ class MqttExtractor(Extractor, ABC):
             config_topics: list[str],
             relay: RelayFn,
             drain_limit: int = 1000,
-            enrich: EnrichFn | None = None,
-            extract_key: ExtractKeyFn | None = None,
+            enrich_config: EnrichConfigFn | None = None,
+            extract_state_key: ExtractStateKeyFn | None = None,
     ) -> "MqttExtractor":
         """Build an MqttExtractor from a relay function and config topics.
 
         Mirrors ``Extractor.of``: patches the supplied callables in as
         instance attributes that shadow the class-level abstract method
-        ``relay`` (and, when provided, the default ``enrich`` /
-        ``extract_key`` methods). The ABC discipline still applies to every
+        ``relay`` (and, when provided, the default ``enrich_config`` /
+        ``extract_state_key`` methods). The ABC discipline still applies to every
         other construction path.
         """
         instance = _FunctionalMqttExtractor()
         instance.config_topics = config_topics
         instance.drain_limit = drain_limit
         instance.relay = relay
-        if enrich is not None:
-            instance.enrich = enrich
-        if extract_key is not None:
-            instance.extract_key = extract_key
+        if enrich_config is not None:
+            instance.enrich_config = enrich_config
+        if extract_state_key is not None:
+            instance.extract_state_key = extract_state_key
         return instance
 
     async def __aenter__(self) -> Self:
@@ -498,8 +498,8 @@ def mqtt_extractor(
         *,
         config_topics: list[str],
         drain_limit: int = 1000,
-        enrich: EnrichFn | None = None,
-        extract_key: ExtractKeyFn | None = None,
+        enrich_config: EnrichConfigFn | None = None,
+        extract_state_key: ExtractStateKeyFn | None = None,
 ) -> Callable[[RelayFn], MqttExtractor]:
     """Decorator form of `MqttExtractor.of` — bind a relay function to its config topics.
 
@@ -510,7 +510,7 @@ def mqtt_extractor(
         def stage(config: Config, topic: str, payload: Record) -> Message | None:
             ...
 
-    ``drain_limit``, ``enrich``, and ``extract_key`` are the same optional
+    ``drain_limit``, ``enrich_config``, and ``extract_state_key`` are the same optional
     overrides as on `MqttExtractor.of` — this is exactly that call with ``relay``
     supplied by the decoration. Sources needing state, 1:N fan-out, or non-JSON
     payloads subclass `MqttExtractor` and override ``poll()`` instead.
@@ -519,8 +519,8 @@ def mqtt_extractor(
         return MqttExtractor.of(
             config_topics=config_topics,
             drain_limit=drain_limit,
-            enrich=enrich,
-            extract_key=extract_key,
+            enrich_config=enrich_config,
+            extract_state_key=extract_state_key,
             relay=relay,
         )
     return decorator

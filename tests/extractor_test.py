@@ -40,7 +40,7 @@ class SimpleExtractor(Extractor):
 class EnrichingExtractor(Extractor):
     config_topics = ["test-config"]
 
-    async def enrich(self, config):
+    async def enrich_config(self, config):
         config[ENRICHED] = True
         return config
 
@@ -146,7 +146,7 @@ def test_extractor_runner_polls_configs():
         assert topic == "test-output"
         assert json.loads(payload["value"])["data"] == "polled"
 
-        # State should be persisted under msg.key (extract_key default)
+        # State should be persisted under msg.key (extract_state_key default)
         assert (await state_store.get("tenant/channel")).raw == {"cursor": 1}
 
     asyncio.run(run())
@@ -175,7 +175,7 @@ def test_poll_config_mutation_does_not_leak_across_polls():
 
 
 def test_extractor_enrichment():
-    """Test that enrich() is called when configs arrive."""
+    """Test that enrich_config() is called when configs arrive."""
 
     async def run():
         record = json_record(key="k", value={"api_key": "key1"})
@@ -509,39 +509,39 @@ def test_functional_extractor():
     asyncio.run(run())
 
 
-def test_functional_extractor_with_enrich_and_extract_key():
-    """Functional Extractor with custom enrich and extract_key."""
+def test_functional_extractor_with_enrich_and_extract_state_key():
+    """Functional Extractor with custom enrich_config and extract_state_key."""
 
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
         yield Message(key=config[API_KEY], topic="out", value={"tag": config.get(TAG)})
 
-    async def my_enrich(config):
+    async def my_enrich_config(config):
         config[TAG] = "enriched"
         return config
 
-    def my_extract_key(msg):
+    def my_extract_state_key(msg):
         return msg.value.get(ID, msg.value.get(API_KEY))
 
     ext = Extractor.of(
         config_topics=["cfg"],
         poll=my_poll,
-        enrich=my_enrich,
-        extract_key=my_extract_key,
+        enrich_config=my_enrich_config,
+        extract_state_key=my_extract_state_key,
     )
 
     async def run():
-        enriched = await ext.enrich(Config.wrap({"api_key": "k"}))
+        enriched = await ext.enrich_config(Config.wrap({"api_key": "k"}))
         assert enriched[TAG] == "enriched"
 
         msg = json_record(key="ignored", value={"api_key": "a", "id": "custom"})
         from flechtwerk.kafka import parse_message
-        assert ext.extract_key(parse_message(msg)) == "custom"
+        assert ext.extract_state_key(parse_message(msg)) == "custom"
 
     asyncio.run(run())
 
 
-def test_functional_extractor_default_extract_key():
-    """Functional Extractor without extract_key falls back to msg.key."""
+def test_functional_extractor_default_extract_state_key():
+    """Functional Extractor without extract_state_key falls back to msg.key."""
 
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
         return
@@ -551,7 +551,7 @@ def test_functional_extractor_default_extract_key():
 
     from flechtwerk.kafka import parse_message
     msg = parse_message(json_record(key="tenant/channel", value={"api_key": "a"}))
-    assert ext.extract_key(msg) == "tenant/channel"
+    assert ext.extract_state_key(msg) == "tenant/channel"
 
 
 # --- Decorator API tests ---
@@ -575,28 +575,28 @@ def test_extractor_decorator_builds_equivalent_stage():
     asyncio.run(run())
 
 
-def test_extractor_decorator_threads_enrich_and_extract_key():
-    """@extractor forwards the same enrich / extract_key overrides as Extractor.of."""
+def test_extractor_decorator_threads_enrich_config_and_extract_state_key():
+    """@extractor forwards the same enrich_config / extract_state_key overrides as Extractor.of."""
 
-    async def my_enrich(config):
+    async def my_enrich_config(config):
         config[TAG] = "enriched"
         return config
 
-    def my_extract_key(msg):
+    def my_extract_state_key(msg):
         return msg.value.get(ID, msg.value.get(API_KEY))
 
-    @extractor(config_topics=["cfg"], enrich=my_enrich, extract_key=my_extract_key)
+    @extractor(config_topics=["cfg"], enrich_config=my_enrich_config, extract_state_key=my_extract_state_key)
     async def stage(config, state) -> AsyncIterator[Message | State]:
         return
         yield  # pragma: no cover
 
     async def run():
-        enriched = await stage.enrich(Config.wrap({"api_key": "k"}))
+        enriched = await stage.enrich_config(Config.wrap({"api_key": "k"}))
         assert enriched[TAG] == "enriched"
 
         from flechtwerk.kafka import parse_message
         msg = parse_message(json_record(key="ignored", value={"api_key": "a", "id": "custom"}))
-        assert stage.extract_key(msg) == "custom"
+        assert stage.extract_state_key(msg) == "custom"
 
     asyncio.run(run())
 

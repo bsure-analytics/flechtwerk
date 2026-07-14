@@ -16,12 +16,12 @@ and stay small (the whole store lives in memory per instance). Lookups are
 eventually consistent — config updates are NOT part of any task
 transaction, matching the GlobalKTable caveat.
 
-`Stage.enrich` is applied here, once per config record — the startup
+`Stage.enrich_config` is applied here, once per config record — the startup
 bootstrap compacts first, so once per *surviving* entry — never per poll
 tick or per lookup. Kafka Streams forbids transforming records on their way
 into a global store (KIP-813) because a checkpoint-based restore would
 bypass the transformation; Flechtwerk re-reads the topics through this same
-enrich path on every startup, so the enriched store cannot diverge from
+enrich_config path on every startup, so the enriched store cannot diverge from
 what a fresh boot would build.
 """
 import logging
@@ -37,7 +37,7 @@ from .types import Config
 
 log = logging.getLogger(__name__)
 
-EnrichFn = Callable[[Config], Awaitable[Config]]
+EnrichConfigFn = Callable[[Config], Awaitable[Config]]
 
 
 class ConfigStore:
@@ -90,7 +90,7 @@ class ConfigStore:
 async def apply_config_record(
     msg: ConsumerRecord[Any, Any],
     store: ConfigStore,
-    enrich: EnrichFn,
+    enrich_config: EnrichConfigFn,
 ) -> None:
     """Apply one config record: tombstones delete, values are enriched then stored."""
     key = decode_key(msg.key)
@@ -101,20 +101,20 @@ async def apply_config_record(
         store.delete(key)
     else:
         config = Config(decode_event(msg.value, f"{msg.topic}/{msg.offset}"))
-        store.put(key, await enrich(config))
+        store.put(key, await enrich_config(config))
 
 
 async def bootstrap_config_store(
     consumer: aiokafka.AIOKafkaConsumer,
     topics: list[str],
     store: ConfigStore,
-    enrich: EnrichFn,
+    enrich_config: EnrichConfigFn,
 ) -> dict[str, ConsumerRecord[Any, Any]]:
     """Read every config topic in full and populate the store.
 
     Reads to the end offsets captured at entry and compacts by wire key
     across ALL topics — one namespace; a tombstone on any topic deletes the
-    key. `enrich` runs once per surviving entry, not per record. Returns the
+    key. `enrich_config` runs once per surviving entry, not per record. Returns the
     surviving record per key so callers can react once per live config (the
     extractor runner builds its config entries from these).
 
@@ -143,7 +143,7 @@ async def bootstrap_config_store(
 
     count = await read_to_end(consumer, tps, collect)
     for msg in latest.values():
-        await apply_config_record(msg, store, enrich)
+        await apply_config_record(msg, store, enrich_config)
     log.info("Bootstrapped config store with %d entries from %d record(s) on %s",
              len(store), count, topics)
     return latest
@@ -152,7 +152,7 @@ async def bootstrap_config_store(
 async def drain_config_updates(
     consumer: aiokafka.AIOKafkaConsumer,
     store: ConfigStore,
-    enrich: EnrichFn,
+    enrich_config: EnrichConfigFn,
 ) -> list[ConsumerRecord[Any, Any]]:
     """Apply newly-arrived config records without blocking and return them.
 
@@ -162,5 +162,5 @@ async def drain_config_updates(
     records = await consumer.getmany(timeout_ms=0)
     flat = [msg for msgs in records.values() for msg in msgs]
     for msg in flat:
-        await apply_config_record(msg, store, enrich)
+        await apply_config_record(msg, store, enrich_config)
     return flat

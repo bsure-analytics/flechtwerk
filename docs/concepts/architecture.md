@@ -28,7 +28,7 @@ Everything ships under `src/flechtwerk/`.
 | --- | --- |
 | `attribute/` | `Attribute[V]` — a single, type-safe handle on a dict key carrying an explicit `Codec[V]`. Composable codec atoms (`STR`, `INT`, `BOOL`, `DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`) and constructors (`LIST`, `SET`, `TUPLE`, `DICT`). `Record` wraps a JSON-native `dict[str, Any]` (`.raw`) and runs a codec on every write. |
 | `types.py` | `Config`, `Event`, `State` (`Record` subclasses) plus the `IncomingMessage` / `Message` dataclass envelopes (timestamps are real `datetime`, not millis). |
-| `stage.py` | The non-exported `Stage` base shared by both stage kinds: the `config_topics` declaration, the `enrich` / `extract_key` hooks, and the default no-op async context-manager lifecycle. |
+| `stage.py` | The non-exported `Stage` base shared by both stage kinds: the `config_topics` declaration, the `enrich_config` / `extract_state_key` hooks, and the default no-op async context-manager lifecycle. |
 | `extractor.py` | `Extractor` (ABC; `poll` is abstract) and `ExtractorRunner`. Async polling with `asyncio.gather` for concurrent config processing. |
 | `transformer.py` | `Transformer` (ABC; `transform` is abstract), `TransformerRunner`, `Task`, and `TaskRebalanceListener`. Splits work into per-input-partition tasks, each with its own transactional producer and changelog store. |
 | `kafka.py` | Wire helpers: `parse_message()`, `encode_json()`, `restore_changelog()`, `read_to_end()`, `is_tombstone()`, `decode_key()` / `decode_event()`. Runners type-hint aiokafka directly — no wrapper classes. |

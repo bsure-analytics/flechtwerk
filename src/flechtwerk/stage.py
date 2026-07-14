@@ -4,7 +4,7 @@ from typing import Self
 
 from .types import Config, IncomingMessage
 
-ExtractKeyFn = Callable[[IncomingMessage], str]
+ExtractStateKeyFn = Callable[[IncomingMessage], str]
 
 
 class Stage:
@@ -31,7 +31,7 @@ class Stage:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    async def enrich(self, config: Config) -> Config:
+    async def enrich_config(self, config: Config) -> Config:
         """One-time enrichment when a config first arrives or updates.
 
         Applied by the framework once per config record — the startup
@@ -42,7 +42,7 @@ class Stage:
         """
         return config
 
-    def extract_key(self, msg: IncomingMessage) -> str:
+    def extract_state_key(self, msg: IncomingMessage) -> str:
         """Extract the state key from the incoming message. Default: msg.key.
 
         For an Extractor the message is the config record; for a Transformer

@@ -183,34 +183,34 @@ def test_functional_transformer():
     asyncio.run(run())
 
 
-def test_functional_transformer_with_extract_key():
-    """Functional Transformer with custom extract_key."""
+def test_functional_transformer_with_extract_state_key():
+    """Functional Transformer with custom extract_state_key."""
 
     async def my_transform(msg, state):
         yield Message(key=msg.key, topic="out", value=msg.value)
 
-    def my_extract_key(msg):
+    def my_extract_state_key(msg):
         return msg.value.raw.get("id", msg.key)
 
     t = Transformer.of(
         input_topics=["in"],
-        extract_key=my_extract_key,
+        extract_state_key=my_extract_state_key,
         transform=my_transform,
     )
 
     msg = make_incoming(value={"id": "custom-key"})
-    assert t.extract_key(msg) == "custom-key"
+    assert t.extract_state_key(msg) == "custom-key"
 
 
-def test_functional_transformer_default_extract_key():
-    """Functional Transformer without extract_key uses msg.key."""
+def test_functional_transformer_default_extract_state_key():
+    """Functional Transformer without extract_state_key uses msg.key."""
 
     async def my_transform(msg, _):
         yield Message(key=msg.key, topic="out", value=Event())
 
     t = Transformer.of(input_topics=["in"], transform=my_transform)
     msg = make_incoming(key="my-key")
-    assert t.extract_key(msg) == "my-key"
+    assert t.extract_state_key(msg) == "my-key"
 
 
 # --- Decorator API tests ---
@@ -234,26 +234,26 @@ def test_transformer_decorator_builds_equivalent_stage():
     asyncio.run(run())
 
 
-def test_transformer_decorator_threads_enrich_and_extract_key():
-    """@transformer forwards the same enrich / extract_key overrides as Transformer.of."""
+def test_transformer_decorator_threads_enrich_config_and_extract_state_key():
+    """@transformer forwards the same enrich_config / extract_state_key overrides as Transformer.of."""
 
-    async def my_enrich(config):
+    async def my_enrich_config(config):
         config.raw["enriched"] = True
         return config
 
-    def my_extract_key(msg):
+    def my_extract_state_key(msg):
         return msg.value.raw.get("id", msg.key)
 
-    @transformer(input_topics=["in"], enrich=my_enrich, extract_key=my_extract_key)
+    @transformer(input_topics=["in"], enrich_config=my_enrich_config, extract_state_key=my_extract_state_key)
     async def stage(msg, state) -> AsyncIterator[Message]:
         return
         yield  # pragma: no cover
 
-    assert stage.extract_key(make_incoming(value={"id": "custom-key"})) == "custom-key"
+    assert stage.extract_state_key(make_incoming(value={"id": "custom-key"})) == "custom-key"
 
     async def run():
         from flechtwerk.types import Config
-        enriched = await stage.enrich(Config.wrap({"a": 1}))
+        enriched = await stage.enrich_config(Config.wrap({"a": 1}))
         assert enriched.raw == {"a": 1, "enriched": True}
 
     asyncio.run(run())
@@ -526,19 +526,19 @@ def test_transformer_runner_yielding_empty_state_no_op_when_already_absent():
 
 
 def test_transformer_runner_functional_stateful():
-    """Functional stateful transformer with custom extract_key via runner."""
+    """Functional stateful transformer with custom extract_state_key via runner."""
 
     async def my_transform(msg, state):
         count = state.get(COUNT, 0) + 1
         yield Message(key=msg.key, topic="out", value=Event.wrap({"count": count}))
         yield State.wrap({"count": count})
 
-    def my_extract_key(msg):
+    def my_extract_state_key(msg):
         return msg.value.raw.get("form_id", msg.key)
 
     t = Transformer.of(
         input_topics=["in"],
-        extract_key=my_extract_key,
+        extract_state_key=my_extract_state_key,
         transform=my_transform,
     )
 
@@ -782,7 +782,7 @@ class FakeTaskStore(InMemoryStateStore):
 
 
 def test_transformer_runner_same_key_on_different_partitions_uses_separate_tasks():
-    """State identity is (task, extract_key) — the same key on two partitions
+    """State identity is (task, extract_state_key) — the same key on two partitions
     yields two independent state entries and two independent transactions."""
 
     async def counter(msg, state):
@@ -1062,7 +1062,7 @@ def test_check_config_updates_applies_enriches_and_observes():
         from flechtwerk.types import Config
 
         class EnrichingLookup(ConfigLookupTransformer):
-            async def enrich(self, config):
+            async def enrich_config(self, config):
                 config.raw["enriched"] = True
                 return config
 
@@ -1091,20 +1091,20 @@ def test_check_config_updates_noop_without_config_consumer():
     asyncio.run(run())
 
 
-def test_functional_transformer_with_enrich():
+def test_functional_transformer_with_enrich_config():
     async def my_transform(msg, state) -> AsyncIterator[Message]:
         return
         yield  # pragma: no cover
 
-    async def my_enrich(config):
+    async def my_enrich_config(config):
         config.raw["enriched"] = True
         return config
 
-    t = Transformer.of(input_topics=["in"], transform=my_transform, enrich=my_enrich)
+    t = Transformer.of(input_topics=["in"], transform=my_transform, enrich_config=my_enrich_config)
 
     async def run():
         from flechtwerk.types import Config
-        enriched = await t.enrich(Config.wrap({"a": 1}))
+        enriched = await t.enrich_config(Config.wrap({"a": 1}))
         assert enriched.raw == {"a": 1, "enriched": True}
 
     asyncio.run(run())
