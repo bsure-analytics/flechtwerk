@@ -103,8 +103,9 @@ pass `None` to disable), `metrics_port` / `metrics_labels`
 (broker settings, used only by an [MQTT Extractor](mqtt.md)), and
 `poll_interval` (a `timedelta` — an [extractor](extractor.md)'s poll cadence,
 required for extractors, ignored by transformers). Like `mqtt`, the last two are
-shape-specific and may be passed unconditionally. See the
-[API reference](../api/index.md) for the full signature.
+shape-specific and may be passed unconditionally. Scaling needs no knob at all:
+extractor replicas [shard the config set among themselves](extractor.md#scaling-out).
+See the [API reference](../api/index.md) for the full signature.
 
 !!! note "Event Loop"
 

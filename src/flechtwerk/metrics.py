@@ -47,7 +47,7 @@ class Metrics:
     def message_processing_seconds(self) -> Histogram:
         return Histogram(
             "flechtwerk_message_processing_seconds",
-            "Time spent in a single transform()/poll() dispatch (excluding Kafka I/O)",
+            "Time spent in a single transform()/poll() dispatch (excluding Kafka transactions and flushes)",
             self._label_names,
             registry=self.registry,
         )
@@ -139,6 +139,15 @@ class Metrics:
         return Gauge(
             "flechtwerk_tasks_assigned",
             "Tasks (input partitions) currently owned and initialized by this instance",
+            self._label_names,
+            registry=self.registry,
+        )
+
+    @cached_property
+    def tokens_assigned(self) -> Gauge:
+        return Gauge(
+            "flechtwerk_tokens_assigned",
+            "Ownership tokens (config-partition leases) currently held by this extractor instance — 0 means hot standby",
             self._label_names,
             registry=self.registry,
         )

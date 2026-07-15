@@ -82,6 +82,11 @@ class RocksDBStateStore(StateStore):
     never touch state (stateless transformers with zero restored entries)
     never create the RocksDB file at all — and close() is a no-op in that
     case, preserving the "nothing happened" shutdown path.
+
+    close() is a wipe, not an end-of-life: it drops the cached database so a
+    later put/get lazily reopens a fresh, empty store at the same path. The
+    sharded extractor runner relies on this to discard local state on token
+    revocation and re-restore from the changelog on the next assignment.
     """
 
     path: Path
@@ -125,6 +130,9 @@ class RocksDBStateStore(StateStore):
         if "db" not in self.__dict__:
             return
         self.db.close()
+        # Drop the cached_property so the next access reopens a fresh, empty
+        # store — close() must be a wipe, not an end-of-life (see class doc).
+        del self.__dict__["db"]
         shutil.rmtree(self.path, ignore_errors=True)
         log.info("Closed and removed RocksDB state store at %s", self.path)
 

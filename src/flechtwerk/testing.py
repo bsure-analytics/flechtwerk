@@ -50,6 +50,9 @@ class RecordingObserver(Observer):
     def tasks_assigned(self, n: int) -> None:
         self.calls.append(("tasks_assigned", n))
 
+    def tokens_assigned(self, n: int) -> None:
+        self.calls.append(("tokens_assigned", n))
+
     def mqtt_buffered(self, topic: str, n: int) -> None:
         self.calls.append(("mqtt_buffered", topic, n))
 
@@ -86,10 +89,17 @@ class RecordingObserver(Observer):
 
 class InMemoryStateStore(StateStore):
     """In-memory state store for testing — mirrors `RocksDBStateStore`'s
-    bytes-on-disk semantics so test assertions match production behavior."""
+    bytes-on-disk semantics so test assertions match production behavior.
+
+    Also duck-types `ChangelogStateStore.restore` as a no-op so the store
+    can stand in for the runner's changelog-backed store in tests that
+    drive the full run() loop (token assignment triggers a restore)."""
 
     def __init__(self):
         self.store: dict[str, bytes] = {}
+
+    async def restore(self, consumer: Any, partitions: set[int] | None = None) -> int:
+        return 0
 
     async def get(self, key: str) -> State | None:
         raw = self.store.get(key)

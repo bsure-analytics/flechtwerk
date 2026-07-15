@@ -551,6 +551,84 @@ async def test_template_forwards_and_acks_previous_batch():
 
 
 @pytest.mark.asyncio
+async def test_runner_cancellation_mid_send_leaves_no_false_pendings():
+    """Pins the runner↔template ordering: poll_one hands each message to the
+    producer BEFORE the template resumes and marks it pending, so a
+    cancellation inside a send can never leave a pending-ACK for a message
+    the producer hasn't accepted — the hole would otherwise be silent QoS-1
+    data loss at the next entry's ACK-previous-batch."""
+    from flechtwerk.extractor import ConfigEntry, ExtractorRunner
+    from flechtwerk.observer import Observer
+    from flechtwerk.testing import FakeKafkaProducer, InMemoryStateStore
+
+    class BlockingSecondSendProducer(FakeKafkaProducer):
+        def __init__(self):
+            super().__init__()
+            self.blocked = asyncio.Event()
+
+        async def send(self, topic, *, key=None, value=None, partition=None, timestamp_ms=None):
+            await super().send(topic, key=key, value=value, partition=partition, timestamp_ms=timestamp_ms)
+            if len(self.sent) >= 2:
+                self.blocked.set()
+                await asyncio.Event().wait()  # block forever — the test cancels here
+
+    ext = make_template_extractor(forward_relay)
+    ext.connection.publish(topic="t/aa/events", payload=b'{"n":1}')
+    ext.connection.publish(topic="t/bb/events", payload=b'{"n":2}')
+
+    runner = ExtractorRunner()
+    runner.extractor = ext
+    runner.observer = Observer()
+    runner.producer = BlockingSecondSendProducer()
+    runner.state_store = InMemoryStateStore()
+
+    task = asyncio.create_task(runner.poll_one(ConfigEntry(config=CONFIG, state_key="k")))
+    await asyncio.wait_for(runner.producer.blocked.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    sub = ext.connection.subscriptions["t/+/events"]
+    assert sub.pending_acks == []  # message 1's mark was rolled back; message 2 was never marked
+    assert sub.acked == []
+    assert [m.payload for m in sub.items] == [b'{"n":1}', b'{"n":2}']  # both re-buffered in order
+
+
+@pytest.mark.asyncio
+async def test_template_rollback_on_cancellation_preserves_at_least_once():
+    """Closing the generator mid-batch — what ExtractorRunner.poll_one does
+    when a poll cycle is cancelled for a token handover — must not let the
+    next entry ACK unsent messages, nor strand the drained tail outside the
+    buffer: everything unconfirmed rolls back to the buffer front in
+    arrival order. Deliberate drops stay dropped."""
+    def relay(config: Config, topic: str, payload: Record) -> Message | None:
+        if payload.raw.get("drop"):
+            return None
+        return Message(key=topic, topic="out", value=Event.wrap(payload.raw))
+
+    ext = make_template_extractor(relay)
+    ext.connection.publish(topic="t/aa/events", payload=b'{"drop":true}')  # filtered → ACKed
+    ext.connection.publish(topic="t/bb/events", payload=b'{"n":1}')        # forwarded + marked pending
+    ext.connection.publish(topic="t/cc/events", payload=b'{"n":2}')        # yielded, interrupted at the yield
+    ext.connection.publish(topic="t/dd/events", payload=b'{"n":3}')        # never reached
+
+    sub = ext.connection.subscriptions["t/+/events"]
+    generator = ext.poll(CONFIG, State())
+    assert (await generator.__anext__()).value.raw == {"n": 1}
+    assert (await generator.__anext__()).value.raw == {"n": 2}  # resuming marked {"n":1} pending
+    await generator.aclose()
+
+    assert len(sub.acked) == 1     # only the deliberate drop stays ACKed
+    assert sub.pending_acks == []  # nothing left to mis-ACK at the next entry
+    assert [m.payload for m in sub.items] == [b'{"n":1}', b'{"n":2}', b'{"n":3}']
+
+    # The next poll re-delivers all three — no loss, no premature ACK.
+    messages = await collect_poll(ext)
+    assert [m.value.raw for m in messages] == [{"n": 1}, {"n": 2}, {"n": 3}]
+    assert len(sub.acked) == 1  # still just the drop; the new batch is pending again
+
+
+@pytest.mark.asyncio
 async def test_template_filtered_drop_acks_immediately():
     ext = make_template_extractor(lambda config, topic, payload: None)
     ext.connection.publish(topic="t/aa/events", payload=b"{}")

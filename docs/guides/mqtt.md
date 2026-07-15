@@ -62,6 +62,19 @@ See [Getting Started → Running a Stage](getting-started.md#running-a-stage) fo
 
     `MqttBrokerConfig` carries the broker settings, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting Started](getting-started.md#installation)).
 
+## One Replica for Now
+
+Run an MQTT-sourced extractor as **one replica**. Extractor replicas normally
+[shard the config set between them](extractor.md#scaling-out), but there is no
+MQTT unsubscribe lifecycle yet: when a config's ownership moves to another
+replica, the old owner's persistent broker session keeps its subscription, and
+at QoS ≥ 1 the un-ACKed messages it keeps receiving occupy that session's
+shared inflight window until the broker pauses delivery for *all* topics of
+the client. A single replica is unaffected — ownership handovers back to
+itself are cancellation-safe (drained-but-unconfirmed messages roll back into
+the buffer instead of being ACKed unsent), and a second replica still buys a
+hot standby only if you accept the wedged-session risk on failover.
+
 ## Next Steps
 
 - **[Extractors](extractor.md)** — the poll-based base model an `MqttExtractor` specializes.

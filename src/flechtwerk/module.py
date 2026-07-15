@@ -11,7 +11,10 @@ This closes the transactional gap — state changelog writes participate in
 the same Kafka transaction as output messages and offset commits — and the
 static per-task transactional ID fences any previous owner of the task
 (Kafka Streams EOS-v1), which is what makes running multiple transformer
-instances safe. Extractors keep a single shared non-transactional producer.
+instances safe. Extractors keep a single shared non-transactional producer,
+plus a membership consumer whose consumer-group partition leases distribute
+config ownership across replicas (see ``flechtwerk.extractor``) — one
+replica simply owns every lease.
 """
 import logging
 import tempfile
@@ -154,7 +157,10 @@ class Flechtwerk(ABC):
         ("unset"); an extractor requires a positive ``timedelta`` and a
         transformer ignores it, so this too may be passed unconditionally.
         ``application_id``, ``bootstrap_servers``, ``client_id`` and ``stage``
-        are required.
+        are required. An extractor scales out by itself: replicas of the
+        same ``application_id`` split the configs along the config topics'
+        partitions (see ``ExtractorRunner``), so the deployment's replica
+        count is the only scaling knob.
         """
         instance = _FlechtwerkModule()
         instance.application_id = application_id
@@ -336,6 +342,33 @@ class _FlechtwerkModule(Flechtwerk):
         return store
 
     @cached_property
+    def membership_consumer(self) -> AIOKafkaConsumer | None:
+        """Consumer holding an extractor's group membership (None for transformers).
+
+        Joins the ``application_id`` consumer group on the stage's config
+        topics purely for the partition leases (ownership tokens): it never
+        commits offsets — no auto-commit and no commit calls, so config-topic
+        offsets cannot leak anywhere — and the runner discards every record
+        it fetches (the data plane is the group-less main consumer). The
+        Range assignor makes a token a partition *number*: with the
+        validated-equal partition counts, partition p of every config topic
+        lands on the same member. ``auto_offset_reset="latest"`` keeps the
+        pump cheap — the records carry no information the global store
+        doesn't already have.
+        """
+        if not isinstance(self.stage, Extractor):
+            return None
+        return AIOKafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            auto_offset_reset="latest",
+            client_id=self.client_id + "-membership",
+            enable_auto_commit=False,
+            group_id=self.application_id,
+            isolation_level="read_committed",
+            partition_assignment_strategy=(RangePartitionAssignor,),  # noqa: aiokafka's docstring says list, but its own default is a tuple
+        )
+
+    @cached_property
     def metrics_server(self) -> tuple[Any, Any] | None:
         """The Prometheus scrape HTTP server (None when disabled).
 
@@ -396,12 +429,20 @@ class _FlechtwerkModule(Flechtwerk):
         await admin.start()
         try:
             if self.stage.config_topics:
-                # Existence check only — a missing config topic must fail
-                # fast: the assign-based bootstrap would otherwise yield a
-                # silently empty store and never discover a topic created
-                # later. Partition counts are unconstrained — config topics
-                # are exempt from co-partitioning.
-                await partition_counts(admin, self.stage.config_topics)
+                # Existence check — a missing config topic must fail fast:
+                # the assign-based bootstrap would otherwise yield a silently
+                # empty store and never discover a topic created later.
+                # Partition counts are unconstrained for a transformer's
+                # config topics (exempt from co-partitioning) — but an
+                # extractor's config topics form its ownership-token space:
+                # a token is a partition NUMBER co-assigned across topics by
+                # the Range assignor, so the counts must match exactly.
+                counts = await partition_counts(admin, self.stage.config_topics)
+                if isinstance(self.stage, Extractor) and len(set(counts.values())) != 1:
+                    raise ValueError(
+                        f"config topics of the extractor {self.application_id} must have equal "
+                        f"partition counts — they form its ownership-token space — got {counts}"
+                    )
             num_partitions = -1
             if isinstance(self.stage, Transformer):
                 # Tasks are identified by partition number across all input
@@ -424,29 +465,24 @@ class _FlechtwerkModule(Flechtwerk):
         finally:
             await admin.close()
 
-        if isinstance(self.stage, Extractor):
-            # Transformers restore per task on partition assignment instead.
-            restore = AIOKafkaConsumer(
-                bootstrap_servers=self.bootstrap_servers,
-                group_id=None,
-                isolation_level="read_committed",
-            )
-            await restore.start()
-            try:
-                await self.state_store.restore(restore)
-            finally:
-                await restore.stop()
-
+        # No startup state restore here for either stage shape: transformers
+        # restore per task on partition assignment, and extractors likewise —
+        # the runner wipes and re-reads the changelog behind the revoke
+        # barrier on every token assignment.
         try:
             await self.consumer.start()
             if self.config_consumer is not None:
                 await self.config_consumer.start()
+            if self.membership_consumer is not None:
+                await self.membership_consumer.start()
             if isinstance(self.stage, Extractor):
                 await self.producer.start()
         except BaseException:
             await self.consumer.stop()
             if self.config_consumer is not None:
                 await self.config_consumer.stop()
+            if self.membership_consumer is not None:
+                await self.membership_consumer.stop()
             if isinstance(self.stage, Extractor):
                 await self.state_store.close()
             raise
@@ -456,6 +492,8 @@ class _FlechtwerkModule(Flechtwerk):
         await self.consumer.stop()
         if self.__dict__.get("config_consumer") is not None:
             await self.config_consumer.stop()
+        if self.__dict__.get("membership_consumer") is not None:
+            await self.membership_consumer.stop()
         if isinstance(self.stage, Extractor):
             await self.producer.stop()
             await self.state_store.close()

@@ -70,13 +70,15 @@ Emitted by any stage that declares `config_topics`.
 | `config_store_restored_entries_total` | Counter | — | Entries surviving the startup bootstrap of the store. |
 | `active_configs` | Gauge | — | Currently-active (non-suspended) configs being polled. *Extractor only.* |
 
-### State and Tasks
+### State, Tasks, and Tokens
 
-Emitted by transformers, whose work is split into per-partition tasks.
+Ownership and restore metrics: tasks for transformers (per-input-partition
+work), tokens for extractors (config-partition ownership leases).
 
 | Metric | Type | Extra labels | Meaning |
 | --- | --- | --- | --- |
 | `tasks_assigned` | Gauge | — | Tasks (input partitions) currently owned and initialized by this instance. |
+| `tokens_assigned` | Gauge | — | Ownership tokens (config-partition leases) held by this extractor instance — 0 means hot standby. |
 | `state_restored_entries_total` | Counter | `partition` | Changelog records replayed into the local state store on task initialization. |
 
 ### MQTT
@@ -101,8 +103,12 @@ publish topic.
   to empty). See [Config topics](../concepts/config-topics.md).
 - **`poll_cycle_seconds` approaching your `poll_interval`** — the extractor is
   barely keeping up. A poll cycle nearly as long as the interval is the documented
-  signal to consider config-level sharding across deployments (see
-  [Extractors](extractor.md) and [Architecture](../concepts/architecture.md)).
+  signal to add replicas — extractors shard config ownership across instances
+  automatically (see [Extractors](extractor.md#scaling-out) and
+  [Architecture](../concepts/architecture.md)).
+- **`tokens_assigned`** — an extractor's ownership-lease count per instance.
+  The sum across instances should equal the config topics' partition count; an
+  instance sitting at 0 is a hot standby.
 - **`transactions_committed_total` flat while `messages_in_total` climbs** — a
   transformer is consuming but not committing: transactions are stalling or
   aborting. Read it alongside `batch_processing_seconds`.

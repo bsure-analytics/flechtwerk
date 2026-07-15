@@ -27,6 +27,7 @@ class Observer:
     def config_store_restored(self, entries: int) -> None: pass
     def state_restored(self, partition: int, entries: int) -> None: pass
     def tasks_assigned(self, n: int) -> None: pass
+    def tokens_assigned(self, n: int) -> None: pass
 
     # MQTT events — `topic` is always the subscription filter from config
     # (bounded cardinality), never the per-device publish topic.
@@ -78,6 +79,9 @@ class PrometheusObserver(Observer):
 
     def tasks_assigned(self, n: int) -> None:
         self.metrics.tasks_assigned.labels(**self.metrics_labels).set(n)
+
+    def tokens_assigned(self, n: int) -> None:
+        self.metrics.tokens_assigned.labels(**self.metrics_labels).set(n)
 
     def mqtt_buffered(self, topic: str, n: int) -> None:
         self.metrics.mqtt_buffered_messages.labels(**self.metrics_labels, topic=topic).set(n)

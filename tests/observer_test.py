@@ -79,6 +79,20 @@ def test_active_configs_sets_gauge():
     ) == 3
 
 
+def test_tokens_assigned_sets_gauge():
+    observer, registry = make_observer()
+    observer.tokens_assigned(8)
+    assert registry.get_sample_value(
+        "flechtwerk_tokens_assigned",
+        {"datasource": "ds1", "stage": "extractor"},
+    ) == 8
+    observer.tokens_assigned(0)  # revoked — hot standby
+    assert registry.get_sample_value(
+        "flechtwerk_tokens_assigned",
+        {"datasource": "ds1", "stage": "extractor"},
+    ) == 0
+
+
 def test_config_message_in_increments_counter():
     observer, registry = make_observer()
     observer.config_message_in("cfg")

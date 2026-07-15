@@ -24,7 +24,7 @@ class RequestDriven(Transformer):
 stage = RequestDriven()
 ```
 
-For extractors this is not an extra mechanism but the baseline: config topics are the only Kafka input an extractor has. For transformers it is the escape hatch from the co-partitioning requirement: a config topic's partition placement and count are irrelevant, so any producer (Kafka UI included) can write configs without routing them to the "right" partition.
+For extractors this is not an extra mechanism but the baseline: config topics are the only Kafka input an extractor has. For transformers it is the escape hatch from the co-partitioning requirement: a config topic's partition placement and count are irrelevant, so any producer (Kafka UI included) can write configs without routing them to the "right" partition. One refinement for an [extractor](../guides/extractor.md#scaling-out): its config topics must share one partition *count* (the partitions double as the ownership leases that shard configs across replicas), but *placement* stays irrelevant even there — ownership is a consumer-side hash of the state key, never the record's partition.
 
 The source topics are their own changelog — compacted, small, re-read on every startup — and lookups are eventually consistent, outside the task transaction (the GlobalKTable caveat).
 

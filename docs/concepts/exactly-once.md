@@ -6,7 +6,7 @@ This page covers how that works: how work is split into tasks, what one transact
 
 !!! note "Transformers Only"
 
-    Everything here is about `Transformer`. Extractors are deliberately single-instance and at-least-once — their output can't be atomic with an external API poll, so the fencing primitive below simply doesn't exist for them. See the extractor documentation for that model.
+    Everything here is about `Transformer`. Extractors are deliberately at-least-once — their output can't be atomic with an external API poll, so the fencing primitive below simply doesn't exist for them. That stays true as an extractor [scales out](../guides/extractor.md#scaling-out): consumer-group leases distribute config ownership, but add no transactions. See the extractor documentation for that model.
 
 ## The Task Model
 

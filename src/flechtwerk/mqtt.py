@@ -448,11 +448,14 @@ class MqttExtractor(Extractor, ABC):
     async def poll(self, config: Config, _: State) -> AsyncIterator[Message | State]:
         sub = self.subscribe(config[TOPIC])
 
-        # ACK the previous batch. ExtractorRunner only re-enters poll() after
-        # the previous poll's send_batch() + flush succeeded (see its
-        # documented re-entry contract) — any failure would have crashed the
-        # process before reaching here — so everything pending is provably
-        # durable in Kafka now.
+        # ACK the previous batch. ExtractorRunner marks nothing pending that
+        # the producer hasn't accepted (it sends each message BEFORE resuming
+        # this generator), flushes after every completed poll, and flushes
+        # again in the suspend barrier after a cancelled one; a send failure
+        # crashes the process before reaching here. So everything still
+        # pending is provably durable in Kafka now — a cancelled invocation's
+        # unsent messages were rolled back to the buffer (below), never
+        # marked pending.
         sub.ack_all_pending()
 
         batch = sub.drain(self.drain_limit)
@@ -466,22 +469,44 @@ class MqttExtractor(Extractor, ABC):
             return
 
         log.info("Draining %d MQTT message(s) from topic %s", len(batch), sub.topic)
-        for msg in batch:
-            try:
-                # A private config copy per call: relay() is a pure hook, so a
-                # mutation of any parameter must not leak to the next message.
-                message = self.relay(deepcopy(config), msg.topic, Record.wrap(json.loads(msg.payload)))
-            except Exception:
-                log.warning("Dropping poison MQTT message from topic %s", msg.topic, exc_info=True)
-                self.observer.mqtt_message_dropped(sub.topic, "poison")
-                sub.ack(msg)
-                continue
-            if message is None:
-                self.observer.mqtt_message_dropped(sub.topic, "filtered")
-                sub.ack(msg)
-                continue
-            yield message
-            sub.mark_pending(msg)
+        index = 0
+        forwarded: list[MQTTMessage] = []
+        try:
+            for index, msg in enumerate(batch):
+                try:
+                    # A private config copy per call: relay() is a pure hook, so a
+                    # mutation of any parameter must not leak to the next message.
+                    message = self.relay(deepcopy(config), msg.topic, Record.wrap(json.loads(msg.payload)))
+                except Exception:
+                    log.warning("Dropping poison MQTT message from topic %s", msg.topic, exc_info=True)
+                    self.observer.mqtt_message_dropped(sub.topic, "poison")
+                    sub.ack(msg)
+                    continue
+                if message is None:
+                    self.observer.mqtt_message_dropped(sub.topic, "filtered")
+                    sub.ack(msg)
+                    continue
+                yield message
+                forwarded.append(msg)
+                sub.mark_pending(msg)
+        except BaseException:
+            # Interrupted at a yield — GeneratorExit from the runner closing
+            # this generator when a poll cycle is cancelled (a token handover
+            # mid-batch). Nothing yielded by THIS invocation reached Kafka:
+            # the runner sends only after the generator completes. So ACKing
+            # any of it at the next entry would silently drop data, and
+            # leaving the tail out of the buffer would strand it un-ACKed
+            # until the next session restart. Un-mark and restore everything
+            # unconfirmed to the buffer front in arrival order —
+            # ``batch[index]`` is the message whose yield was interrupted
+            # (neither ACKed nor marked pending). Deliberately dropped
+            # messages stay dropped; their ACKs are already on the wire.
+            for msg in forwarded:
+                sub.pending_acks.remove(msg)
+            sub.items[:0] = forwarded + batch[index:]
+            log.info("Rolled back %d undelivered MQTT message(s) to the %s buffer",
+                     len(forwarded) + len(batch) - index, sub.topic)
+            raise
 
 
 class _FunctionalMqttExtractor(MqttExtractor):

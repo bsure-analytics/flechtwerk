@@ -163,20 +163,46 @@ await Flechtwerk.of(
 ).run()
 ```
 
-## Run Exactly One Instance
+## Scaling Out
 
-The multi-instance, exactly-once safety story is **transformer-only**. Nothing
-fences concurrent extractor instances: each one reads *all* configs
-(`group_id=None`, no partition assignment), polls every external source
-redundantly, and writes the same state keys to a key-hashed changelog — so a slow
-instance can overwrite an advanced cursor with a stale one (a silent re-import,
-not just duplicates). Extractor output is deliberately non-transactional
-(at-least-once — polling an external API can't be atomic with anything).
+An extractor scales by replica count alone — there is no mode to configure.
+Every instance of one `application_id` joins a consumer group on the config
+topics and leases their partitions as ownership **tokens**: an instance polls
+only the configs whose *state key* hashes onto a token it currently holds. One
+replica — the common deployment — holds every token and owns everything;
+replicas up to the config topics' partition count split the configs between
+them; further replicas become hot standbys that take over on failure.
 
-**Run exactly one replica per extractor.** Orchestrator restart latency is
-invisible at poll-interval timescales, so a second replica buys no availability
-either. See [Extractors Are Single-Instance](../concepts/architecture.md#extractor)
-for the full rationale.
+Ownership is computed consumer-side, so where config records physically land
+stays irrelevant — writing config via Kafka UI (which defaults everything to
+one partition) keeps working. On a rebalance the leaving owner cancels its
+in-flight cycle, flushes its changelog writes, and wipes its local store
+*before* the group re-forms; the new owner restores from the changelog and
+continues each cursor where it left off. `self.configs` still holds the
+**global** config store on every instance — scale-out only narrows which
+configs `poll` is invoked for.
+
+Two things to know when sizing a deployment:
+
+- The config topics of one extractor must share one partition count (validated
+  at startup): that count is the token space, so it caps the useful replica
+  count. `poll_cycle_seconds` approaching your `poll_interval` — or CPU-bound
+  decoding saturating the one core an event loop can use — is the signal to
+  add replicas.
+- Delivery is **at-least-once**: extractor output is deliberately
+  non-transactional (polling an external API can't be atomic with anything),
+  and nothing fences a zombie around rebalances and network partitions, so a
+  cursor can regress — typically by one in-flight poll, at worst by the
+  window until an evicted instance notices and suspends. A bounded
+  re-import, never loss.
+
+**Run MQTT extractors as one replica** for now: a token handover leaves the
+old owner's persistent broker session subscribed (there is no unsubscribe
+lifecycle yet), which at QoS ≥ 1 wedges that session's inflight window. A
+single replica is fully safe — handovers back to itself roll drained-but-
+unconfirmed messages back into the buffer instead of ACKing them unsent. See
+[the architecture notes](../concepts/architecture.md#extractor) for the full
+model.
 
 ## Next Steps
 

@@ -1,14 +1,21 @@
 """Tests for Flechtwerk Extractor and ExtractorRunner."""
 import asyncio
 import json
+from contextlib import suppress
 from datetime import timedelta
+from itertools import count
 from typing import AsyncIterator, Final
 
 import pytest
+from aiokafka import TopicPartition
+from aiokafka.partitioner import DefaultPartitioner
 
 from flechtwerk.attribute import Attribute, BOOL, INT, STR
-from flechtwerk.extractor import ConfigEntry, Extractor, extractor
+from flechtwerk.configs import ConfigStore
+from flechtwerk.extractor import ConfigEntry, Extractor, ExtractorRunner, extractor, token_for
 from flechtwerk.module import _FlechtwerkModule
+from flechtwerk.observer import Observer
+from flechtwerk.state import ChangelogStateStore
 from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 from flechtwerk.types import Config, Message, State
 
@@ -84,8 +91,37 @@ def json_record(key="k", value=None, topic="test-config", offset=0, partition=0)
     return make_record(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
 
 
-def make_module(extractor, consumer=None, producer=None, state_store=None):
-    """Create a Flechtwerk container with monkey-patched fake resources."""
+class AutoJoinMembershipConsumer(FakeKafkaConsumer):
+    """Membership double that completes the group join on the first pump:
+    an eager revoke of nothing, then an assignment of partitions
+    0..num_tokens-1 of every subscribed topic — the single-replica default,
+    where this instance owns every token."""
+
+    def __init__(self, num_tokens: int = 1):
+        super().__init__()
+        self.joined = False
+        self.num_tokens = num_tokens
+
+    async def getmany(self, *partitions: TopicPartition, timeout_ms: int = 0) -> dict:
+        await asyncio.sleep(0)
+        if not self.joined and self.listener is not None:
+            self.joined = True
+            await self.listener.on_partitions_revoked(set())
+            self.listener.on_partitions_assigned({
+                TopicPartition(topic, partition)
+                for topic in self.subscribed
+                for partition in range(self.num_tokens)
+            })
+        return {}
+
+
+def make_module(extractor, consumer=None, producer=None, state_store=None, membership=None):
+    """Create a Flechtwerk container with monkey-patched fake resources.
+
+    The membership double completes the group join on the first pump, so
+    tests driving the full run() loop get the single-replica default: this
+    instance owns every token.
+    """
     mod = _FlechtwerkModule()
     mod.application_id = "test"
     mod.client_id = "test"
@@ -96,6 +132,8 @@ def make_module(extractor, consumer=None, producer=None, state_store=None):
     mod.poll_interval = timedelta(0)
     mod.stage = extractor
     mod.consumer = consumer or FakeKafkaConsumer()
+    mod.create_restore_consumer = lambda: FakeKafkaConsumer()
+    mod.membership_consumer = membership or AutoJoinMembershipConsumer()
     mod.producer = producer or FakeKafkaProducer()
     mod.state_store = state_store or InMemoryStateStore()
     return mod
@@ -136,11 +174,11 @@ def test_extractor_runner_polls_configs():
 
         # Run load_initial_configs manually
         await runner.load_initial_configs()
-        assert len(runner.configs) == 1
-        assert runner.configs["tenant/channel"].config[API_KEY] == "key123"
+        assert len(runner.entries) == 1
+        assert runner.entries["tenant/channel"].config[API_KEY] == "key123"
 
         # Run one poll cycle
-        await runner.poll_one(runner.configs["tenant/channel"])
+        await runner.poll_one(runner.entries["tenant/channel"])
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
         assert topic == "test-output"
@@ -163,7 +201,7 @@ def test_poll_config_mutation_does_not_leak_across_polls():
         runner = mod.runner
         await runner.load_initial_configs()
 
-        entry = runner.configs["k"]
+        entry = runner.entries["k"]
         await runner.poll_one(entry)
         await runner.poll_one(entry)
 
@@ -188,9 +226,9 @@ def test_extractor_enrichment():
         await runner.load_initial_configs()
 
         # Config should have been enriched
-        assert runner.configs["k"].config[ENRICHED] is True
+        assert runner.entries["k"].config[ENRICHED] is True
 
-        await runner.poll_one(runner.configs["k"])
+        await runner.poll_one(runner.entries["k"])
         topic, payload = producer.sent[0]
         assert json.loads(payload["value"])["enriched"] is True
 
@@ -251,7 +289,7 @@ def test_empty_config_removes_key():
         runner = mod.runner
 
         await runner.load_initial_configs()
-        assert len(runner.configs) == 0  # Empty config removes the key
+        assert len(runner.entries) == 0  # Empty config removes the key
 
     asyncio.run(run())
 
@@ -267,7 +305,7 @@ def test_extractor_runner_wraps_config_in_config_type():
         runner = mod.runner
         await runner.load_initial_configs()
 
-        assert isinstance(runner.configs["k"].config, Config)
+        assert isinstance(runner.entries["k"].config, Config)
 
     asyncio.run(run())
 
@@ -286,10 +324,10 @@ def test_extractor_runner_suspended_configs_not_polled():
         runner = mod.runner
         await runner.load_initial_configs()
 
-        assert len(runner.configs) == 2
+        assert len(runner.entries) == 2
 
         # Poll only active configs
-        await runner.poll_one(runner.configs["active"])
+        await runner.poll_one(runner.entries["active"])
         assert len(producer.sent) == 1
         topic, payload = producer.sent[0]
         assert payload["key"] == b"a"
@@ -356,14 +394,14 @@ def test_extractor_runner_config_update_during_operation():
         runner = mod.runner
         await runner.load_initial_configs()
 
-        assert runner.configs["k"].config[API_KEY] == "v1"
+        assert runner.entries["k"].config[API_KEY] == "v1"
 
         consumer.records = [
             json_record(key="k", value={"api_key": "v2"}, offset=1),
         ]
         await runner.check_config_updates()
 
-        assert runner.configs["k"].config[API_KEY] == "v2"
+        assert runner.entries["k"].config[API_KEY] == "v2"
 
     asyncio.run(run())
 
@@ -747,9 +785,429 @@ def test_functional_extractor_end_to_end_with_runner():
         runner = mod.runner
 
         await runner.load_initial_configs()
-        await runner.poll_one(runner.configs["t/c"])
+        await runner.poll_one(runner.entries["t/c"])
 
         assert len(producer.sent) == 1
         assert (await state_store.get("t/c")).raw == {"cursor": 1}
+
+    asyncio.run(run())
+
+
+# --- Sharded runner tests ---
+
+
+def key_with_token(token: int, num_tokens: int) -> str:
+    """First synthetic key whose consumer-side hash lands on ``token``."""
+    return next(f"key{i}" for i in count() if token_for(f"key{i}", num_tokens) == token)
+
+
+async def until(predicate) -> None:
+    """Poll a condition — wrap in asyncio.wait_for for the timeout."""
+    while not predicate():
+        await asyncio.sleep(0.001)
+
+
+class FakeMembershipConsumer(FakeKafkaConsumer):
+    """Membership pump double whose ``getmany`` yields to the event loop, so
+    the sharded main loop can be driven and cancelled from a test."""
+
+    async def getmany(self, *partitions: TopicPartition, timeout_ms: int = 0) -> dict:
+        await asyncio.sleep(0)
+        return {}
+
+
+def make_sharded_runner(stage, consumer=None, restore_records=None, observer=None):
+    """Wire an ExtractorRunner directly (no DI) in sharded mode.
+
+    ``restore_records`` seed the throwaway changelog-restore consumers built
+    by ``create_restore_consumer`` — each token assignment gets a fresh fake
+    positioned at the same backlog, like re-reading a compacted topic.
+    """
+    store = ChangelogStateStore()
+    store.inner = InMemoryStateStore()
+    store.producer = FakeKafkaProducer()
+    store.topic = "test-changelog"
+
+    runner = ExtractorRunner()
+    runner.config_store = ConfigStore()
+    runner.consumer = consumer or FakeKafkaConsumer()
+    runner.create_restore_consumer = lambda: FakeKafkaConsumer(list(restore_records or []))
+    runner.extractor = stage
+    runner.membership_consumer = FakeMembershipConsumer()
+    runner.observer = observer or Observer()
+    runner.poll_interval = timedelta(0)
+    runner.producer = FakeKafkaProducer()
+    runner.state_store = store
+    return runner
+
+
+def test_token_for_matches_default_partitioner():
+    """token_for is a compatibility promise: the exact DefaultPartitioner
+    math, so ownership coincides with where a key-hashing producer would
+    have placed the key (and never uses Python's per-process-salted hash)."""
+    partitioner = DefaultPartitioner()
+    partitions = list(range(8))
+    for key in ("tenant/channel", "a", "key42", "ütf-8 ✓", "x" * 100):
+        assert token_for(key, 8) == partitioner(key.encode("utf-8"), partitions, partitions)
+
+
+def test_owns_everything_with_all_tokens_held():
+    """The single-replica default: every token held, every key owned."""
+    runner = ExtractorRunner()
+    runner.num_tokens = 8
+    runner.tokens = frozenset(range(8))
+    assert runner.owns("anything")
+
+
+def test_owns_only_held_tokens():
+    runner = ExtractorRunner()
+    runner.num_tokens = 8
+    runner.tokens = frozenset({token_for("mine", 8)})
+    assert runner.owns("mine")
+    other = next(f"key{i}" for i in count() if token_for(f"key{i}", 8) not in runner.tokens)
+    assert not runner.owns(other)
+
+
+def test_poll_cycle_skips_suspended_configs():
+    """The cycle-level filter (not just poll_one) skips suspended configs."""
+
+    async def run():
+        consumer = FakeKafkaConsumer([
+            json_record(key="active", value={"api_key": "a"}, offset=0),
+            json_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1),
+        ])
+        mod = make_module(SimpleExtractor(), consumer)
+        runner = mod.runner
+        await runner.load_initial_configs()
+        runner.num_tokens = 1
+        runner.tokens = frozenset({0})  # poll_cycle only polls owned configs
+
+        await runner.poll_cycle()
+
+        assert [payload["key"] for _, payload in mod.producer.sent] == [b"a"]
+
+    asyncio.run(run())
+
+
+def test_sharded_poll_cycle_filters_by_ownership():
+    """Only configs whose state key hashes onto a held token are polled."""
+
+    async def run():
+        key_t0 = key_with_token(0, 2)
+        key_t1 = key_with_token(1, 2)
+        records = [
+            json_record(key=key_t0, value={"api_key": "A"}, offset=0),
+            json_record(key=key_t1, value={"api_key": "B"}, offset=1),
+        ]
+        runner = make_sharded_runner(SimpleExtractor(), consumer=FakeKafkaConsumer(records))
+        await runner.load_initial_configs()
+        runner.num_tokens = 2
+        runner.tokens = frozenset({0})
+
+        await runner.poll_cycle()
+
+        assert [payload["key"] for _, payload in runner.producer.sent] == [b"A"]
+
+    asyncio.run(run())
+
+
+def test_run_injects_global_config_store_before_aenter():
+    """The holy grail wiring: ``self.configs`` is the GLOBAL store on the
+    stage — injected before ``__aenter__``, populated by the bootstrap, and
+    reaching entries beyond the one handed to ``poll``."""
+
+    class StopRunner(Exception):
+        pass
+
+    checks = {}
+
+    class LookupExtractor(Extractor):
+        config_topics = ["test-config"]
+
+        async def __aenter__(self):
+            checks["injected_before_enter"] = isinstance(self.configs, ConfigStore)
+            return self
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            other = self.configs.get("other")
+            checks["lookup"] = None if other is None else other[TAG]
+            raise StopRunner
+            yield  # pragma: no cover
+
+    async def run():
+        records = [
+            json_record(key="k", value={"api_key": "a"}, offset=0),
+            json_record(key="other", value={"api_key": "b", "tag": "shared"}, offset=1),
+        ]
+        mod = make_module(LookupExtractor(), FakeKafkaConsumer(records))
+
+        with pytest.raises(StopRunner):
+            await mod.runner.run()
+
+        assert checks == {"injected_before_enter": True, "lookup": "shared"}
+
+    asyncio.run(run())
+
+
+def test_sharded_runner_polls_only_owned_and_hands_over_on_rebalance():
+    """The full token dance: subscribe → assign → restore → poll only owned
+    configs; an eager revoke→assign round hands ownership over cleanly."""
+
+    async def run():
+        key_t0 = key_with_token(0, 2)
+        key_t1 = key_with_token(1, 2)
+        polled: list[str] = []
+        cycled = asyncio.Event()
+
+        class ShardedExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                polled.append(config[API_KEY])
+                cycled.set()
+                return
+                yield  # pragma: no cover
+
+        records = [
+            json_record(key=key_t0, value={"api_key": "A"}, offset=0),
+            json_record(key=key_t1, value={"api_key": "B"}, offset=1),
+        ]
+        runner = make_sharded_runner(ShardedExtractor(), consumer=FakeKafkaConsumer(records))
+        runner.num_tokens = 2
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            listener = runner.membership_consumer.listener
+
+            listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(cycled.wait(), 5)
+            assert set(polled) == {"A"}
+            assert runner.tokens == frozenset({0})
+
+            # Eager handover: revoke (the barrier — cycle fully unwound when
+            # it returns), then assign the other token.
+            await listener.on_partitions_revoked({TopicPartition("test-config", 0)})
+            polled.clear()
+            cycled.clear()
+            listener.on_partitions_assigned({TopicPartition("test-config", 1)})
+            await asyncio.wait_for(cycled.wait(), 5)
+            assert set(polled) == {"B"}
+            assert runner.tokens == frozenset({1})
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_sharded_restore_precedes_polling():
+    """A freshly-assigned token sees the changelog state (the previous
+    owner's final flush) on its very first poll."""
+
+    async def run():
+        key = key_with_token(0, 1)
+        seen: list[int] = []
+        cycled = asyncio.Event()
+
+        class CursorExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                seen.append(state.get(CURSOR, -1))
+                cycled.set()
+                return
+                yield  # pragma: no cover
+
+        runner = make_sharded_runner(
+            CursorExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key=key, value={"api_key": "a"})]),
+            restore_records=[make_record(key=key, value=b'{"cursor":7}', topic="test-changelog")],
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(cycled.wait(), 5)
+            assert seen[0] == 7
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_revoke_barrier_cancels_inflight_poll_flushes_and_clears():
+    """The revoke callback is the handover barrier: it cancels a poll that
+    is still in flight (an epoch backfill, say), waits for it to unwind,
+    and flushes straggler changelog writes — only then may the group
+    re-form and the next owner restore."""
+
+    async def run():
+        key = key_with_token(0, 1)
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class BlockingExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                started.set()
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                yield  # pragma: no cover
+
+        runner = make_sharded_runner(
+            BlockingExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key=key, value={"api_key": "a"})]),
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            listener = runner.membership_consumer.listener
+            listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(started.wait(), 5)
+
+            await listener.on_partitions_revoked({TopicPartition("test-config", 0)})
+
+            assert cancelled.is_set()
+            assert runner.cycle is None
+            assert runner.tokens == frozenset()
+            assert runner.producer.flushed
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_sharded_standby_instance_polls_nothing():
+    """An instance assigned zero tokens (more replicas than partitions) is a
+    hot standby: entries stay warm, nothing is polled."""
+
+    async def run():
+        polled: list[str] = []
+
+        class RecordingExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                polled.append(config[API_KEY])
+                return
+                yield  # pragma: no cover
+
+        from flechtwerk.testing import RecordingObserver
+        observer = RecordingObserver()
+        runner = make_sharded_runner(
+            RecordingExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+            observer=observer,
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            listener = runner.membership_consumer.listener
+            await listener.on_partitions_revoked(set())
+            listener.on_partitions_assigned(set())
+            await asyncio.wait_for(until(lambda: ("tokens_assigned", 0) in observer.calls), 5)
+
+            assert polled == []
+            assert runner.tokens == frozenset()
+            assert runner.cycle is None
+            assert len(runner.entries) == 1  # the config table stays warm
+
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_revoke_discards_pending_assignment_from_a_dead_generation():
+    """A revoke invalidates any not-yet-consumed assignment: consuming it
+    later would resurrect ownership the group has meanwhile handed to
+    another instance (dual owners), and starting a second cycle over a
+    surviving one would double-poll forever."""
+
+    async def run():
+        from flechtwerk.extractor import TokenRebalanceListener
+
+        runner = make_sharded_runner(SimpleExtractor())
+        runner.num_tokens = 1
+        listener = TokenRebalanceListener(runner)
+
+        listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+        assert runner.pending == {0}
+
+        await listener.on_partitions_revoked(set())  # next generation begins
+        assert runner.pending is None
+
+        await runner.start_pending_tokens()  # the stale assignment is gone
+        assert runner.tokens == frozenset()
+        assert runner.cycle is None
+
+    asyncio.run(run())
+
+
+def test_listener_failure_is_fatal_for_the_runner():
+    """aiokafka swallows listener exceptions — the runner re-raises them
+    from its main loop instead ("let it crash" still fires)."""
+
+    async def run():
+        class BrokenStore(InMemoryStateStore):
+            async def close(self):
+                raise RuntimeError("store exploded")
+
+        runner = make_sharded_runner(
+            SimpleExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+        listener = runner.membership_consumer.listener
+        listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+        await asyncio.wait_for(until(lambda: runner.tokens), 5)
+        runner.state_store = BrokenStore()
+
+        await listener.on_partitions_revoked({TopicPartition("test-config", 0)})
+
+        with pytest.raises(RuntimeError, match="store exploded"):
+            await asyncio.wait_for(task, 5)
+
+    asyncio.run(run())
+
+
+def test_poll_error_in_sharded_cycle_crashes_the_runner():
+    """An error inside a background poll cycle surfaces from run()."""
+
+    async def run():
+        class FailingExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                raise RuntimeError("boom")
+                yield  # pragma: no cover
+
+        runner = make_sharded_runner(
+            FailingExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+        runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await asyncio.wait_for(task, 5)
 
     asyncio.run(run())

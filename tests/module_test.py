@@ -1,4 +1,5 @@
 """Tests for flechtwerk.module topic-declaration validation and MQTT wiring."""
+import asyncio
 from datetime import timedelta
 from typing import AsyncIterator
 
@@ -70,6 +71,32 @@ def test_poll_interval_optional_for_transformer_positive_for_extractor():
     validate_poll_interval(Transformer.of(input_topics=["in"], transform=noop_transform), None)
     # a positive duration satisfies an extractor
     validate_poll_interval(Extractor.of(config_topics=["cfg"], poll=noop_poll), timedelta(seconds=60))
+
+
+# -- membership ----------------------------------------------------------------
+
+
+def test_membership_consumer_exists_only_for_extractors():
+    """Every extractor gets the lease-holding membership consumer; a
+    transformer's work is already partitioned by its input topics."""
+    def make(stage):
+        mod = _FlechtwerkModule()
+        mod.application_id = "app"
+        mod.bootstrap_servers = "localhost:9092"
+        mod.client_id = "pod-0"
+        mod.stage = stage
+        return mod
+
+    async def run():
+        transformer = Transformer.of(input_topics=["in"], transform=noop_transform)
+        assert make(transformer).membership_consumer is None
+
+        mod = make(Extractor.of(config_topics=["cfg"], poll=noop_poll))
+        consumer = mod.membership_consumer
+        assert consumer is not None
+        await consumer.stop()  # never started; stop() keeps the double-check ledger clean
+
+    asyncio.run(run())
 
 
 # -- configured_stage ----------------------------------------------------------

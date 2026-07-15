@@ -145,6 +145,25 @@ def test_rocksdb_datetime_round_trip(tmp_path):
     asyncio.run(run(tmp_path))
 
 
+def test_rocksdb_close_is_a_wipe_not_end_of_life(tmp_path):
+    """close() drops the cached database and removes its files; the next
+    access lazily reopens a fresh, empty store — the sharded extractor
+    runner wipes and re-restores on every token assignment."""
+    async def run(tmp_path):
+        store = RocksDBStateStore()
+        store.path = tmp_path / "test-db"
+        try:
+            await store.put("k1", State.wrap({"x": 1}))
+            await store.close()
+
+            assert await store.get("k1") is None  # reopened fresh and empty
+            await store.put("k2", State.wrap({"x": 2}))
+            assert (await store.get("k2"))[X] == 2
+        finally:
+            await store.close()
+    asyncio.run(run(tmp_path))
+
+
 def test_rocksdb_set_round_trip(tmp_path):
     async def run(tmp_path):
         store = RocksDBStateStore()
