@@ -70,14 +70,16 @@ async def _eventually(condition, timeout: float = 60.0, interval: float = 0.2, t
         await asyncio.sleep(interval)
 
 
-def _make_stage(config_topic: str, output_topic: str, polled: set[str]) -> Extractor:
-    """A counting extractor that records which configs THIS instance polled."""
+def _make_stage(config_topic: str, output_topic: str, owner: str, polled: set[str]) -> Extractor:
+    """A counting extractor that records which configs THIS instance polled
+    and stamps every output with its own identity — the owner sequence per
+    key is what detects dual ownership that counter steps alone cannot."""
 
     async def poll(config, state) -> AsyncIterator[Message | State]:
         name = config[NAME]
         polled.add(name)
         n = state.get(COUNTER, 0) + 1
-        yield Message(key=name, topic=output_topic, value={"count": n, "key": name})
+        yield Message(key=name, topic=output_topic, value={"count": n, "key": name, "owner": owner})
         yield State.wrap({"counter": n})
 
     return Extractor.of(config_topics=[config_topic], poll=poll)
@@ -209,9 +211,9 @@ async def test_two_sharded_extractors_split_configs_and_hand_over_state(
     polled_a: set[str] = set()
     polled_b: set[str] = set()
     runner_a = _make_runner(kafka_bootstrap, unique_group_id, unique_changelog_topic,
-                            _make_stage(config_topic, output_topic, polled_a), tmp_path / "a")
+                            _make_stage(config_topic, output_topic, "a", polled_a), tmp_path / "a")
     runner_b = _make_runner(kafka_bootstrap, unique_group_id, unique_changelog_topic,
-                            _make_stage(config_topic, output_topic, polled_b), tmp_path / "b")
+                            _make_stage(config_topic, output_topic, "b", polled_b), tmp_path / "b")
 
     task_a = await _start_runner(runner_a)
     task_b = None
@@ -250,6 +252,17 @@ async def test_two_sharded_extractors_split_configs_and_hand_over_state(
             counts = counts_for(key)
             assert counts, key
             assert all(b - a in (0, 1) for a, b in zip(counts, counts[1:])), f"{key}: {counts}"
+
+        # LOCKSTEP dual ownership — two owners advancing the same restored
+        # counter in step — would satisfy the step assertion above. The owner
+        # stamp catches it: per key, ownership legitimately changes at most
+        # twice across the three phases; sustained interleaving means two
+        # live owners. (The output topic has one partition, so the verifier
+        # sees emission order.)
+        for key in (key_a, key_b):
+            owners = [o["owner"] for o in outputs if o["key"] == key]
+            transitions = sum(1 for a, b in zip(owners, owners[1:]) if a != b)
+            assert transitions <= 2, f"{key}: ownership interleaving — {owners}"
     finally:
         if task_a is not None:
             await _stop_runner(runner_a, task_a)

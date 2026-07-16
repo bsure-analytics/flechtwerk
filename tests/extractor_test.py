@@ -1062,11 +1062,22 @@ def test_revoke_barrier_cancels_inflight_poll_flushes_and_clears():
                     raise
                 yield  # pragma: no cover
 
+        flush_saw_cancel_complete: list[bool] = []
+
+        class BarrierOrderProducer(FakeKafkaProducer):
+            async def flush(self):
+                # The barrier flush exists to cover straggler changelog
+                # sends of the dying cycle — flushing BEFORE the cancel has
+                # fully unwound would miss them.
+                flush_saw_cancel_complete.append(cancelled.is_set())
+                await super().flush()
+
         runner = make_sharded_runner(
             BlockingExtractor(),
             consumer=FakeKafkaConsumer([json_record(key=key, value={"api_key": "a"})]),
         )
         runner.num_tokens = 1
+        runner.producer = BarrierOrderProducer()
         task = asyncio.create_task(runner.run())
         try:
             await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
@@ -1079,7 +1090,7 @@ def test_revoke_barrier_cancels_inflight_poll_flushes_and_clears():
             assert cancelled.is_set()
             assert runner.cycle is None
             assert runner.tokens == frozenset()
-            assert runner.producer.flushed
+            assert flush_saw_cancel_complete == [True]  # exactly one barrier flush, strictly after the cancel
         finally:
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1125,6 +1136,100 @@ def test_sharded_standby_instance_polls_nothing():
             assert len(runner.entries) == 1  # the config table stays warm
 
         finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_cancel_cycle_reraises_fresh_cancellation_of_the_caller():
+    """The suppress in cancel_cycle must swallow ONLY the child's
+    cancellation: a fresh cancel of the caller while it awaits the cycle's
+    unwind must propagate, or shutdown becomes uncancellable (a later await
+    — the barrier flush against an unreachable broker — would hang with no
+    way to interrupt)."""
+
+    async def run():
+        polling = asyncio.Event()
+        unwind_gate = asyncio.Event()
+
+        class SlowUnwindExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                polling.set()
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    await unwind_gate.wait()  # slow cleanup — the unwind blocks here
+                    raise
+                yield  # pragma: no cover
+
+        runner = make_sharded_runner(
+            SlowUnwindExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(polling.wait(), 5)
+
+            suspender = asyncio.create_task(runner.suspend_tokens())
+            await asyncio.sleep(0.05)  # suspender is now awaiting the blocked unwind
+            suspender.cancel()         # a FRESH cancellation of the caller
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(suspender, 5)
+            assert suspender.cancelled()  # propagated — not swallowed as the child's
+        finally:
+            unwind_gate.set()
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_config_update_lands_next_cycle_not_mid_poll():
+    """The main loop drains config updates while a cycle is in flight: the
+    running poll keeps the entry snapshot it started with, and the update
+    takes effect on the next cycle — pinning both the mid-cycle drain and
+    the per-invocation snapshot."""
+
+    async def run():
+        gate = asyncio.Event()
+        seen: list[str] = []
+
+        class GatedExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                seen.append(config[API_KEY])
+                if len(seen) == 1:
+                    await gate.wait()
+                return
+                yield  # pragma: no cover
+
+        consumer = FakeKafkaConsumer([json_record(key="k", value={"api_key": "v1"})])
+        runner = make_sharded_runner(GatedExtractor(), consumer=consumer)
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(until(lambda: len(seen) == 1), 5)  # first poll in flight, blocked
+
+            consumer.records = [json_record(key="k", value={"api_key": "v2"}, offset=1)]
+            await asyncio.wait_for(until(lambda: runner.entries["k"].config[API_KEY] == "v2"), 5)
+            assert seen == ["v1"]  # the in-flight poll still holds its start-of-poll snapshot
+
+            gate.set()
+            await asyncio.wait_for(until(lambda: len(seen) >= 2), 5)
+            assert seen[1] == "v2"  # the next cycle picks the update up
+        finally:
+            gate.set()
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
