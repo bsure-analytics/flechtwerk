@@ -14,6 +14,10 @@ from .types import Event, IncomingMessage
 
 log = logging.getLogger(__name__)
 
+# Framework-internal on purpose: these are the shared building blocks of the
+# runners and the config machinery, not an application-facing surface.
+__all__: list[str] = []
+
 
 # --- Utilities ---
 

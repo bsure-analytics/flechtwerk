@@ -84,13 +84,13 @@ work), tokens for extractors (config-partition ownership leases).
 ### MQTT
 
 Emitted by an [`MqttExtractor`](mqtt.md). The `topic` label is always the
-**subscription filter** from config (bounded cardinality) — never the per-device
-publish topic.
+**subscription filter** from config — or the `(unmatched)` sentinel on `stale`
+drops — never the per-device publish topic, so cardinality stays bounded.
 
 | Metric | Type | Extra labels | Meaning |
 | --- | --- | --- | --- |
 | `mqtt_messages_in_total` | Counter | `topic` | Messages routed into a subscription's buffer. |
-| `mqtt_messages_dropped_total` | Counter | `reason`, `topic` | Messages dropped without forwarding (`reason=filtered`: relay returned `None`; `reason=poison`: relay raised). |
+| `mqtt_messages_dropped_total` | Counter | `reason`, `topic` | Messages dropped without forwarding (`reason=filtered`: relay returned `None`; `reason=poison`: relay raised; `reason=unsubscribed`: undelivered buffer disposed when a removed config's topic was unsubscribed; `reason=stale`, `topic="(unmatched)"`: post-latch arrival matching no declared filter). |
 | `mqtt_buffered_messages` | Gauge | `topic` | Messages left buffered for a subscription after the last drain. |
 | `mqtt_connects_total` | Counter | — | Successful MQTT (re)connects — more than one per process lifetime means session churn. |
 | `mqtt_disconnects_total` | Counter | — | Unexpected disconnects (a clean shutdown is not counted). |
@@ -114,11 +114,16 @@ publish topic.
   aborting. Read it alongside `batch_processing_seconds`.
 - **`mqtt_connects_total > 1`** — session churn; each reconnect replays the
   persistent-session backlog. **`mqtt_buffered_messages` trending up** — a
-  subscription drains slower than it fills, or a stale subscription is holding the
-  shared inflight window (see [MQTT Extractors](mqtt.md)).
+  subscription drains slower than it fills (see [MQTT Extractors](mqtt.md)).
 - **`mqtt_messages_dropped_total{reason="poison"}` rising** — broken payloads are
   reaching `relay`. Filtered drops are routine; poison drops warrant a look at the
   source.
+- **`mqtt_messages_dropped_total{reason="unsubscribed"}` nonzero** — a config was
+  removed while its publisher was still sending; the undelivered tail was dropped
+  (stop the publisher first to make it zero). **`reason="stale"` rising steadily** —
+  an earlier deployment's filter is still subscribed in the persistent session and
+  its publisher is still active; the traffic is discarded safely, but consider a
+  fresh `client_id` (a new broker session) to stop it at the source.
 
 ## When Metrics Are Off
 

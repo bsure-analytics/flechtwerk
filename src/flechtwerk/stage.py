@@ -5,6 +5,10 @@ from typing import Self
 from .configs import ConfigStore
 from .types import Config, IncomingMessage
 
+# Framework-internal on purpose: applications build stages via `Extractor` /
+# `Transformer`, never against `Stage` directly.
+__all__: list[str] = []
+
 ExtractStateKeyFn = Callable[[IncomingMessage], str]
 
 

@@ -42,6 +42,29 @@ Applications implement ``relay(config, topic, payload) -> Message | None``
   honest. Connection failures are unaffected — they surface from ``drain()``
   outside the hook and still crash the process.
 
+Subscription lifecycle — config-driven, reconciled before every poll cycle:
+
+- The runner hands ``MqttExtractor.on_active_configs`` the owned,
+  non-suspended config set at quiescent points; the stage reconciles the
+  broker session against it. Topics no active config declares (tombstoned,
+  suspended, rewritten, or disowned at a rebalance) are UNSUBSCRIBEd and
+  their views disposed: pending ACKs are sent — provably Kafka-durable at a
+  quiescent point — and buffered messages that never reached Kafka are
+  ACK-dropped with a warning and counter (MQTT 3.1.1 has no NACK and cannot
+  requeue for another consumer; holding them un-ACKed would pin
+  inflight-window slots until the whole shared session stalls). Stop the
+  publisher before removing a config and the dropped tail is empty.
+- The first reconciliation latches the desired-filter set as authoritative:
+  from then on, unmatched QoS >= 1 messages are ACK-dropped on receipt
+  (reason ``stale``) instead of held — mopping up post-UNSUBSCRIBE
+  stragglers and traffic replayed for filters an earlier deployment left in
+  the persistent session, which 3.1.1 can neither enumerate nor selectively
+  remove. Before the latch — the startup window — unmatched messages are
+  still held un-ACKed, protecting the backlog ``clean_session=False`` exists
+  to protect.
+- Shutdown never unsubscribes: the persistent session keeps buffering for
+  the next incarnation. Removal is config-driven, not lifecycle-driven.
+
 Sources that don't fit this shape (stateful, 1:N fan-out, non-JSON payloads)
 override ``poll()`` wholesale — the connection/subscription layer works
 without the template.
@@ -80,11 +103,21 @@ __all__ = ["MqttBrokerConfig", "MqttConnection", "MqttExtractor", "mqtt_extracto
 TOPIC: Final = Attribute("topic", STR)
 """Required config field: the MQTT topic filter a config subscribes to.
 
-The template ``poll()`` is its only reader — one config record per MQTT
-topic, each becoming a per-topic subscription over the shared connection.
+Read by the template ``poll()`` (subscribe) and the reconciliation hook
+``on_active_configs`` (unsubscribe) — one config record per MQTT topic,
+each becoming a per-topic subscription over the shared connection.
 Two configs must never declare the same (or an overlapping) topic filter:
 they would share one subscription view and ACK each other's batches before
 the other's messages reached Kafka.
+"""
+
+UNMATCHED: Final = "(unmatched)"
+"""Metric topic label for drops of messages matching no subscription filter.
+
+A sentinel instead of the concrete publish topic, which would have unbounded
+label cardinality — the observer contract is that the MQTT ``topic`` label is
+always a config-declared filter or this sentinel. The real topic goes to the
+log, not the metric.
 """
 
 RelayFn = Callable[[Config, str, Record], Message | None]
@@ -114,6 +147,7 @@ class MqttConnection:
         self.loop = loop
         self.observer = observer or Observer()
         self.wakeup = wakeup
+        self.desired: set[str] | None = None
         self.subscriptions: dict[str, MqttSubscription] = {}
         self.unrouted: list[MQTTMessage] = []
         self.error: Exception | None = None
@@ -175,6 +209,72 @@ class MqttConnection:
                 sub.items[:0] = matching
                 self.unrouted = [m for m in self.unrouted if not topic_matches_sub(topic, m.topic)]
         return sub
+
+    def unsubscribe(self, topic: str) -> None:
+        """Unsubscribe `topic` at the broker and dispose its view.
+
+        Disposal is the deliberate at-most-once tail of config removal:
+        pending ACKs are sent — the runner reconciles only at quiescent
+        points, where everything pending is committed to Kafka by the
+        re-entry contract — and buffered messages that never reached Kafka
+        are ACK-dropped with a warning and counter. MQTT 3.1.1 has no NACK
+        and cannot requeue for another consumer, so the alternatives are
+        silent loss or pinning inflight-window slots until the shared
+        session stalls; stop the publisher before removing a config to make
+        the dropped tail empty. Unknown topics are a no-op.
+        """
+        sub = self.subscriptions.pop(topic, None)
+        if sub is None:
+            return
+        log.info("Unsubscribing from %s", topic)
+        if self.client.is_connected():
+            self.client.unsubscribe(topic)
+        sub.ack_all_pending()
+        if sub.items:
+            log.warning(
+                "Dropping %d undelivered MQTT message(s) buffered for unsubscribed topic %s",
+                len(sub.items), topic,
+            )
+        for msg in sub.items:
+            self.ack(msg)
+            self.observer.mqtt_message_dropped(topic, "unsubscribed")
+        sub.items.clear()
+        self.observer.mqtt_buffered(topic, 0)
+
+    def reconcile(self, desired: set[str]) -> None:
+        """Align the session with the topic filters the active configs declare.
+
+        Idempotent. Unsubscribes every subscription outside ``desired`` and
+        latches ``desired`` as the authoritative filter set: held unrouted
+        messages matching none of it are ACK-dropped now, and later
+        unmatched arrivals are ACK-dropped on receipt (``on_message``).
+        MQTT 3.1.1 can neither enumerate a session's subscriptions nor say
+        which filter matched a delivery, so a broker-side unsubscribe of a
+        stale filter is impossible — dropping its traffic is what keeps a
+        leftover subscription from wedging the shared inflight window.
+        Subscribing is the template ``poll()``'s job, not this method's.
+        """
+        for topic in [t for t in self.subscriptions if t not in desired]:
+            self.unsubscribe(topic)
+        self.desired = set(desired)
+        stale = [m for m in self.unrouted if not self._matches_desired(m.topic)]
+        self.unrouted = [m for m in self.unrouted if self._matches_desired(m.topic)]
+        for msg in stale:
+            log.warning(
+                "Dropping stale MQTT message held for topic %s — no active config declares a matching filter",
+                msg.topic,
+            )
+            self.ack(msg)
+            self.observer.mqtt_message_dropped(UNMATCHED, "stale")
+
+    def _matches_desired(self, topic: str) -> bool:
+        """Whether `topic` matches the reconciled desired-filter set.
+
+        Vacuously true before the first ``reconcile`` call — until the
+        config bootstrap has declared the full set, no message may be
+        judged stale (the startup window protects the persistent session's
+        replayed backlog)."""
+        return self.desired is None or any(topic_matches_sub(f, topic) for f in self.desired)
 
     def ack(self, msg: MQTTMessage) -> None:
         """Send PUBACK for a QoS 1 message. Logs but doesn't raise on failure."""
@@ -279,15 +379,28 @@ class MqttConnection:
             # No session state to protect — dropping is all QoS 0 offers.
             log.warning("No subscription matches MQTT topic %s — dropping", msg.topic)
             return
-        # QoS >= 1: hold un-ACKed and re-route when a matching subscription
-        # appears. This is the normal startup path — the persistent session
-        # replays its backlog right after CONNACK, before the Kafka config
-        # bootstrap has registered any subscription — so ACKing here would
-        # permanently drop the very backlog clean_session=False exists to
-        # protect. Held messages are bounded by the broker's per-session
-        # inflight window (un-ACKed QoS 1 deliveries pause the session), and
-        # messages for a genuinely stale session subscription therefore stall
-        # that window — the documented cost of deferring unsubscribe.
+        if not self._matches_desired(msg.topic):
+            # The reconciled session says no active config wants this: a
+            # straggler behind an UNSUBSCRIBE, or replay for a filter some
+            # earlier deployment left in the persistent session (3.1.1 gives
+            # no way to unsubscribe those). ACK-drop — held un-ACKed it would
+            # pin an inflight-window slot forever and eventually stall every
+            # topic of this client.
+            log.warning(
+                "Dropping stale MQTT message from topic %s — no active config declares a matching filter",
+                msg.topic,
+            )
+            self.ack(msg)
+            self.observer.mqtt_message_dropped(UNMATCHED, "stale")
+            return
+        # QoS >= 1, matching a desired filter whose view isn't registered yet
+        # (subscribe happens in the next poll) — or the desired set is not
+        # yet authoritative at all: hold un-ACKed and re-route when the
+        # matching subscription appears. The latter is the normal startup
+        # path — the persistent session replays its backlog right after
+        # CONNACK, before the Kafka config bootstrap has registered any
+        # subscription — so ACKing here would permanently drop the very
+        # backlog clean_session=False exists to protect.
         log.warning("No subscription matches MQTT topic %s yet — holding un-ACKed", msg.topic)
         self.unrouted.append(msg)
 
@@ -428,6 +541,17 @@ class MqttExtractor(Extractor, ABC):
     def subscribe(self, topic: str) -> MqttSubscription:
         """The per-topic subscription for `topic` over the shared connection."""
         return self.connection.subscribe(topic)
+
+    async def on_active_configs(self, configs: dict[str, Config]) -> None:
+        """Reconcile the broker session with the active config set.
+
+        Unsubscribes every topic filter no active config declares and
+        latches the declared set as authoritative for the stale-message
+        policy (`MqttConnection.reconcile`). Subscribing is not this hook's
+        job: the template ``poll()`` (re)subscribes idempotently, so a
+        resumed or re-added config reconnects its topic on its next poll.
+        """
+        self.connection.reconcile({config[TOPIC] for config in configs.values()})
 
     @abstractmethod
     def relay(self, config: Config, topic: str, payload: Record) -> Message | None:

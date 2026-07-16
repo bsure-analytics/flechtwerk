@@ -280,6 +280,142 @@ async def test_clean_disconnect_emits_no_observer_event(mock_client):
     assert observer.calls == []
 
 
+# -- unsubscribe / reconcile ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_sends_broker_unsubscribe_and_disposes_view(mock_client):
+    _, client = mock_client
+    client.is_connected.return_value = True
+    conn = make_connection(asyncio.get_running_loop())
+    conn.subscribe("t/+/events")
+
+    conn.unsubscribe("t/+/events")
+
+    client.unsubscribe.assert_called_once_with("t/+/events")
+    assert conn.subscriptions == {}
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_acks_pending_and_drops_buffered(mock_client):
+    """The disposal policy: pending ACKs are provably Kafka-durable (the
+    runner reconciles only at quiescent points) and are sent; buffered
+    messages never reached Kafka and are ACK-dropped — counted, so the
+    alarm stays honest — because holding them un-ACKed would pin
+    inflight-window slots until the whole shared session stalls."""
+    _, client = mock_client
+    client.is_connected.return_value = True
+    observer = RecordingObserver()
+    conn = make_connection(asyncio.get_running_loop(), observer=observer)
+    sub = conn.subscribe("t/+/events")
+    sub.pending_acks = [make_mqtt_message("t/aa/events", {}, mid=1)]
+    sub.items = [make_mqtt_message("t/bb/events", {}, mid=2), make_mqtt_message("t/cc/events", {}, mid=3)]
+
+    conn.unsubscribe("t/+/events")
+
+    assert client.ack.call_count == 3  # one durable pending + two dropped buffered
+    assert observer.calls.count(("mqtt_message_dropped", "t/+/events", "unsubscribed")) == 2
+    assert ("mqtt_buffered", "t/+/events", 0) in observer.calls  # gauge reset, no stale backlog reading
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_unknown_topic_is_noop(mock_client):
+    _, client = mock_client
+    conn = make_connection(asyncio.get_running_loop())
+
+    conn.unsubscribe("never/subscribed")
+
+    client.unsubscribe.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unsubscribed_topic_not_resubscribed_on_connect(mock_client):
+    _, client = mock_client
+    client.is_connected.return_value = False
+    conn = make_connection(asyncio.get_running_loop())
+    conn.subscribe("keep/+/events")
+    conn.subscribe("gone/+/events")
+    conn.unsubscribe("gone/+/events")
+
+    conn.on_connect(client, None, None, 0, None)
+
+    client.subscribe.assert_called_once_with("keep/+/events", qos=1)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_unsubscribes_topics_outside_desired(mock_client):
+    _, client = mock_client
+    client.is_connected.return_value = True
+    conn = make_connection(asyncio.get_running_loop())
+    conn.subscribe("keep/+/events")
+    conn.subscribe("gone/+/events")
+
+    conn.reconcile({"keep/+/events"})
+
+    client.unsubscribe.assert_called_once_with("gone/+/events")
+    assert list(conn.subscriptions) == ["keep/+/events"]
+    assert conn.desired == {"keep/+/events"}
+
+
+@pytest.mark.asyncio
+async def test_reconcile_sweeps_stale_unrouted_and_keeps_matching(mock_client):
+    """The latch: held messages for a filter some earlier deployment left in
+    the persistent session are ACK-dropped at the first reconciliation —
+    MQTT 3.1.1 can neither enumerate nor selectively unsubscribe those
+    filters, so dropping their traffic is what un-wedges the session.
+    Messages matching a desired-but-not-yet-subscribed filter stay held for
+    the poll that will subscribe it."""
+    _, client = mock_client
+    observer = RecordingObserver()
+    conn = make_connection(asyncio.get_running_loop(), observer=observer)
+    held = make_mqtt_message("t/aa/events", {}, mid=1)
+    stale = make_mqtt_message("legacy/topic", {}, mid=2)
+    for msg in (held, stale):
+        conn.on_message(None, None, msg)
+    assert conn.unrouted == [held, stale]  # pre-latch: everything is protected
+
+    conn.reconcile({"t/+/events"})
+
+    assert conn.unrouted == [held]
+    client.ack.assert_called_once_with(2, 1)
+    assert ("mqtt_message_dropped", "(unmatched)", "stale") in observer.calls
+
+
+@pytest.mark.asyncio
+async def test_unmatched_qos1_dropped_on_receipt_after_latch(mock_client):
+    """Post-latch arrivals for undesired topics — UNSUBSCRIBE stragglers,
+    stale-session replay — are ACK-dropped on receipt instead of held, so a
+    leftover broker-side subscription can no longer stall the inflight
+    window. The metric label is the '(unmatched)' sentinel: the concrete
+    publish topic would have unbounded cardinality."""
+    _, client = mock_client
+    observer = RecordingObserver()
+    conn = make_connection(asyncio.get_running_loop(), observer=observer)
+    conn.reconcile({"t/+/events"})
+
+    conn.on_message(None, None, make_mqtt_message("legacy/topic", {}, mid=9))
+
+    assert conn.unrouted == []
+    client.ack.assert_called_once_with(9, 1)
+    assert ("mqtt_message_dropped", "(unmatched)", "stale") in observer.calls
+
+
+@pytest.mark.asyncio
+async def test_desired_match_without_view_still_held_after_latch(mock_client):
+    """Between the cycle-top reconcile and the poll that subscribes, a
+    message for a desired filter has no view yet — it must be held, never
+    judged stale."""
+    _, client = mock_client
+    conn = make_connection(asyncio.get_running_loop())
+    conn.reconcile({"t/+/events"})
+
+    msg = make_mqtt_message("t/aa/events", {}, mid=5)
+    conn.on_message(None, None, msg)
+
+    assert conn.unrouted == [msg]
+    client.ack.assert_not_called()
+
+
 # -- connection-level errors surface via drain -------------------------------
 
 
@@ -741,6 +877,34 @@ async def test_template_propagates_connection_errors():
 async def test_template_yields_nothing_when_no_messages():
     ext = make_template_extractor(forward_relay)
     assert await collect_poll(ext) == []
+
+
+@pytest.mark.asyncio
+async def test_on_active_configs_reconciles_connection():
+    """The hook derives the desired filters from the active configs' TOPIC
+    attribute and reconciles the session: undeclared topics are
+    unsubscribed, the declared set is latched."""
+    ext = make_template_extractor(forward_relay)
+    ext.connection.subscribe("legacy/+/events")
+
+    await ext.on_active_configs({"k": CONFIG})
+
+    assert ext.connection.unsubscribed == ["legacy/+/events"]
+    assert list(ext.connection.subscriptions) == ["t/+/events"]
+    assert ext.connection.desired == {"t/+/events"}
+
+
+@pytest.mark.asyncio
+async def test_on_active_configs_with_empty_set_unsubscribes_everything():
+    """The standby / all-tombstoned shape: an empty active set disposes
+    every subscription and latches an empty desired set."""
+    ext = make_template_extractor(forward_relay)
+
+    await ext.on_active_configs({})
+
+    assert ext.connection.unsubscribed == ["t/+/events"]
+    assert ext.connection.subscriptions == {}
+    assert ext.connection.desired == set()
 
 
 # -- MqttExtractor: the decorator form ---------------------------------------

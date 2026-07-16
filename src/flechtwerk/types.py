@@ -5,6 +5,8 @@ from typing import Final
 
 from flechtwerk.attribute import Codec, Record, record_codec
 
+__all__ = ["Config", "Event", "IncomingMessage", "Message", "State"]
+
 
 class Config(Record):
     """Configuration object read from a Kafka config topic."""

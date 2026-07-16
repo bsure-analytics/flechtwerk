@@ -1501,6 +1501,172 @@ def test_listener_failure_is_fatal_for_the_runner():
     asyncio.run(run())
 
 
+def test_runner_reconciles_active_configs_before_each_cycle():
+    """The runner hands on_active_configs the owned, non-suspended config
+    set at the cycle top — suspended configs never reach the hook, and a
+    tombstone empties it. This is the hook the MQTT template's unsubscribe
+    lifecycle rides."""
+
+    async def run():
+        seen: list[set[str]] = []
+
+        class ReconcilingExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def on_active_configs(self, configs) -> None:
+                seen.append(set(configs))
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                return
+                yield  # pragma: no cover
+
+        consumer = FakeKafkaConsumer([
+            json_record(key="active", value={"api_key": "a"}, offset=0),
+            json_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1),
+        ])
+        runner = make_sharded_runner(ReconcilingExtractor(), consumer=consumer)
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(until(lambda: {"active"} in seen), 5)
+            assert all(keys == {"active"} for keys in seen)  # the suspended config never appears
+
+            consumer.records = [json_record(key="active", value={}, offset=2)]  # tombstone
+            await asyncio.wait_for(until(lambda: set() in seen), 5)
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_standby_assignment_reconciles_empty_active_set():
+    """An instance left a hot standby has no cycle loop to reconcile from —
+    the runner hands the stage an empty active set right at the (settled)
+    assignment, releasing the per-config resources its lost tokens leave
+    behind (MQTT: everything unsubscribed)."""
+
+    async def run():
+        reconciled = asyncio.Event()
+        seen: list[set[str]] = []
+
+        class ReconcilingExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def on_active_configs(self, configs) -> None:
+                seen.append(set(configs))
+                reconciled.set()
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                return
+                yield  # pragma: no cover
+
+        runner = make_sharded_runner(
+            ReconcilingExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            listener = runner.membership_consumer.listener
+            await listener.on_partitions_revoked(set())
+            listener.on_partitions_assigned(set())
+            await asyncio.wait_for(reconciled.wait(), 5)
+
+            assert seen == [set()]
+            assert runner.cycle is None
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_revoke_barrier_never_reconciles():
+    """Loss-safety pin: suspend_tokens must NOT call on_active_configs — a
+    transient revoke→assign self-handover must find the MQTT template's
+    rolled-back buffer intact, and a reconcile against the momentarily
+    empty token set would unsubscribe and drop it. Reconciliation belongs
+    to settled assignments only: the cycle top, or the standby branch of
+    start_pending_tokens."""
+
+    async def run():
+        cycled = asyncio.Event()
+        seen: list[set[str]] = []
+
+        class ReconcilingExtractor(Extractor):
+            config_topics = ["test-config"]
+
+            async def on_active_configs(self, configs) -> None:
+                seen.append(set(configs))
+                cycled.set()
+
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                return
+                yield  # pragma: no cover
+
+        runner = make_sharded_runner(
+            ReconcilingExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+        )
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            listener = runner.membership_consumer.listener
+            listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(cycled.wait(), 5)
+            assert {"k"} in seen
+
+            await listener.on_partitions_revoked({TopicPartition("test-config", 0)})
+
+            assert set() not in seen  # the barrier itself reconciled nothing
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_mqtt_extractor_unsubscribes_tombstoned_config_through_runner():
+    """End-to-end wiring of the subscription lifecycle: a config tombstone
+    reaches MqttExtractor.on_active_configs via the cycle-top reconcile,
+    which unsubscribes the topic and latches an empty desired set."""
+
+    async def run():
+        from flechtwerk.mqtt import MqttExtractor
+        from flechtwerk.testing import FakeMqttConnection
+
+        ext = MqttExtractor.of(config_topics=["test-config"], relay=lambda config, topic, payload: None)
+        ext.connection = FakeMqttConnection()
+        consumer = FakeKafkaConsumer([json_record(key="k", value={"topic": "t/+/events"})])
+        runner = make_sharded_runner(ext, consumer=consumer)
+        runner.num_tokens = 1
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(until(lambda: "t/+/events" in ext.connection.subscriptions), 5)
+            assert ext.connection.desired == {"t/+/events"}
+
+            consumer.records = [json_record(key="k", value={}, offset=1)]  # tombstone
+            await asyncio.wait_for(until(lambda: "t/+/events" in ext.connection.unsubscribed), 5)
+            assert ext.connection.subscriptions == {}
+            assert ext.connection.desired == set()
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
 def test_poll_error_in_sharded_cycle_crashes_the_runner():
     """An error inside a background poll cycle surfaces from run()."""
 

@@ -15,6 +15,8 @@ from .types import State
 
 log = logging.getLogger(__name__)
 
+__all__ = ["StateStore"]
+
 
 # --- Serialization ---
 

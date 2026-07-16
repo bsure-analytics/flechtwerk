@@ -24,6 +24,8 @@ from .types import Config, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
+__all__ = ["Extractor", "extractor"]
+
 SUSPENDED = Attribute("suspended", BOOL, optional=True)
 
 PollFn = Callable[[Config, State], AsyncIterator[Message | State]]
@@ -146,6 +148,31 @@ class Extractor(Stage, ABC):
         if extract_state_key is not None:
             instance.extract_state_key = extract_state_key
         return instance
+
+    async def on_active_configs(self, configs: dict[str, Config]) -> None:
+        """Reconciliation hook: the configs this instance actively polls.
+
+        The runner is the SOLE caller — implementations override this,
+        never invoke it. The contract, guaranteed at every call:
+
+        - ``configs`` is the complete active set, keyed by wire key: every
+          config this instance currently owns that is not suspended.
+          Tombstoned, suspended, disowned (rebalanced-away), and rewritten
+          configs simply disappear from the mapping — one idempotent
+          reconciliation covers every removal shape.
+        - No poll is in flight, and every page a completed poll produced
+          has committed (the re-entry contract) — the hook may dispose
+          per-config resources without racing ``poll()``.
+        - It fires eventually after any change to the active set, and may
+          fire when nothing changed — implementations must be idempotent.
+        - It is NOT called on shutdown: end-of-life cleanup belongs in
+          ``__aexit__``. (The MQTT template deliberately keeps its
+          persistent broker session across restarts.)
+
+        The mapping and its configs are the runner's cache — treat them as
+        read-only. The default does nothing; the MQTT template overrides
+        this to unsubscribe every topic no active config declares.
+        """
 
     @abstractmethod
     def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
@@ -425,6 +452,12 @@ class ExtractorRunner:
             k: e for k, e in self.entries.items()
             if not e.config.get(SUSPENDED) and self.owns(e.state_key)
         }
+        # Reconcile BEFORE polling, at the cycle's quiescent point: no poll
+        # is in flight, so the hook may dispose per-config resources (the
+        # MQTT template unsubscribes) without racing a generator that still
+        # holds them — and everything a completed poll left pending has
+        # already committed (the re-entry contract).
+        await self.extractor.on_active_configs({k: e.config for k, e in active.items()})
         self.observer.active_configs(len(active))
         if not active:
             return
@@ -473,6 +506,14 @@ class ExtractorRunner:
         self.observer.tokens_assigned(len(self.tokens))
         if not pending:
             log.info("No tokens assigned — hot standby")
+            # A standby polls nothing, so no cycle loop will ever reconcile —
+            # hand the empty active set to the stage here, releasing the
+            # per-config resources its lost tokens leave behind. (The revoke
+            # barrier deliberately does NOT reconcile: a transient
+            # revoke→assign self-handover must find rolled-back MQTT buffers
+            # intact — this branch runs only once the new assignment is
+            # settled and it really is empty.)
+            await self.extractor.on_active_configs({})
             return
         # Fence FIRST: starting each token producer issues InitProducerId
         # for its static transactional ID, bumping the epoch — a previous

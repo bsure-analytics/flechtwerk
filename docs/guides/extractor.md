@@ -211,13 +211,16 @@ Two things to know when sizing a deployment:
   handovers neither lose nor duplicate records (see the exactly-once note
   above).
 
-**Run MQTT extractors as one replica** for now: a token handover leaves the
-old owner's persistent broker session subscribed (there is no unsubscribe
-lifecycle yet), which at QoS ≥ 1 wedges that session's inflight window. A
-single replica is fully safe — handovers back to itself roll drained-but-
-unconfirmed messages back into the buffer instead of ACKing them unsent. See
-[the architecture notes](../concepts/architecture.md#extractor) for the full
-model.
+MQTT extractors scale out too — a token handover unsubscribes the topics
+the old owner loses (the [subscription
+lifecycle](mqtt.md#subscription-lifecycle)) — but each handover carries a
+bounded at-most-once window, since a broker ACK cannot join a Kafka
+transaction. Run one replica when that loss is unacceptable; see [Replicas
+and the Handover Window](mqtt.md#replicas-and-the-handover-window). A
+single replica is fully lossless — handovers back to itself roll drained-
+but-unconfirmed messages back into the buffer instead of ACKing them
+unsent. See [the architecture notes](../concepts/architecture.md#extractor)
+for the full model.
 
 ## Next Steps
 

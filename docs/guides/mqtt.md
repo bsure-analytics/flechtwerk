@@ -62,18 +62,49 @@ See [Getting Started → Running a Stage](getting-started.md#running-a-stage) fo
 
     `MqttBrokerConfig` carries the broker settings, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting Started](getting-started.md#installation)).
 
-## One Replica for Now
+## Subscription Lifecycle
 
-Run an MQTT-sourced extractor as **one replica**. Extractor replicas normally
-[shard the config set between them](extractor.md#scaling-out), but there is no
-MQTT unsubscribe lifecycle yet: when a config's ownership moves to another
-replica, the old owner's persistent broker session keeps its subscription, and
-at QoS ≥ 1 the un-ACKed messages it keeps receiving occupy that session's
-shared inflight window until the broker pauses delivery for *all* topics of
-the client. A single replica is unaffected — ownership handovers back to
-itself are cancellation-safe (drained-but-unconfirmed messages roll back into
-the buffer instead of being ACKed unsent), and a second replica still buys a
-hot standby only if you accept the wedged-session risk on failover.
+Subscriptions follow the config set, by reconciliation: before every poll
+cycle the runner hands the stage its owned, non-suspended configs, and the
+stage unsubscribes every topic filter no active config declares. Tombstoning
+a config, suspending it, editing its `topic`, and losing its ownership at a
+rebalance therefore all converge on the same clean-up — no wedged session,
+no manual broker surgery.
+
+Disposal is deliberately **at-most-once for the in-flight tail**: messages
+already ACK-pending are ACKed (they are durable in Kafka by then), while
+buffered messages that never reached Kafka are dropped — ACKed, warned
+about, and counted as `mqtt_message_dropped{reason="unsubscribed"}`. MQTT
+3.1.1 has no NACK and cannot requeue for another consumer, so the only
+alternative would be holding them un-ACKed until they wedge the session's
+shared inflight window. **Stop the publisher before removing a config** and
+the dropped tail is empty. Suspension follows the same rule: the topic is
+unsubscribed, interim messages are discarded, and resuming re-subscribes on
+the next poll.
+
+The first reconciliation also latches the declared filter set as
+authoritative: from then on, QoS ≥ 1 messages matching no declared filter —
+stragglers behind an UNSUBSCRIBE, or replay for filters an earlier
+deployment left in the persistent session — are ACK-dropped on receipt and
+counted as `mqtt_message_dropped{reason="stale", topic="(unmatched)"}`
+instead of held. Before that point (the startup window) unmatched messages
+are held un-ACKed, so the persistent session's replayed backlog is never
+lost. Shutdown never unsubscribes: the session keeps buffering for the next
+incarnation.
+
+## Replicas and the Handover Window
+
+An MQTT-sourced extractor **can** [scale out like any other
+extractor](extractor.md#scaling-out) — a rebalance unsubscribes the topics
+the old owner loses. But because a broker ACK can never join a Kafka
+transaction, each ownership handover carries a bounded at-most-once window:
+the old owner's undelivered buffer is dropped on unsubscribe, and messages
+published between the old owner's UNSUBSCRIBE and the new owner's SUBSCRIBE
+are delivered to neither session. Run **one replica** when that loss window
+is unacceptable — single-replica self-handovers are fully lossless
+(drained-but-unconfirmed messages roll back into the buffer instead of being
+ACKed unsent). The lossless multi-replica story is MQTT 5 shared
+subscriptions — a future design.
 
 ## Next Steps
 

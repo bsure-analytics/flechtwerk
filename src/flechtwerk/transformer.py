@@ -20,6 +20,8 @@ from .types import IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
+__all__ = ["Transformer", "transformer"]
+
 TransformFn = Callable[[IncomingMessage, State], AsyncIterator[Message | State]]
 
 

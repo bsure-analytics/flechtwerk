@@ -41,6 +41,8 @@ from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
 
+__all__ = ["CompressionType", "Flechtwerk", "MqttBrokerConfig"]
+
 CompressionType = Literal["gzip", "snappy", "lz4", "zstd"]
 """Kafka producer compression codec — closed set matching aiokafka's accepted values."""
 

@@ -37,6 +37,8 @@ from .types import Config
 
 log = logging.getLogger(__name__)
 
+__all__ = ["ConfigStore"]
+
 EnrichConfigFn = Callable[[Config], Awaitable[Config]]
 
 

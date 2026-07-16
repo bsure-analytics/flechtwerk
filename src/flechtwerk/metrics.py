@@ -8,6 +8,10 @@ from functools import cached_property
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
+# Framework-internal on purpose: `PrometheusObserver` is the only consumer;
+# the application-facing surface is `metrics_port` / `metrics_labels`.
+__all__: list[str] = []
+
 
 class Metrics:
     """Lazy registry for the framework's metric set.

@@ -17,6 +17,17 @@ from flechtwerk.types import Message, State
 if TYPE_CHECKING:
     from paho.mqtt.client import MQTTMessage
 
+__all__ = [
+    "FakeKafkaConsumer",
+    "FakeKafkaProducer",
+    "FakeMqttConnection",
+    "FakeMqttSubscription",
+    "InMemoryStateStore",
+    "make_mqtt_message",
+    "make_record",
+    "RecordingObserver",
+]
+
 
 class RecordingObserver(Observer):
     """Captures every observer hook call into a list for assertion."""
@@ -375,9 +386,11 @@ class FakeMqttConnection:
     """
 
     def __init__(self) -> None:
+        self.desired: set[str] | None = None
         self.error: Exception | None = None
         self.next_mid = 1
         self.subscriptions: dict[str, FakeMqttSubscription] = {}
+        self.unsubscribed: list[str] = []
 
     async def __aenter__(self) -> Self:
         return self
@@ -391,6 +404,24 @@ class FakeMqttConnection:
             sub = FakeMqttSubscription(connection=self, topic=topic)
             self.subscriptions[topic] = sub
         return sub
+
+    def unsubscribe(self, topic: str) -> None:
+        """Mirrors the real disposal: pending ACKed (durable), buffered
+        ACK-dropped — all recorded on the view's ``acked`` list — and the
+        topic appended to ``unsubscribed`` for assertions."""
+        sub = self.subscriptions.pop(topic, None)
+        if sub is None:
+            return
+        self.unsubscribed.append(topic)
+        sub.ack_all_pending()
+        for msg in sub.items:
+            sub.ack(msg)
+        sub.items.clear()
+
+    def reconcile(self, desired: set[str]) -> None:
+        for topic in [t for t in self.subscriptions if t not in desired]:
+            self.unsubscribe(topic)
+        self.desired = set(desired)
 
     def publish(self, *, topic: str, payload: bytes, qos: int = 1) -> None:
         """Route one message into the first matching subscription's buffer,

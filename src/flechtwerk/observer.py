@@ -8,6 +8,11 @@ from contextlib import AbstractContextManager, nullcontext
 
 from .metrics import Metrics
 
+# `Observer` is the extension surface (subclassed by `RecordingObserver` in
+# `testing`, or wired in by a parent reactor-di module); `PrometheusObserver`
+# is internal — the DI container selects it via `metrics_port`.
+__all__ = ["Observer"]
+
 
 class Observer:
     """Hook surface the runners emit events through, AND the default no-op.
@@ -29,8 +34,10 @@ class Observer:
     def tasks_assigned(self, n: int) -> None: pass
     def tokens_assigned(self, n: int) -> None: pass
 
-    # MQTT events — `topic` is always the subscription filter from config
-    # (bounded cardinality), never the per-device publish topic.
+    # MQTT events — `topic` is always the subscription filter from config,
+    # or the "(unmatched)" sentinel on `stale` drops (`flechtwerk.mqtt.
+    # UNMATCHED`) — never the per-device publish topic, whose cardinality
+    # is unbounded.
     def mqtt_buffered(self, topic: str, n: int) -> None: pass
     def mqtt_connected(self) -> None: pass
     def mqtt_disconnected(self) -> None: pass
