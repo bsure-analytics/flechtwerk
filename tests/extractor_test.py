@@ -663,7 +663,7 @@ def test_reentry_contract_flush_strictly_precedes_next_poll():
     class OrderRecordingProducer(FakeKafkaProducer):
         async def send(self, topic, *, key=None, value=None, timestamp_ms=None):
             events.append("send")
-            await super().send(topic, key=key, value=value, timestamp_ms=timestamp_ms)
+            return await super().send(topic, key=key, value=value, timestamp_ms=timestamp_ms)
 
         async def flush(self):
             events.append("flush")
@@ -1124,6 +1124,97 @@ def test_sharded_standby_instance_polls_nothing():
             assert runner.cycle is None
             assert len(runner.entries) == 1  # the config table stays warm
 
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_delivery_failure_crashes_before_state_is_persisted():
+    """aiokafka's flush() never retrieves delivery results — poll_one must,
+    so a delivery-stage failure (broker-side non-retriable produce error,
+    batch TTL expiry) crashes before the advanced cursor is persisted or an
+    MQTT pending is ACKed. Without the retrieval, the lost records would
+    never be re-polled: permanent loss, not at-least-once."""
+
+    class DeliveryFailingProducer(FakeKafkaProducer):
+        async def send(self, topic, *, key=None, value=None, partition=None, timestamp_ms=None):
+            await super().send(topic, key=key, value=value, partition=partition, timestamp_ms=timestamp_ms)
+            delivery = asyncio.get_running_loop().create_future()
+            delivery.set_exception(ConnectionError("delivery failed"))
+            return delivery
+
+    async def run():
+        state_store = InMemoryStateStore()
+        await state_store.put("k", State.wrap({"cursor": 5}))
+
+        mod = make_module(SimpleExtractor(), producer=DeliveryFailingProducer(), state_store=state_store)
+        with pytest.raises(ConnectionError, match="delivery failed"):
+            await mod.runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
+
+        assert (await state_store.get("k")).raw == {"cursor": 5}
+
+    asyncio.run(run())
+
+
+def test_count_tokens_requires_known_partitions():
+    """A config topic without partition metadata must fail fast — a silent
+    zero would divide-by-zero ownership or own nothing forever."""
+
+    async def run():
+        runner = make_sharded_runner(SimpleExtractor(), consumer=FakeKafkaConsumer())
+        with pytest.raises(RuntimeError, match="no partitions known"):
+            await runner.count_tokens()
+
+    asyncio.run(run())
+
+
+def test_rebalance_lock_serializes_revoke_against_inflight_restore():
+    """Pins the lock pairing run()'s docstring forbids removing: a revoke
+    landing while start_pending_tokens is mid-restore must wait for the
+    restore to finish — otherwise the restore's completion would resurrect
+    tokens the group has meanwhile handed elsewhere (dual ownership)."""
+
+    async def run():
+        from flechtwerk.state import ChangelogStateStore
+
+        release = asyncio.Event()
+        restoring = asyncio.Event()
+
+        class BlockingRestoreStore(ChangelogStateStore):
+            async def restore(self, consumer, partitions=None):
+                restoring.set()
+                await release.wait()
+                return 0
+
+        store = BlockingRestoreStore()
+        store.inner = InMemoryStateStore()
+        store.producer = FakeKafkaProducer()
+        store.topic = "test-changelog"
+
+        runner = make_sharded_runner(
+            SimpleExtractor(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+        )
+        runner.num_tokens = 1
+        runner.state_store = store
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
+            listener = runner.membership_consumer.listener
+            listener.on_partitions_assigned({TopicPartition("test-config", 0)})
+            await asyncio.wait_for(restoring.wait(), 5)  # the main loop holds the lock, blocked in restore
+
+            revoke = asyncio.create_task(listener.on_partitions_revoked({TopicPartition("test-config", 0)}))
+            await asyncio.sleep(0.05)
+            assert not revoke.done()  # the barrier waits behind the rebalance lock
+
+            release.set()
+            await asyncio.wait_for(revoke, 5)  # restore finished, then the revoke tore down
+            assert runner.tokens == frozenset()
+            assert runner.cycle is None
         finally:
             task.cancel()
             with suppress(asyncio.CancelledError):

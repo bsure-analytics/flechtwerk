@@ -567,10 +567,11 @@ async def test_runner_cancellation_mid_send_leaves_no_false_pendings():
             self.blocked = asyncio.Event()
 
         async def send(self, topic, *, key=None, value=None, partition=None, timestamp_ms=None):
-            await super().send(topic, key=key, value=value, partition=partition, timestamp_ms=timestamp_ms)
+            delivery = await super().send(topic, key=key, value=value, partition=partition, timestamp_ms=timestamp_ms)
             if len(self.sent) >= 2:
                 self.blocked.set()
                 await asyncio.Event().wait()  # block forever — the test cancels here
+            return delivery
 
     ext = make_template_extractor(forward_relay)
     ext.connection.publish(topic="t/aa/events", payload=b'{"n":1}')

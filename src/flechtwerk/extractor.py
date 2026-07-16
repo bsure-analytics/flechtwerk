@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -580,6 +580,7 @@ class ExtractorRunner:
         state = State(await self.state_store.get(entry.state_key) or {})
         baseline = deepcopy(state)
 
+        deliveries: list[Awaitable[object]] = []
         new_state: State | None = None
         with self.observer.dispatch_scope():
             # Hand poll() a private copy of both mutable inputs. `state` is a
@@ -592,12 +593,12 @@ class ExtractorRunner:
                     if isinstance(item, State):
                         new_state = item
                     elif isinstance(item, Message):
-                        await self.producer.send(
+                        deliveries.append(await self.producer.send(
                             item.topic,
                             key=encode_json(item.key),
                             value=encode_json(item.value),
                             timestamp_ms=datetime_to_millis(item.timestamp),
-                        )
+                        ))
                         self.observer.message_out(item.topic)
                     else:
                         raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
@@ -611,6 +612,13 @@ class ExtractorRunner:
                     await aclose()
 
         await self.producer.flush()
+        # aiokafka's flush() only WAITS on the delivery futures — it never
+        # retrieves their results, so a delivery-stage failure (a broker-side
+        # non-retriable produce error, a batch expiring leaderless) would pass
+        # silently. Retrieve every result: a failed delivery must crash BEFORE
+        # the advanced cursor is persisted or an MQTT pending is ACKed.
+        for delivery in deliveries:
+            await delivery
         if new_state is not None and new_state != baseline:
             if new_state:
                 await self.state_store.put(entry.state_key, new_state)

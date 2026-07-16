@@ -450,12 +450,13 @@ class MqttExtractor(Extractor, ABC):
 
         # ACK the previous batch. ExtractorRunner marks nothing pending that
         # the producer hasn't accepted (it sends each message BEFORE resuming
-        # this generator), flushes after every completed poll, and flushes
-        # again in the suspend barrier after a cancelled one; a send failure
-        # crashes the process before reaching here. So everything still
-        # pending is provably durable in Kafka now — a cancelled invocation's
-        # unsent messages were rolled back to the buffer (below), never
-        # marked pending.
+        # this generator), flushes AND retrieves every delivery result after
+        # a completed poll (aiokafka's flush alone never raises), and flushes
+        # again in the suspend barrier after a cancelled one; a send or
+        # delivery failure crashes the process before reaching here. So
+        # everything still pending is provably durable in Kafka now — a
+        # cancelled invocation's unsent messages were rolled back to the
+        # buffer (below), never marked pending.
         sub.ack_all_pending()
 
         batch = sub.drain(self.drain_limit)

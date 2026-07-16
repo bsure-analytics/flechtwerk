@@ -4,6 +4,7 @@ paho imports are deferred into the MQTT doubles so importing this module
 never loads paho — mirroring the framework rule that ``flechtwerk/mqtt.py``
 is the only eager paho importer (the ``flechtwerk[mqtt]`` extra seam).
 """
+import asyncio
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Self
 
@@ -266,8 +267,14 @@ class FakeKafkaProducer:
         value: Any = None,
         partition: int | None = None,
         timestamp_ms: int | None = None,
-    ) -> None:
+    ) -> "asyncio.Future[Any]":
+        # Like aiokafka, return a delivery future — already resolved here.
+        # Tests simulating delivery-stage failures override this to return a
+        # future carrying an exception instead.
         self.sent.append((topic, {"key": key, "partition": partition, "value": value, "timestamp_ms": timestamp_ms}))
+        delivery: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        delivery.set_result(None)
+        return delivery
 
     async def flush(self) -> None:
         self.flushed = True

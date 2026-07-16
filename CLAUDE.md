@@ -127,8 +127,13 @@ For any given config, `ExtractorRunner` re-enters `poll()` only after every
 message the previous invocation handed to the producer was flushed.
 `poll_one` sends each yielded `Message` immediately — BEFORE resuming the
 generator, so a cancellation-aware source can only mark a message
-pending-ACK after the producer accepted it — and flushes before returning
-(a send failure crashes the process). A CANCELLED invocation (poll-cycle
+pending-ACK after the producer accepted it — then flushes AND retrieves
+every delivery result before returning: aiokafka's `flush()` is a bare
+`asyncio.wait` that never raises, so without the retrieval a delivery-stage
+failure (broker-side non-retriable produce error, batch TTL expiry) would
+silently advance the cursor past lost data
+(`test_delivery_failure_crashes_before_state_is_persisted` pins this). A
+send or delivery failure crashes the process. A CANCELLED invocation (poll-cycle
 teardown on a token handover) is closed deterministically at its current
 yield, rolls its unconfirmed input back (the MQTT template), and every
 message it DID hand to the producer is flushed by the `suspend_tokens`
