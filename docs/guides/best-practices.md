@@ -8,7 +8,7 @@ For any external datasource, run **two** stages, not one: an
 
 ```
 external source ──▶ [Extractor] ──▶ raw topic ──▶ [Transformer] ──▶ refined topic ──▶ your apps
-                    at-least-once   (faithful     exactly-once      (query model)
+                    exactly-once    (faithful     exactly-once      (query model)
                                      backup)
 ```
 
@@ -62,12 +62,15 @@ once per record, ever.
     [config topic](../concepts/config-topics.md), which is *compacted* to the
     latest value per key: the raw topic is a **history**, so keep the history.
 
-!!! note "The Raw Layer Absorbs At-Least-Once"
+!!! note "The Raw Layer and Duplicates"
 
-    An extractor is [at-least-once](extractor.md): a retried poll can write the
-    same record to the raw topic twice. Carry a stable, source-level identifier in
-    the raw payload so the transformer can deduplicate as it refines (or make the
-    refined write idempotent on that key). Duplicates in the raw log are cheap;
+    An extractor's own delivery is [exactly-once from cursor to
+    Kafka](extractor.md) — a replayed page was aborted, never seen downstream.
+    What it cannot vouch for is the *source*: an upstream API that re-serves
+    records (shifting pages, overlapping time windows) writes genuine
+    duplicates into the raw log. Carry a stable, source-level identifier in
+    the raw payload so the transformer can deduplicate as it refines (or make
+    the refined write idempotent on that key). Duplicates in the raw log are cheap;
     duplicates leaking into the query model are not.
 
 ## Defer Aggregation to Query Time

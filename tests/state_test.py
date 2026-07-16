@@ -336,8 +336,10 @@ def test_changelog_close_closes_inner():
 # --- Flechtwerk DI wiring tests ---
 
 
-def test_module_wires_changelog_state_store():
-    """The container wires ChangelogStateStore via reactor-di lookups."""
+def test_module_wires_extractor_runner_state_collaborators():
+    """The container wires the runner's state collaborators via reactor-di:
+    the shared inner store and changelog topic by name match, and the
+    token-producer factory as a bound module method."""
     from flechtwerk.extractor import Extractor
     from flechtwerk.module import _FlechtwerkModule
 
@@ -356,16 +358,18 @@ def test_module_wires_changelog_state_store():
         mod.compression_type = None
         mod.stage = StubExtractor()
 
-        store = mod.state_store
+        runner = mod.runner
 
-        # inner_store → ChangelogStateStore.inner (via lookup)
-        assert store.inner is mod.inner_store
+        # inner_store → ExtractorRunner.inner_store (name match)
+        assert runner.inner_store is mod.inner_store
 
-        # producer → shared (via name match)
-        assert store.producer is mod.producer
+        # changelog_topic cached_property → ExtractorRunner.changelog_topic
+        assert runner.changelog_topic == "test-app-changelog"
 
-        # changelog_topic → ChangelogStateStore.topic (via lookup)
-        assert store.topic == "test-app-changelog"
+        # create_token_producer → the module's factory method; constructing
+        # one exercises the transactional-ID scheme end to end
+        producer = runner.create_token_producer(3)
+        assert producer is not None
 
     asyncio.run(run())
 

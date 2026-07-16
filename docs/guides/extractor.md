@@ -16,17 +16,21 @@ database queried on a schedule, an object store or file drop scanned for new
 objects, a paged export endpoint. For *push* sources that arrive on their own
 schedule rather than a timer, see the [MQTT Extractor](mqtt.md).
 
-!!! warning "At-Least-Once, Never Exactly-Once"
+!!! note "Exactly-Once, Page by Page"
 
-    Exactly-once is a **transformer-only** guarantee: a transformer gets it for
-    free, but an extractor **cannot** have it at any price — it is not a
-    framework-wide free lunch. An extractor delivers **at-least-once** because
-    polling an external source can't be made atomic with a Kafka transaction, so a
-    crash between emitting a record and advancing the cursor re-emits that record
-    on restart. Its output is deliberately non-transactional. Design downstream
-    consumers to tolerate duplicates — an idempotent key, or a dedup transformer on
-    the way in. See [Exactly-once delivery](../concepts/exactly-once.md), which
-    spells out why the guarantee stops at the transformer.
+    An extractor's `poll()` runs inside **per-page Kafka transactions**: every
+    `State` yield is a commit boundary that makes the page's messages and its
+    cursor durable atomically. A crash or ownership handover replays only the
+    uncommitted page — whose messages were aborted and are invisible under
+    `read_committed` — so for a re-readable source, delivery is exactly-once
+    from cursor to Kafka, the way Kafka Connect's KIP-618 source connectors
+    work. What stays at-least-once is the world outside Kafka: the external
+    read itself is re-executed for a replayed page. Two rules follow: yield
+    your cursor once per page — and at least every 10 minutes, since one
+    transaction may not outlive the transaction timeout — and make sure every
+    downstream consumer reads `read_committed`, or it will see aborted pages.
+    See [Exactly-once delivery](../concepts/exactly-once.md) for the task
+    model this borrows from.
 
 Everything else you already know from [Getting Started](getting-started.md) — the
 installation, the `yield Message` / `yield State` contract, and the single
@@ -176,11 +180,12 @@ them; further replicas become hot standbys that take over on failure.
 Ownership is computed consumer-side, so where config records physically land
 stays irrelevant — writing config via Kafka UI (which defaults everything to
 one partition) keeps working. On a rebalance the leaving owner cancels its
-in-flight cycle, flushes its changelog writes, and wipes its local store
-*before* the group re-forms; the new owner restores from the changelog and
-continues each cursor where it left off. `self.configs` still holds the
-**global** config store on every instance — scale-out only narrows which
-configs `poll` is invoked for.
+in-flight cycle — aborting its open page — and wipes its local store *before*
+the group re-forms; the new owner fences it (`InitProducerId` on the static
+per-token transactional ID), restores from the changelog, and continues each
+cursor exactly where the last committed page left it. `self.configs` still
+holds the **global** config store on every instance — scale-out only narrows
+which configs `poll` is invoked for.
 
 Two things to know when sizing a deployment:
 
@@ -189,12 +194,11 @@ Two things to know when sizing a deployment:
   count. `poll_cycle_seconds` approaching your `poll_interval` — or CPU-bound
   decoding saturating the one core an event loop can use — is the signal to
   add replicas.
-- Delivery is **at-least-once**: extractor output is deliberately
-  non-transactional (polling an external API can't be atomic with anything),
-  and nothing fences a zombie around rebalances and network partitions, so a
-  cursor can regress — typically by one in-flight poll, at worst by the
-  window until an evicted instance notices and suspends. A bounded
-  re-import, never loss.
+- Delivery is **transactional**: each held token owns a producer whose static
+  transactional ID fences any previous owner, so even a zombie's in-flight
+  page is aborted before the new owner restores — cursors never regress, and
+  handovers neither lose nor duplicate records (see the exactly-once note
+  above).
 
 **Run MQTT extractors as one replica** for now: a token handover leaves the
 old owner's persistent broker session subscribed (there is no unsubscribe

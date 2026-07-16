@@ -1,4 +1,4 @@
-"""Tests for the Flechtwerk Kafka producer cached_property.
+"""Tests for the Flechtwerk Kafka producer factories.
 
 These tests construct a real aiokafka producer (no broker needed — the
 constructor's codec-library check fires before any network I/O), so they
@@ -23,8 +23,8 @@ class StubExtractor(Extractor):
 async def test_producer_constructs_with_configured_compression(codec: CompressionType | None):
     """AIOKafkaProducer's __init__ raises immediately if the codec library
     is not installed (e.g. RuntimeError: Compression library for zstd not
-    found), so accessing the producer cached_property is enough to catch
-    a missing extras dependency without any broker traffic.
+    found), so building one producer through each factory is enough to
+    catch a missing extras dependency without any broker traffic.
 
     aiokafka touches the running event loop in __init__, so the test runs
     under pytest-asyncio's auto mode (event loop in scope) rather than
@@ -38,4 +38,5 @@ async def test_producer_constructs_with_configured_compression(codec: Compressio
         compression_type=codec,
     )
 
-    assert f.producer is not None
+    assert f.create_task_producer(0) is not None
+    assert f.create_token_producer(0) is not None

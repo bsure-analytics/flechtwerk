@@ -11,10 +11,11 @@ This closes the transactional gap — state changelog writes participate in
 the same Kafka transaction as output messages and offset commits — and the
 static per-task transactional ID fences any previous owner of the task
 (Kafka Streams EOS-v1), which is what makes running multiple transformer
-instances safe. Extractors keep a single shared non-transactional producer,
-plus a membership consumer whose consumer-group partition leases distribute
-config ownership across replicas (see ``flechtwerk.extractor``) — one
-replica simply owns every lease.
+instances safe. Extractors mirror the same design per ownership token: a
+membership consumer's partition leases distribute config ownership across
+replicas (one replica simply owns every lease), and each held token owns a
+transactional producer — ``{application_id}-{token}`` — whose per-page
+transactions make cursor and output atomic (see ``flechtwerk.extractor``).
 """
 import logging
 import tempfile
@@ -225,7 +226,6 @@ class _FlechtwerkModule(Flechtwerk):
     prometheus_observer: PrometheusObserver
     registry: CollectorRegistry = REGISTRY
     stage: lookup[Extractor | Transformer]
-    state_store: ChangelogStateStore
     transformer_runner: TransformerRunner
 
     @cached_property
@@ -341,6 +341,28 @@ class _FlechtwerkModule(Flechtwerk):
         store.topic = self.changelog_topic
         return store
 
+    def create_token_producer(self, token: int) -> AIOKafkaProducer:
+        """Builds one transactional producer per extractor ownership token.
+
+        The transactional ID is static per token — ``{application_id}-{t}`` —
+        so whichever instance acquires token t fences the previous owner via
+        InitProducerId (EOS-v1), exactly like transformer tasks. The
+        transaction timeout is raised to 10 minutes: an extractor page (the
+        span between two ``State`` yields) may legitimately run far longer
+        than the 60s default, and the coordinator aborts any transaction
+        that outlives the timeout. 10 minutes stays under the broker's
+        default ``transaction.max.timeout.ms`` cap of 15.
+        """
+        kwargs: dict = {
+            "bootstrap_servers": self.bootstrap_servers,
+            "client_id": f"{self.client_id}-{token}",
+            "transaction_timeout_ms": 600_000,
+            "transactional_id": f"{self.application_id}-{token}",
+        }
+        if self.compression_type:
+            kwargs["compression_type"] = self.compression_type
+        return AIOKafkaProducer(**kwargs)
+
     @cached_property
     def membership_consumer(self) -> AIOKafkaConsumer | None:
         """Consumer holding an extractor's group membership (None for transformers).
@@ -389,25 +411,6 @@ class _FlechtwerkModule(Flechtwerk):
     @cached_property
     def path(self) -> Path:
         return Path(tempfile.mkdtemp()) / "state"
-
-    @cached_property
-    def producer(self) -> AIOKafkaProducer:
-        """Shared non-transactional producer (extractor stages only) — no serializers.
-
-        Runners encode output to bytes via encode_json().
-        ChangelogStateStore sends pre-encoded bytes directly. Omitting
-        serializers avoids the conflict between str-encoded output and
-        bytes-encoded state.
-        Transformers don't use this — they build one transactional producer
-        per task via ``create_task_producer``.
-        """
-        kwargs: dict = {
-            "bootstrap_servers": self.bootstrap_servers,
-            "client_id": self.client_id,
-        }
-        if self.compression_type:
-            kwargs["compression_type"] = self.compression_type
-        return AIOKafkaProducer(**kwargs)
 
     @cached_property
     def runner(self) -> ExtractorRunner | TransformerRunner:
@@ -475,16 +478,12 @@ class _FlechtwerkModule(Flechtwerk):
                 await self.config_consumer.start()
             if self.membership_consumer is not None:
                 await self.membership_consumer.start()
-            if isinstance(self.stage, Extractor):
-                await self.producer.start()
         except BaseException:
             await self.consumer.stop()
             if self.config_consumer is not None:
                 await self.config_consumer.stop()
             if self.membership_consumer is not None:
                 await self.membership_consumer.stop()
-            if isinstance(self.stage, Extractor):
-                await self.state_store.close()
             raise
         return self
 
@@ -495,8 +494,9 @@ class _FlechtwerkModule(Flechtwerk):
         if self.__dict__.get("membership_consumer") is not None:
             await self.membership_consumer.stop()
         if isinstance(self.stage, Extractor):
-            await self.producer.stop()
-            await self.state_store.close()
+            # Token producers are runner-owned (stopped in its teardown);
+            # the shared inner store just needs its final wipe.
+            await self.inner_store.close()
         # Stop the scrape server last so a final scrape can land mid-shutdown.
         # Access via __dict__ to avoid triggering the cached_property if the
         # endpoint was never started.

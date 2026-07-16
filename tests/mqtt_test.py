@@ -557,8 +557,9 @@ async def test_runner_cancellation_mid_send_leaves_no_false_pendings():
     cancellation inside a send can never leave a pending-ACK for a message
     the producer hasn't accepted — the hole would otherwise be silent QoS-1
     data loss at the next entry's ACK-previous-batch."""
-    from flechtwerk.extractor import ConfigEntry, ExtractorRunner
+    from flechtwerk.extractor import ConfigEntry, ExtractorRunner, TokenTask
     from flechtwerk.observer import Observer
+    from flechtwerk.state import ChangelogStateStore
     from flechtwerk.testing import FakeKafkaProducer, InMemoryStateStore
 
     class BlockingSecondSendProducer(FakeKafkaProducer):
@@ -577,19 +578,26 @@ async def test_runner_cancellation_mid_send_leaves_no_false_pendings():
     ext.connection.publish(topic="t/aa/events", payload=b'{"n":1}')
     ext.connection.publish(topic="t/bb/events", payload=b'{"n":2}')
 
+    producer = BlockingSecondSendProducer()
+    store = ChangelogStateStore()
+    store.inner = InMemoryStateStore()
+    store.producer = FakeKafkaProducer()
+    store.topic = "test-changelog"
+
     runner = ExtractorRunner()
     runner.extractor = ext
+    runner.num_tokens = 1
     runner.observer = Observer()
-    runner.producer = BlockingSecondSendProducer()
-    runner.state_store = InMemoryStateStore()
+    runner.tasks[0] = TokenTask(asyncio.Lock(), producer, store)
 
     task = asyncio.create_task(runner.poll_one(ConfigEntry(config=CONFIG, state_key="k")))
-    await asyncio.wait_for(runner.producer.blocked.wait(), 5)
+    await asyncio.wait_for(producer.blocked.wait(), 5)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
     sub = ext.connection.subscriptions["t/+/events"]
+    assert producer.aborted == 1   # the open page was aborted — nothing became visible
     assert sub.pending_acks == []  # message 1's mark was rolled back; message 2 was never marked
     assert sub.acked == []
     assert [m.payload for m in sub.items] == [b'{"n":1}', b'{"n":2}']  # both re-buffered in order

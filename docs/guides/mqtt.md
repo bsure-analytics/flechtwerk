@@ -6,7 +6,7 @@ An `MqttExtractor` is a push-driven [`Extractor`](extractor.md): instead of poll
 
 - one shared paho connection per process driven by the asyncio event loop (no threads);
 - persistent sessions with a stable client id;
-- manual-ACK at-least-once — a batch is ACKed to the broker only once it is provably durable in Kafka (at the top of the next poll, per the runner's re-entry contract);
+- manual ACKs — a batch is ACKed to the broker only once its transaction committed in Kafka (at the top of the next poll, per the runner's re-entry contract), making delivery into Kafka effectively exactly-once;
 - per-topic subscriptions fed by config records;
 - an arrival wakeup so delivery latency is sub-second rather than poll-interval-bound;
 - and Prometheus metrics.

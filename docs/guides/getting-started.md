@@ -9,7 +9,7 @@ Flechtwerk has exactly two stage shapes, both built on the same contract:
 
 - an **[Extractor](extractor.md)** brings an external source into Kafka — polling
   it on a timer, or receiving pushed messages with the
-  **[MQTT Extractor](mqtt.md)** — at-least-once;
+  **[MQTT Extractor](mqtt.md)** — exactly-once from its resume cursor to Kafka;
 - a **[Transformer](transformer.md)** consumes Kafka topics and publishes derived
   records, with exactly-once delivery.
 

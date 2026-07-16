@@ -9,8 +9,9 @@ broker and a real consumer group:
 2. Split ownership — two runners in one group poll disjoint config sets
    that together cover everything.
 3. Handover — tokens move on join/leave; state continues across the
-   handover via the changelog restore (counters never reset), with
-   at-least-once duplicates as the only allowed anomaly.
+   handover via the changelog restore, and the per-page transactions make
+   it exactly-once end to end: counters never reset, never skip, and never
+   repeat (a handover aborts the in-flight page before it becomes visible).
 4. The changelog needs no partition alignment — it deliberately has one
    partition here while the config topic has two (restore-all-per-
    assignment, not per-partition restore).
@@ -32,7 +33,7 @@ from flechtwerk.configs import ConfigStore
 from flechtwerk.extractor import Extractor, ExtractorRunner, token_for
 from flechtwerk.module import Flechtwerk
 from flechtwerk.observer import Observer
-from flechtwerk.state import ChangelogStateStore, RocksDBStateStore
+from flechtwerk.state import RocksDBStateStore
 from flechtwerk.types import Message, State
 
 pytestmark = pytest.mark.integration
@@ -87,16 +88,19 @@ def _make_stage(config_topic: str, output_topic: str, owner: str, polled: set[st
 
 def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Extractor, state_path) -> ExtractorRunner:
     """Wire a sharded ExtractorRunner against a real broker, mirroring Flechtwerk's DI."""
-    producer = AIOKafkaProducer(bootstrap_servers=bootstrap)
-
     inner = RocksDBStateStore()
     inner.path = state_path
-    store = ChangelogStateStore()
-    store.inner = inner
-    store.producer = producer  # shared with the runner, like the module wires it
-    store.topic = changelog_topic
+
+    def make_token_producer(token: int) -> AIOKafkaProducer:
+        return AIOKafkaProducer(
+            bootstrap_servers=bootstrap,
+            client_id=f"{group_id}-{token}",
+            transaction_timeout_ms=600_000,
+            transactional_id=f"{group_id}-{token}",
+        )
 
     runner = ExtractorRunner()
+    runner.changelog_topic = changelog_topic
     runner.config_store = ConfigStore()
     runner.consumer = AIOKafkaConsumer(
         bootstrap_servers=bootstrap,
@@ -109,7 +113,9 @@ def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Ext
         group_id=None,
         isolation_level="read_committed",
     )
+    runner.create_token_producer = make_token_producer
     runner.extractor = stage
+    runner.inner_store = inner
     runner.membership_consumer = AIOKafkaConsumer(
         bootstrap_servers=bootstrap,
         auto_offset_reset="latest",
@@ -120,27 +126,24 @@ def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Ext
     )
     runner.observer = Observer()
     runner.poll_interval = timedelta(milliseconds=200)
-    runner.producer = producer
-    runner.state_store = store
     return runner
 
 
 async def _start_runner(runner: ExtractorRunner) -> asyncio.Task:
     await runner.consumer.start()
     await runner.membership_consumer.start()
-    await runner.producer.start()
     return asyncio.create_task(runner.run())
 
 
 async def _stop_runner(runner: ExtractorRunner, task: asyncio.Task) -> None:
-    # Cancelling run() triggers its suspend_tokens barrier (flush + wipe)
-    # while the producer is still up; only then leave the group.
+    # Cancelling run() triggers its suspend_tokens barrier — the cancelled
+    # poll aborts its open page and the token producers stop — before we
+    # leave the group.
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
     await runner.membership_consumer.stop()
     await runner.consumer.stop()
-    await runner.producer.stop()
 
 
 async def test_two_sharded_extractors_split_configs_and_hand_over_state(
@@ -244,14 +247,14 @@ async def test_two_sharded_extractors_split_configs_and_hand_over_state(
         await _eventually(lambda: runner_b.tokens == frozenset({0, 1}), tasks=(task_b,))
         await await_progress({k: n + 1 for k, n in baseline.items()}, tasks=(task_b,))
 
-        # At-least-once across handovers: per key the counter never resets
-        # and never skips — each step repeats (a duplicate from a cancelled
-        # in-flight poll) or increments by one. A lost state handover would
-        # reset to 1; a lost restore would skip ahead.
+        # Exactly-once across handovers: per key the counter is STRICTLY
+        # consecutive — a handover aborts the in-flight page, so its
+        # messages were never visible and re-polling duplicates nothing; a
+        # lost state handover would reset to 1; a lost restore would skip.
         for key in (key_a, key_b):
             counts = counts_for(key)
             assert counts, key
-            assert all(b - a in (0, 1) for a, b in zip(counts, counts[1:])), f"{key}: {counts}"
+            assert counts == list(range(1, len(counts) + 1)), f"{key}: {counts}"
 
         # LOCKSTEP dual ownership — two owners advancing the same restored
         # counter in step — would satisfy the step assertion above. The owner

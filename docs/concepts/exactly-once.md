@@ -4,9 +4,9 @@ Flechtwerk gives a transformer exactly-once delivery the way Kafka Streams does:
 
 This page covers how that works: how work is split into tasks, what one transaction spans, how a moved partition is fenced, and how the framework recovers when something goes wrong.
 
-!!! note "Transformers Only"
+!!! note "Two Stages, Two Transaction Shapes"
 
-    Everything here is about `Transformer`. Extractors are deliberately at-least-once — their output can't be atomic with an external API poll, so the fencing primitive below simply doesn't exist for them. That stays true as an extractor [scales out](../guides/extractor.md#scaling-out): consumer-group leases distribute config ownership, but add no transactions. See the extractor documentation for that model.
+    This page describes the `Transformer` task model. Extractors run their own transactions — one per *page*, committing the messages since the last `State` yield atomically with the cursor (see the [extractor guide](../guides/extractor.md)) — with the same static-transactional-ID fencing, per ownership token instead of per input partition. What an extractor cannot make atomic is the external read itself: a replayed page re-queries the source, but its previous attempt was aborted and never became visible, so downstream sees each page exactly once.
 
 ## The Task Model
 

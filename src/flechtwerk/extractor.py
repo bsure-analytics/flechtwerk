@@ -16,10 +16,10 @@ from reactor_di import lookup
 
 from flechtwerk.attribute import Attribute, BOOL
 from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_config_updates
-from .kafka import encode_json, datetime_to_millis, parse_message
+from .kafka import encode_json, datetime_to_millis, parse_message, restore_changelog
 from .observer import Observer
 from .stage import ExtractStateKeyFn, Stage
-from .state import ChangelogStateStore
+from .state import ChangelogStateStore, StateStore
 from .types import Config, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
@@ -157,11 +157,18 @@ class Extractor(Stage, ABC):
         under strict type checking. A coroutine-typed abstract (``async def``
         with no ``yield``) would make every real override incompatible.
 
-        Yield a State to signal the desired state. The runner persists it only
-        if it differs from the current state. If no State is yielded, nothing
-        is persisted. Yielding an empty/falsy State deletes the entry from the
-        state store (and writes a Kafka tombstone to the changelog). On crash,
-        the last-persisted state is retained.
+        Yield a State to end a page: every ``State`` yield is a COMMIT
+        BOUNDARY — the messages yielded since the previous boundary and the
+        state change (persisted only if it differs from the last committed
+        value) commit in one Kafka transaction. Yield your resume cursor
+        once per page of source data, and at least once every 10 minutes
+        during long extractions (the transaction timeout). If no State is
+        yielded, the whole invocation is one page and no state is persisted.
+        Yielding an empty/falsy State deletes the entry from the state store
+        (and writes a Kafka tombstone to the changelog). On crash, the
+        last-COMMITTED page is retained — its messages are already durable,
+        and the uncommitted page's messages were aborted, so re-polling from
+        the committed cursor duplicates nothing.
 
         Both parameters are read-only. The runner hands each poll a private copy
         of ``config`` and ``state``, so mutating either in place has no effect —
@@ -211,6 +218,24 @@ def extractor(
     return decorator
 
 
+@dataclass(slots=True)
+class TokenTask:
+    """Per-token processing context.
+
+    A token task owns a transactional producer whose static transactional
+    ID (``{application_id}-{token}``) fences any previous owner of the
+    token via InitProducerId (EOS-v1 — exactly like transformer tasks), and
+    a changelog-store view that writes through that producer so state joins
+    the open transaction. The view wraps the ONE shared inner store —
+    extractor state is restore-all, not per-partition. The lock serializes
+    polls within the token (one producer holds one open transaction at a
+    time), so an instance's poll parallelism equals its held token count.
+    """
+    lock: asyncio.Lock
+    producer: AIOKafkaProducer
+    store: ChangelogStateStore
+
+
 class TokenRebalanceListener(ConsumerRebalanceListener):
     """Bridges the membership consumer's eager rebalance protocol to token ownership.
 
@@ -257,12 +282,12 @@ class ExtractorRunner:
     Attributes are set by the DI container (reactor-di) or directly in tests.
 
     Re-entry contract: for any given config, ``poll()`` is re-entered only
-    after the previous COMPLETED invocation's yielded messages were sent to
-    Kafka and the producer was flushed (``poll_one`` awaits ``send_batch``
-    before returning; a send failure crashes the process). A CANCELLED
-    invocation — poll-cycle teardown on a token handover — sends nothing,
-    and ``poll_one`` closes its generator deterministically, so a
-    cancellation-aware source (the MQTT template's buffer rollback) restores
+    after the previous COMPLETED invocation's final transaction committed —
+    its messages and cursor are durable, atomically. A CANCELLED or FAILED
+    invocation ABORTED its open page (those messages are invisible under
+    read_committed, so re-polling them creates no duplicates), and
+    ``poll_one`` closed its generator deterministically first, so a
+    cancellation-aware source (the MQTT template's buffer rollback) restored
     its unconfirmed input before any re-entry. Sources that defer an
     acknowledgement to their upstream system until the data is durable in
     Kafka — e.g. the MQTT template's ACK-the-previous-batch-at-the-top-of-
@@ -278,22 +303,26 @@ class ExtractorRunner:
     all config topics group-less into the global store (and
     ``extractor.configs`` exposes exactly that store) — so config-record
     *placement* is irrelevant; only the lease mechanism uses the
-    partitions. Delivery is at-least-once: nothing fences a zombie, so
-    around rebalances and network partitions a cursor can regress —
-    typically by one in-flight poll, at worst by the window until an
-    evicted instance notices and suspends (bounded re-import, never loss).
-    The revoke barrier (``suspend_tokens``) minimizes that window.
+    partitions. Delivery: each held token owns a transactional producer
+    (static ID ``{application_id}-{token}``), and every poll runs in
+    per-page transactions — a ``State`` yield commits its page's messages
+    and cursor atomically (see ``poll_one``). A new owner's InitProducerId
+    fences a zombie and aborts its open page before the restore, so from
+    cursor to Kafka a re-readable pull source is exactly-once; only side
+    effects outside Kafka (the external API read itself, an MQTT ACK)
+    remain at-least-once by nature.
     """
 
+    changelog_topic: str
     config_store: ConfigStore
     consumer: AIOKafkaConsumer
     create_restore_consumer: Callable[[], AIOKafkaConsumer]
+    create_token_producer: Callable[[int], AIOKafkaProducer]
     extractor: lookup[Extractor, "configured_stage"]  # noqa: PyUnresolvedReferences
+    inner_store: StateStore
     membership_consumer: AIOKafkaConsumer
     observer: Observer
     poll_interval: timedelta
-    producer: AIOKafkaProducer
-    state_store: ChangelogStateStore
 
     def __init__(self):
         self.cycle: asyncio.Task[Never] | None = None
@@ -302,6 +331,7 @@ class ExtractorRunner:
         self.num_tokens = 0
         self.pending: set[int] | None = None  # None = no assignment pending; set() = assigned nothing (standby)
         self.rebalance_lock = asyncio.Lock()
+        self.tasks: dict[int, TokenTask] = {}
         self.tokens: frozenset[int] = frozenset()
 
     async def run(self) -> Never:
@@ -426,44 +456,76 @@ class ExtractorRunner:
         pending, self.pending = self.pending, None
         if pending is None:
             return
-        # Defensive: a cycle must never survive into a new generation — the
-        # revoke barrier already cancelled it, but a leaked survivor here
+        # Defensive: nothing of a previous generation may survive — the
+        # revoke barrier already tore everything down, but a leaked cycle
         # would double-poll every config for the rest of the process.
         await self.cancel_cycle()
+        await self.close_tasks()
         self.tokens = frozenset(pending)
         self.observer.tokens_assigned(len(self.tokens))
         if not pending:
             log.info("No tokens assigned — hot standby")
             return
+        # Fence FIRST: starting each token producer issues InitProducerId
+        # for its static transactional ID, bumping the epoch — a previous
+        # owner's in-flight transaction is aborted and its producer fenced.
+        # Only then are the changelog end offsets final, so the restore MUST
+        # come after (mirroring TransformerRunner.start_task).
+        await asyncio.gather(*(self.start_task(token) for token in sorted(pending)))
         consumer = self.create_restore_consumer()
         await consumer.start()
         try:
-            entries = await self.state_store.restore(consumer)
+            entries = await restore_changelog(
+                consumer, self.changelog_topic, self.inner_store.put_bytes, self.inner_store.delete,
+            )
         finally:
             await consumer.stop()
         self.cycle = asyncio.create_task(self.cycle_loop())
         log.info("Acquired tokens %s (%d changelog records restored)", sorted(pending), entries)
 
+    async def start_task(self, token: int) -> None:
+        """Fence the token's previous owner and wire its transactional context."""
+        producer = self.create_token_producer(token)
+        await producer.start()
+        store = ChangelogStateStore()
+        store.inner = self.inner_store
+        store.producer = producer
+        store.topic = self.changelog_topic
+        self.tasks[token] = TokenTask(asyncio.Lock(), producer, store)
+
+    async def close_tasks(self) -> None:
+        """Stop every token producer, then wipe the shared local store.
+
+        The store is ONE RocksDB shared by every token view (extractor state
+        is small and restore is restore-all), so it closes once, after the
+        producers. A cancelled poll aborted its transaction on the way out,
+        so no producer stops with one open.
+        """
+        tasks, self.tasks = self.tasks, {}
+        if tasks:
+            await asyncio.gather(*(task.producer.stop() for task in tasks.values()))
+        await self.inner_store.close()
+
     async def suspend_tokens(self) -> None:
-        """Give up all tokens: cancel the cycle, flush stragglers, wipe the store.
+        """Give up all tokens: cancel the cycle, stop its producers, wipe the store.
 
         Called from the revoke callback (the barrier before the group
-        re-forms) and from the sharded loop's shutdown path. The producer
-        flush pushes out changelog writes that ``ChangelogStateStore.put``
-        sent but never awaited to delivery, so the next owner's restore —
-        which reads to end offsets captured after this barrier — sees the
-        final cursor. The store wipe keeps a later assignment from serving
-        keys the changelog no longer contains; ``start_pending_tokens``
-        restores from scratch. When nothing ran since the last handover —
-        the first-ever revoke, a standby losing its empty assignment, or a
-        repeated teardown — there is nothing to barrier and this is a no-op.
+        re-forms) and from the shutdown path. A cancelled poll aborts its
+        open transaction on the way out, so nothing uncommitted can ever
+        become visible — and even if this barrier never runs (crash, network
+        partition), the next owner's InitProducerId fences the zombie and
+        aborts its transaction before the restore captures end offsets. The
+        store wipe keeps a later assignment from serving keys the changelog
+        no longer contains; ``start_pending_tokens`` restores from scratch.
+        When nothing ran since the last handover — the first-ever revoke, a
+        standby losing its empty assignment, or a repeated teardown — there
+        is nothing to barrier and this is a no-op.
         """
-        if self.cycle is None and not self.tokens:
+        if self.cycle is None and not self.tokens and not self.tasks:
             return
         self.tokens = frozenset()
         await self.cancel_cycle()
-        await self.producer.flush()
-        await self.state_store.close()
+        await self.close_tasks()
         self.observer.active_configs(0)  # nothing is polled until the next assignment
         self.observer.tokens_assigned(0)
 
@@ -566,61 +628,102 @@ class ExtractorRunner:
         log.info("%s config for key %s", "Updated" if present else "Added", key)
 
     async def poll_one(self, entry: ConfigEntry) -> None:
-        """Poll a single config: send messages as yielded, persist state on success.
+        """Poll a single config inside per-page Kafka transactions.
 
-        Each ``Message`` is handed to the producer BEFORE the generator is
-        resumed — the generator sits suspended at its yield while the send
-        awaits — so a cancellation-aware source (the MQTT template) can only
-        mark a message pending-ACK after the producer accepted it. Combined
-        with the flush here (completed invocations) and in ``suspend_tokens``
-        (cancelled ones), a pending-ACK can never outlive Kafka durability.
-        Sending incrementally also keeps memory flat during epoch backfills —
-        nothing buffers the whole batch.
+        Every ``State`` yield is a COMMIT BOUNDARY: the messages yielded
+        since the previous boundary, the state change (when it differs from
+        the last committed value), and its changelog record commit
+        atomically — Kafka Connect's KIP-618 source semantics. A crash or
+        token handover replays only the uncommitted page, whose messages
+        were aborted and are invisible downstream: exactly-once from cursor
+        to Kafka for re-readable sources. A long extraction must therefore
+        yield ``State`` at least once per transaction timeout (10 minutes):
+        one open transaction may not outlive it, and an open transaction
+        also holds back the LSO for every read_committed consumer of the
+        touched partitions.
+
+        The transaction begins lazily on the first message or state change,
+        so an empty poll costs no coordinator round-trips. Same-token polls
+        serialize on the task lock (one producer holds one open transaction);
+        cross-token polls run concurrently. Messages are sent as yielded,
+        BEFORE the generator resumes, so a cancellation-aware source (the
+        MQTT template) marks nothing pending that isn't in the transaction;
+        delivery results are retrieved before every commit — belt and braces
+        over the transaction's own error tracking — and a failed or
+        cancelled invocation ABORTS its open page, after the generator's
+        deterministic close let the source roll its buffer back.
         """
-        state = State(await self.state_store.get(entry.state_key) or {})
-        baseline = deepcopy(state)
+        task = self.tasks[token_for(entry.state_key, self.num_tokens)]
+        async with task.lock:
+            state = State(await task.store.get(entry.state_key) or {})
+            committed = deepcopy(state)
+            deliveries: list[Awaitable[object]] = []
+            in_transaction = False
 
-        deliveries: list[Awaitable[object]] = []
-        new_state: State | None = None
-        with self.observer.dispatch_scope():
-            # Hand poll() a private copy of both mutable inputs. `state` is a
-            # fresh read above; `entry.config` is cached and reused across every
-            # poll cycle, so without this copy an in-place edit would leak into
-            # later polls. Mutating a parameter is thus a no-op by construction.
-            generator = self.extractor.poll(deepcopy(entry.config), state)
-            try:
-                async for item in generator:
-                    if isinstance(item, State):
-                        new_state = item
-                    elif isinstance(item, Message):
-                        deliveries.append(await self.producer.send(
-                            item.topic,
-                            key=encode_json(item.key),
-                            value=encode_json(item.value),
-                            timestamp_ms=datetime_to_millis(item.timestamp),
-                        ))
-                        self.observer.message_out(item.topic)
+            async def commit_boundary(new_state: State | None) -> None:
+                """Commit one page: its messages plus the state change, atomically."""
+                nonlocal committed, in_transaction
+                changed = new_state is not None and new_state != committed
+                if not (in_transaction or changed):
+                    return
+                if not in_transaction:
+                    await task.producer.begin_transaction()
+                    in_transaction = True
+                # Retrieve the page's delivery results BEFORE the state write
+                # touches the local store: a failed delivery aborts the page,
+                # and the less the local store diverges from the changelog on
+                # an abort, the less the crash-or-wipe that follows must undo.
+                for delivery in deliveries:
+                    await delivery
+                deliveries.clear()
+                if changed:
+                    if new_state:
+                        await task.store.put(entry.state_key, new_state)
                     else:
-                        raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
-            finally:
-                # Close the generator deterministically. On poll-cycle
-                # cancellation (a token handover) this raises GeneratorExit at
-                # the generator's current yield NOW — not at a later GC pass —
-                # so cancellation-aware templates (the MQTT buffer rollback)
-                # clean up before the next owner, or the next cycle, runs.
-                if (aclose := getattr(generator, "aclose", None)) is not None:
-                    await aclose()
+                        await task.store.delete(entry.state_key)
+                await task.producer.commit_transaction()
+                in_transaction = False
+                if new_state is not None and changed:
+                    committed = deepcopy(new_state)
+                self.observer.transaction_committed()
 
-        await self.producer.flush()
-        # aiokafka's flush() only WAITS on the delivery futures — it never
-        # retrieves their results, so a delivery-stage failure (a broker-side
-        # non-retriable produce error, a batch expiring leaderless) would pass
-        # silently. Retrieve every result: a failed delivery must crash BEFORE
-        # the advanced cursor is persisted or an MQTT pending is ACKed.
-        for delivery in deliveries:
-            await delivery
-        if new_state is not None and new_state != baseline:
-            if new_state:
-                await self.state_store.put(entry.state_key, new_state)
-            else:
-                await self.state_store.delete(entry.state_key)
+            try:
+                with self.observer.dispatch_scope():
+                    # Hand poll() a private copy of both mutable inputs. `state` is a
+                    # fresh read above; `entry.config` is cached and reused across every
+                    # poll cycle, so without this copy an in-place edit would leak into
+                    # later polls. Mutating a parameter is thus a no-op by construction.
+                    generator = self.extractor.poll(deepcopy(entry.config), state)
+                    try:
+                        async for item in generator:
+                            if isinstance(item, State):
+                                await commit_boundary(item)
+                            elif isinstance(item, Message):
+                                if not in_transaction:
+                                    await task.producer.begin_transaction()
+                                    in_transaction = True
+                                deliveries.append(await task.producer.send(
+                                    item.topic,
+                                    key=encode_json(item.key),
+                                    value=encode_json(item.value),
+                                    timestamp_ms=datetime_to_millis(item.timestamp),
+                                ))
+                                self.observer.message_out(item.topic)
+                            else:
+                                raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
+                    finally:
+                        # Close the generator deterministically. On poll-cycle
+                        # cancellation (a token handover) this raises GeneratorExit at
+                        # the generator's current yield NOW — not at a later GC pass —
+                        # so cancellation-aware templates (the MQTT buffer rollback)
+                        # clean up before the abort below and before the next owner,
+                        # or the next cycle, runs.
+                        if (aclose := getattr(generator, "aclose", None)) is not None:
+                            await aclose()
+                # The trailing page: messages yielded after the last boundary —
+                # or by a poll that never yielded State at all — commit here.
+                await commit_boundary(None)
+            except BaseException:
+                if in_transaction:
+                    await task.producer.abort_transaction()
+                raise

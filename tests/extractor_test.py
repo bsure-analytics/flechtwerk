@@ -12,7 +12,7 @@ from aiokafka.partitioner import DefaultPartitioner
 
 from flechtwerk.attribute import Attribute, BOOL, INT, STR
 from flechtwerk.configs import ConfigStore
-from flechtwerk.extractor import ConfigEntry, Extractor, ExtractorRunner, extractor, token_for
+from flechtwerk.extractor import ConfigEntry, Extractor, ExtractorRunner, TokenTask, extractor, token_for
 from flechtwerk.module import _FlechtwerkModule
 from flechtwerk.observer import Observer
 from flechtwerk.state import ChangelogStateStore
@@ -115,13 +115,30 @@ class AutoJoinMembershipConsumer(FakeKafkaConsumer):
         return {}
 
 
+def make_token_task(producer, inner):
+    """A TokenTask over the given producer and shared inner store. Changelog
+    sends go through a private fake so the token producer's ``sent`` records
+    output messages only — mirroring what most assertions want to see."""
+    store = ChangelogStateStore()
+    store.inner = inner
+    store.producer = FakeKafkaProducer()
+    store.topic = "test-changelog"
+    return TokenTask(asyncio.Lock(), producer, store)
+
+
 def make_module(extractor, consumer=None, producer=None, state_store=None, membership=None):
     """Create a Flechtwerk container with monkey-patched fake resources.
 
-    The membership double completes the group join on the first pump, so
-    tests driving the full run() loop get the single-replica default: this
-    instance owns every token.
+    ``producer`` becomes the token producer of every token task (messages
+    AND transaction calls land on it); ``state_store`` is the shared INNER
+    store the changelog views wrap. A single token task (token 0 of 1) is
+    pre-installed so tests can call poll_one/poll_cycle directly; tests that
+    drive run() rebuild it through the same fakes. The membership double
+    completes the group join on the first pump — the single-replica default
+    where this instance owns every token.
     """
+    producer = producer or FakeKafkaProducer()
+    state_store = state_store or InMemoryStateStore()
     mod = _FlechtwerkModule()
     mod.application_id = "test"
     mod.client_id = "test"
@@ -133,9 +150,13 @@ def make_module(extractor, consumer=None, producer=None, state_store=None, membe
     mod.stage = extractor
     mod.consumer = consumer or FakeKafkaConsumer()
     mod.create_restore_consumer = lambda: FakeKafkaConsumer()
+    mod.create_token_producer = lambda token: producer
+    mod.inner_store = state_store
     mod.membership_consumer = membership or AutoJoinMembershipConsumer()
-    mod.producer = producer or FakeKafkaProducer()
-    mod.state_store = state_store or InMemoryStateStore()
+    runner = mod.runner
+    runner.num_tokens = 1
+    runner.tokens = frozenset({0})
+    runner.tasks[0] = make_token_task(producer, state_store)
     return mod
 
 
@@ -197,7 +218,8 @@ def test_poll_config_mutation_does_not_leak_across_polls():
 
     async def run():
         record = json_record(key="k", value={"api_key": "key1", "cursor": 0})
-        mod = make_module(ConfigMutatingExtractor(), FakeKafkaConsumer([record]))
+        producer = FakeKafkaProducer()
+        mod = make_module(ConfigMutatingExtractor(), FakeKafkaConsumer([record]), producer)
         runner = mod.runner
         await runner.load_initial_configs()
 
@@ -205,7 +227,7 @@ def test_poll_config_mutation_does_not_leak_across_polls():
         await runner.poll_one(entry)
         await runner.poll_one(entry)
 
-        cursors = [json.loads(payload["value"])["cursor"] for _, payload in mod.producer.sent]
+        cursors = [json.loads(payload["value"])["cursor"] for _, payload in producer.sent]
         assert cursors == [0, 0]          # each poll saw the original cursor
         assert entry.config[CURSOR] == 0  # the cached config was never mutated
 
@@ -651,10 +673,11 @@ def test_subclass_defaults_not_overridden_by_init():
     assert ext.config_topics == ["test-config"]
 
 
-def test_reentry_contract_flush_strictly_precedes_next_poll():
-    """Pin the runner's re-entry contract: poll() is re-entered only after the
-    previous invocation's messages were sent AND the producer was flushed.
-    The MQTT template's ACK-previous-batch pattern depends on this ordering."""
+def test_reentry_contract_commit_strictly_precedes_next_poll():
+    """Pin the runner's re-entry contract: poll() is re-entered only after
+    the previous invocation's final transaction COMMITTED — messages and
+    cursor durable, atomically. The MQTT template's ACK-previous-batch
+    pattern depends on this ordering."""
     events: list[str] = []
 
     class StopRunner(Exception):
@@ -665,9 +688,9 @@ def test_reentry_contract_flush_strictly_precedes_next_poll():
             events.append("send")
             return await super().send(topic, key=key, value=value, timestamp_ms=timestamp_ms)
 
-        async def flush(self):
-            events.append("flush")
-            await super().flush()
+        async def commit_transaction(self):
+            events.append("commit")
+            await super().commit_transaction()
 
     class OrderRecordingExtractor(Extractor):
         config_topics = ["test-config"]
@@ -685,7 +708,7 @@ def test_reentry_contract_flush_strictly_precedes_next_poll():
         with pytest.raises(StopRunner):
             await mod.runner.run()
 
-        assert events == ["poll", "send", "flush", "poll", "send", "flush", "poll"]
+        assert events == ["poll", "send", "commit", "poll", "send", "commit", "poll"]
 
     asyncio.run(run())
 
@@ -816,28 +839,26 @@ class FakeMembershipConsumer(FakeKafkaConsumer):
         return {}
 
 
-def make_sharded_runner(stage, consumer=None, restore_records=None, observer=None):
-    """Wire an ExtractorRunner directly (no DI) in sharded mode.
+def make_sharded_runner(stage, consumer=None, restore_records=None, observer=None, producer=None):
+    """Wire an ExtractorRunner directly (no DI).
 
     ``restore_records`` seed the throwaway changelog-restore consumers built
     by ``create_restore_consumer`` — each token assignment gets a fresh fake
-    positioned at the same backlog, like re-reading a compacted topic.
+    positioned at the same backlog, like re-reading a compacted topic. Every
+    token task shares ``producer``, so assertions have one place to look.
     """
-    store = ChangelogStateStore()
-    store.inner = InMemoryStateStore()
-    store.producer = FakeKafkaProducer()
-    store.topic = "test-changelog"
-
+    producer = producer or FakeKafkaProducer()
     runner = ExtractorRunner()
+    runner.changelog_topic = "test-changelog"
     runner.config_store = ConfigStore()
     runner.consumer = consumer or FakeKafkaConsumer()
     runner.create_restore_consumer = lambda: FakeKafkaConsumer(list(restore_records or []))
+    runner.create_token_producer = lambda token: producer
     runner.extractor = stage
+    runner.inner_store = InMemoryStateStore()
     runner.membership_consumer = FakeMembershipConsumer()
     runner.observer = observer or Observer()
     runner.poll_interval = timedelta(0)
-    runner.producer = FakeKafkaProducer()
-    runner.state_store = store
     return runner
 
 
@@ -876,15 +897,14 @@ def test_poll_cycle_skips_suspended_configs():
             json_record(key="active", value={"api_key": "a"}, offset=0),
             json_record(key="suspended", value={"api_key": "b", "suspended": True}, offset=1),
         ])
-        mod = make_module(SimpleExtractor(), consumer)
+        producer = FakeKafkaProducer()
+        mod = make_module(SimpleExtractor(), consumer, producer)
         runner = mod.runner
         await runner.load_initial_configs()
-        runner.num_tokens = 1
-        runner.tokens = frozenset({0})  # poll_cycle only polls owned configs
 
         await runner.poll_cycle()
 
-        assert [payload["key"] for _, payload in mod.producer.sent] == [b"a"]
+        assert [payload["key"] for _, payload in producer.sent] == [b"a"]
 
     asyncio.run(run())
 
@@ -899,14 +919,16 @@ def test_sharded_poll_cycle_filters_by_ownership():
             json_record(key=key_t0, value={"api_key": "A"}, offset=0),
             json_record(key=key_t1, value={"api_key": "B"}, offset=1),
         ]
-        runner = make_sharded_runner(SimpleExtractor(), consumer=FakeKafkaConsumer(records))
+        producer = FakeKafkaProducer()
+        runner = make_sharded_runner(SimpleExtractor(), consumer=FakeKafkaConsumer(records), producer=producer)
         await runner.load_initial_configs()
         runner.num_tokens = 2
         runner.tokens = frozenset({0})
+        runner.tasks[0] = make_token_task(producer, runner.inner_store)
 
         await runner.poll_cycle()
 
-        assert [payload["key"] for _, payload in runner.producer.sent] == [b"A"]
+        assert [payload["key"] for _, payload in producer.sent] == [b"A"]
 
     asyncio.run(run())
 
@@ -1062,22 +1084,22 @@ def test_revoke_barrier_cancels_inflight_poll_flushes_and_clears():
                     raise
                 yield  # pragma: no cover
 
-        flush_saw_cancel_complete: list[bool] = []
+        stop_saw_cancel_complete: list[bool] = []
 
         class BarrierOrderProducer(FakeKafkaProducer):
-            async def flush(self):
-                # The barrier flush exists to cover straggler changelog
-                # sends of the dying cycle — flushing BEFORE the cancel has
-                # fully unwound would miss them.
-                flush_saw_cancel_complete.append(cancelled.is_set())
-                await super().flush()
+            async def stop(self):
+                # The barrier stops the token producers only after the cycle
+                # has fully unwound — stopping earlier would pull the
+                # producer out from under a poll that is still aborting.
+                stop_saw_cancel_complete.append(cancelled.is_set())
+                await super().stop()
 
         runner = make_sharded_runner(
             BlockingExtractor(),
             consumer=FakeKafkaConsumer([json_record(key=key, value={"api_key": "a"})]),
+            producer=BarrierOrderProducer(),
         )
         runner.num_tokens = 1
-        runner.producer = BarrierOrderProducer()
         task = asyncio.create_task(runner.run())
         try:
             await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
@@ -1090,7 +1112,7 @@ def test_revoke_barrier_cancels_inflight_poll_flushes_and_clears():
             assert cancelled.is_set()
             assert runner.cycle is None
             assert runner.tokens == frozenset()
-            assert flush_saw_cancel_complete == [True]  # exactly one barrier flush, strictly after the cancel
+            assert stop_saw_cancel_complete == [True]  # exactly one producer stop, strictly after the cancel
         finally:
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1237,12 +1259,112 @@ def test_config_update_lands_next_cycle_not_mid_poll():
     asyncio.run(run())
 
 
+def test_state_yields_are_commit_boundaries():
+    """Every State yield commits its page — the messages since the previous
+    boundary plus the cursor — in one transaction; an equal re-yield opens
+    no transaction; the trailing page commits at generator end."""
+
+    events: list[str] = []
+
+    class TxnRecordingProducer(FakeKafkaProducer):
+        async def begin_transaction(self):
+            events.append("begin")
+            await super().begin_transaction()
+
+        async def commit_transaction(self):
+            events.append("commit")
+            await super().commit_transaction()
+
+        async def send(self, topic, *, key=None, value=None, partition=None, timestamp_ms=None):
+            events.append("send")
+            return await super().send(topic, key=key, value=value, partition=partition, timestamp_ms=timestamp_ms)
+
+    class PagedExtractor(Extractor):
+        config_topics = ["cfg"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            yield Message(key="k", topic="out", value={"page": 1})
+            yield State.wrap({"cursor": 1})
+            yield State.wrap({"cursor": 1})  # unchanged — must open nothing
+            yield Message(key="k", topic="out", value={"page": 2})
+            yield Message(key="k", topic="out", value={"page": 2})
+            yield State.wrap({"cursor": 2})
+            yield Message(key="k", topic="out", value={"tail": True})
+
+    async def run():
+        producer = TxnRecordingProducer()
+        state_store = InMemoryStateStore()
+        mod = make_module(PagedExtractor(), producer=producer, state_store=state_store)
+        await mod.runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
+
+        assert events == [
+            "begin", "send", "commit",          # page 1 → cursor 1
+            "begin", "send", "send", "commit",  # page 2 → cursor 2
+            "begin", "send", "commit",          # trailing page, no cursor change
+        ]
+        assert producer.committed == 3
+        assert producer.aborted == 0
+        assert (await state_store.get("k")).raw == {"cursor": 2}
+
+    asyncio.run(run())
+
+
+def test_error_after_boundary_keeps_committed_pages_and_aborts_the_open_one():
+    """A poll failing mid-extraction keeps every committed page — messages
+    durable, cursor advanced — while the open page is aborted, so re-polling
+    from the committed cursor duplicates nothing downstream."""
+
+    class FailingAfterPageExtractor(Extractor):
+        config_topics = ["cfg"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            yield Message(key="k", topic="out", value={"page": 1})
+            yield State.wrap({"cursor": 1})
+            yield Message(key="k", topic="out", value={"page": 2})
+            raise RuntimeError("source went away")
+
+    async def run():
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+        mod = make_module(FailingAfterPageExtractor(), producer=producer, state_store=state_store)
+        with pytest.raises(RuntimeError, match="source went away"):
+            await mod.runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
+
+        assert producer.committed == 1
+        assert producer.aborted == 1
+        assert (await state_store.get("k")).raw == {"cursor": 1}
+
+    asyncio.run(run())
+
+
+def test_empty_poll_opens_no_transaction():
+    """An idle cycle costs no transaction-coordinator round-trips."""
+
+    class IdleExtractor(Extractor):
+        config_topics = ["cfg"]
+
+        async def poll(self, config, state) -> AsyncIterator[Message | State]:
+            return
+            yield  # pragma: no cover
+
+    async def run():
+        producer = FakeKafkaProducer()
+        mod = make_module(IdleExtractor(), producer=producer)
+        await mod.runner.poll_one(ConfigEntry(config=Config.wrap({"api_key": "k"}), state_key="k"))
+
+        assert producer.committed == 0
+        assert producer.aborted == 0
+        assert not producer.in_transaction
+
+    asyncio.run(run())
+
+
 def test_delivery_failure_crashes_before_state_is_persisted():
-    """aiokafka's flush() never retrieves delivery results — poll_one must,
-    so a delivery-stage failure (broker-side non-retriable produce error,
-    batch TTL expiry) crashes before the advanced cursor is persisted or an
-    MQTT pending is ACKed. Without the retrieval, the lost records would
-    never be re-polled: permanent loss, not at-least-once."""
+    """aiokafka's flush() never retrieves delivery results — poll_one must
+    (before every commit), so a delivery-stage failure (broker-side
+    non-retriable produce error, batch TTL expiry) aborts the page before
+    the advanced cursor is persisted or an MQTT pending is ACKed. Without
+    the retrieval, the lost records would never be re-polled."""
 
     class DeliveryFailingProducer(FakeKafkaProducer):
         async def send(self, topic, *, key=None, value=None, partition=None, timestamp_ms=None):
@@ -1283,28 +1405,24 @@ def test_rebalance_lock_serializes_revoke_against_inflight_restore():
     tokens the group has meanwhile handed elsewhere (dual ownership)."""
 
     async def run():
-        from flechtwerk.state import ChangelogStateStore
-
         release = asyncio.Event()
         restoring = asyncio.Event()
 
-        class BlockingRestoreStore(ChangelogStateStore):
-            async def restore(self, consumer, partitions=None):
+        class BlockingRestoreConsumer(FakeKafkaConsumer):
+            async def getmany(self, *tps: TopicPartition, timeout_ms: int = 0) -> dict:
                 restoring.set()
                 await release.wait()
-                return 0
-
-        store = BlockingRestoreStore()
-        store.inner = InMemoryStateStore()
-        store.producer = FakeKafkaProducer()
-        store.topic = "test-changelog"
+                return await super().getmany(*tps, timeout_ms=timeout_ms)
 
         runner = make_sharded_runner(
             SimpleExtractor(),
             consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
         )
         runner.num_tokens = 1
-        runner.state_store = store
+        # A changelog backlog makes the restore actually read — and block.
+        runner.create_restore_consumer = lambda: BlockingRestoreConsumer(
+            [make_record(key="k", value=b'{"cursor":1}', topic="test-changelog")],
+        )
         task = asyncio.create_task(runner.run())
         try:
             await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
@@ -1373,7 +1491,7 @@ def test_listener_failure_is_fatal_for_the_runner():
         listener = runner.membership_consumer.listener
         listener.on_partitions_assigned({TopicPartition("test-config", 0)})
         await asyncio.wait_for(until(lambda: runner.tokens), 5)
-        runner.state_store = BrokenStore()
+        runner.inner_store = BrokenStore()
 
         await listener.on_partitions_revoked({TopicPartition("test-config", 0)})
 

@@ -245,7 +245,10 @@ class FakeKafkaProducer:
     """Test double implementing the subset of aiokafka.AIOKafkaProducer used by runners."""
 
     def __init__(self):
+        self.aborted = 0
+        self.committed = 0
         self.flushed = False
+        self.in_transaction = False
         self.offsets_sent: list[tuple[dict, str]] = []
         self.sent: list[tuple[str, dict]] = []
         self.started = False
@@ -282,6 +285,20 @@ class FakeKafkaProducer:
     def transaction(self):
         self.transaction_count += 1
         return FakeTransaction(self)
+
+    async def begin_transaction(self) -> None:
+        assert not self.in_transaction, "a producer holds one open transaction at a time"
+        self.in_transaction = True
+
+    async def commit_transaction(self) -> None:
+        assert self.in_transaction, "commit without an open transaction"
+        self.committed += 1
+        self.in_transaction = False
+
+    async def abort_transaction(self) -> None:
+        assert self.in_transaction, "abort without an open transaction"
+        self.aborted += 1
+        self.in_transaction = False
 
     async def send_offsets_to_transaction(self, offsets: dict, group_id: str) -> None:
         self.offsets_sent.append((dict(offsets), group_id))

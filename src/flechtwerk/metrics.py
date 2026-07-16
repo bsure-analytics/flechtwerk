@@ -47,7 +47,7 @@ class Metrics:
     def message_processing_seconds(self) -> Histogram:
         return Histogram(
             "flechtwerk_message_processing_seconds",
-            "Time spent in a single transform()/poll() dispatch (excluding Kafka transactions and flushes)",
+            "Time spent in a single transform()/poll() dispatch (a transformer's transaction is outside; an extractor's per-page sends and commits are inside)",
             self._label_names,
             registry=self.registry,
         )
