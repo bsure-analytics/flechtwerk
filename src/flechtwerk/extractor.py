@@ -160,15 +160,23 @@ class Extractor(Stage, ABC):
         Yield a State to end a page: every ``State`` yield is a COMMIT
         BOUNDARY — the messages yielded since the previous boundary and the
         state change (persisted only if it differs from the last committed
-        value) commit in one Kafka transaction. Yield your resume cursor
-        once per page of source data, and at least once every 10 minutes
-        during long extractions (the transaction timeout). If no State is
-        yielded, the whole invocation is one page and no state is persisted.
-        Yielding an empty/falsy State deletes the entry from the state store
-        (and writes a Kafka tombstone to the changelog). On crash, the
-        last-COMMITTED page is retained — its messages are already durable,
-        and the uncommitted page's messages were aborted, so re-polling from
-        the committed cursor duplicates nothing.
+        value) commit in one Kafka transaction. Order matters: yield a
+        page's messages FIRST and the State that accounts for them LAST —
+        the State yield is what closes the page. Inverting that splits them
+        across two transactions, cursor before messages, and a crash
+        between the two commits loses the page for good: the re-poll
+        resumes from a cursor that already skipped past it. Yield your
+        resume cursor once per page of source data, and at least once every
+        10 minutes during long extractions (the transaction timeout).
+        Messages yielded after the last boundary — or by a poll that never
+        yields State at all — are NOT lost: they commit as one trailing
+        page when the generator completes, only without a cursor, so the
+        next poll re-enters with the prior state. Yielding an empty/falsy
+        State deletes the entry from the state store (and writes a Kafka
+        tombstone to the changelog). On crash, the last-COMMITTED page is
+        retained — its messages are already durable, and the uncommitted
+        page's messages were aborted, so re-polling from the committed
+        cursor duplicates nothing.
 
         Both parameters are read-only. The runner hands each poll a private copy
         of ``config`` and ``state``, so mutating either in place has no effect —

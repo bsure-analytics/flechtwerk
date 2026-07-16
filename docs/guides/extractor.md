@@ -25,10 +25,14 @@ schedule rather than a timer, see the [MQTT Extractor](mqtt.md).
     `read_committed` — so for a re-readable source, delivery is exactly-once
     from cursor to Kafka, the way Kafka Connect's KIP-618 source connectors
     work. What stays at-least-once is the world outside Kafka: the external
-    read itself is re-executed for a replayed page. Two rules follow: yield
-    your cursor once per page — and at least every 10 minutes, since one
-    transaction may not outlive the transaction timeout — and make sure every
-    downstream consumer reads `read_committed`, or it will see aborted pages.
+    read itself is re-executed for a replayed page. Three rules follow: yield
+    a page's messages **first** and the `State` that accounts for them
+    **last** — the `State` yield is what closes the page, and a cursor
+    committed ahead of its messages skips past them for good if the process
+    crashes between the two transactions; yield your cursor once per page —
+    and at least every 10 minutes, since one transaction may not outlive the
+    transaction timeout; and make sure every downstream consumer reads
+    `read_committed`, or it will see aborted pages.
     See [Exactly-once delivery](../concepts/exactly-once.md) for the task
     model this borrows from.
 
@@ -147,6 +151,13 @@ continues instead of re-importing from the start. In the example, `CYCLE` stands
 in for whatever your source pages by: a page token, a high-water timestamp, an
 opaque continuation handle. A fire-and-forget extractor that re-scans everything
 each cycle simply never yields `State`.
+
+Not yielding `State` never loses messages: everything yielded after the last
+commit boundary — or by a poll that yields no `State` at all — commits as one
+**trailing page** when the generator completes. What such a poll gives up is
+the cursor and the pagination: the next cycle re-enters with the same state,
+and the whole invocation stands or falls as a single transaction, which must
+still fit the 10-minute transaction timeout.
 
 ## Running It
 
