@@ -593,7 +593,7 @@ class MqttExtractor(Extractor, ABC):
             log.debug("No MQTT messages from topic %s", sub.topic)
             return
 
-        log.info("Draining %d MQTT message(s) from topic %s", len(batch), sub.topic)
+        log.debug("Draining %d MQTT message(s) from topic %s", len(batch), sub.topic)
         index = 0
         forwarded: list[MQTTMessage] = []
         try:
