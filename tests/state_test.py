@@ -6,7 +6,7 @@ from typing import Final
 import pytest
 
 from flechtwerk.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
-from flechtwerk.state import ChangelogStateStore, RocksDBStateStore
+from flechtwerk.state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
 from flechtwerk.testing import FakeKafkaProducer, InMemoryStateStore
 from flechtwerk.types import State
 
@@ -329,6 +329,58 @@ def test_changelog_close_closes_inner():
 
         # Producer should NOT be stopped (module manages that)
         assert not hasattr(producer, "stopped") or not producer.stopped
+
+    asyncio.run(run())
+
+
+# --- ensure_changelog_topic ---
+
+
+class _FakeCreateTopicsResponse:
+    def __init__(self, topic_errors):
+        self.topic_errors = topic_errors
+
+
+class _FakeAdmin:
+    """Minimal AIOKafkaAdminClient stand-in returning a canned CreateTopics reply."""
+
+    def __init__(self, topic_errors):
+        self._topic_errors = topic_errors
+        self.create_calls = []
+
+    async def create_topics(self, new_topics):
+        self.create_calls.append(new_topics)
+        return _FakeCreateTopicsResponse(self._topic_errors)
+
+
+def test_ensure_changelog_topic_returns_true_when_created():
+    """A fresh create reports True so the caller can skip the racy re-describe."""
+    async def run():
+        admin = _FakeAdmin([("cl", 0)])
+        assert await ensure_changelog_topic(admin, "cl", 2) is True
+
+    asyncio.run(run())
+
+
+def test_ensure_changelog_topic_returns_false_when_already_exists():
+    """A pre-existing topic reports False so the caller re-describes and validates."""
+    async def run():
+        from aiokafka.errors import TopicAlreadyExistsError
+
+        admin = _FakeAdmin([("cl", TopicAlreadyExistsError.errno)])
+        assert await ensure_changelog_topic(admin, "cl", 2) is False
+
+    asyncio.run(run())
+
+
+def test_ensure_changelog_topic_raises_on_other_error():
+    """Any non-zero, non-already-exists code propagates as its broker error."""
+    async def run():
+        from aiokafka.errors import NotControllerError
+
+        admin = _FakeAdmin([("cl", NotControllerError.errno, "not the controller")])
+        with pytest.raises(NotControllerError):
+            await ensure_changelog_topic(admin, "cl", 2)
 
     asyncio.run(run())
 

@@ -480,8 +480,15 @@ class _FlechtwerkModule(Flechtwerk):
                 if len(set(counts.values())) != 1:
                     raise ValueError(f"input topics of {self.application_id} must have equal partition counts, got {counts}")
                 num_partitions = next(iter(counts.values()))
-            await ensure_changelog_topic(admin, self.changelog_topic, num_partitions)
-            if isinstance(self.stage, Transformer):
+            created = await ensure_changelog_topic(admin, self.changelog_topic, num_partitions)
+            if isinstance(self.stage, Transformer) and not created:
+                # Only validate a changelog we did NOT just create: a pre-existing
+                # one may carry a partition count from an earlier topology that no
+                # longer matches the input topics (repartitioning needs a state
+                # migration). A just-created changelog was made with num_partitions,
+                # so re-describing it here is redundant — and races the broker's
+                # metadata cache, which lags CreateTopics and would raise a spurious
+                # UnknownTopicOrPartitionError on a cold broker.
                 changelog_count = (await partition_counts(admin, [self.changelog_topic]))[self.changelog_topic]
                 if changelog_count != num_partitions:
                     raise ValueError(

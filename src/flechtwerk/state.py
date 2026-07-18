@@ -222,7 +222,7 @@ async def partition_counts(admin: Any, topics: list[str]) -> dict[str, int]:
     return {t["topic"]: len(t["partitions"]) for t in response}
 
 
-async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -1) -> None:
+async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -1) -> bool:
     """Create the changelog topic if it doesn't exist.
 
     Uses the Kafka AdminClient API (CreateTopicsRequest), which works even
@@ -235,6 +235,13 @@ async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -
             Transformers pass their (validated) input topic partition count
             so task p's explicit-partition state writes have somewhere to
             land; -1 (extractors) uses the broker default.
+
+    Returns:
+        True if this call created the topic, False if it already existed.
+        Callers use this to skip re-describing a topic they just created:
+        CreateTopics returns once the controller commits, but the broker's
+        metadata cache catches up asynchronously, so an immediate describe
+        can still raise UnknownTopicOrPartitionError.
     """
     from aiokafka.admin import NewTopic
     from aiokafka.errors import TopicAlreadyExistsError, for_code
@@ -252,8 +259,10 @@ async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -
         error = for_code(error_code)
         if error is TopicAlreadyExistsError:
             log.debug("Changelog topic %s already exists", t)
+            return False
         elif error_code != 0:
             error_message = rest[0] if rest else ""
             raise error(f"{t}: {error_message}")
         else:
             log.info("Created changelog topic %s (compacted)", t)
+    return True
