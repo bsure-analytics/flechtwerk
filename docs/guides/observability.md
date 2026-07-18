@@ -95,6 +95,18 @@ drops — never the per-device publish topic, so cardinality stays bounded.
 | `mqtt_connects_total` | Counter | — | Successful MQTT (re)connects — more than one per process lifetime means session churn. |
 | `mqtt_disconnects_total` | Counter | — | Unexpected disconnects (a clean shutdown is not counted). |
 
+### Secrets
+
+Emitted when the [`flechtwerk[secrets]`](../concepts/secrets.md) extra is in
+use. The `kid` and `scope` labels are bounded (kids by keyring size, scopes are
+static declarations — empty string for an unscoped attribute).
+
+| Metric | Type | Extra labels | Meaning |
+| --- | --- | --- | --- |
+| `keyring_keys_loaded` | Gauge | `kid` | One series per key in the installed keyring (value 1) — makes *"has every reader got the new key?"* checkable fleet-wide before a rotation. |
+| `secret_plaintext_reads_total` | Counter | `scope` | Reads of a secret value that took the legacy-plaintext branch (a `read_plaintext` attribute) — should reach zero before turning `read_plaintext` off. |
+| `secret_decrypts_total` | Counter | `scope`, `kid` | Successful secret decryptions — *"decrypts under the old kid are flat"* gates a key rotation. |
+
 ## Signals Worth Watching
 
 - **`config_store_entries`** — the fastest answer to *"did my config actually
@@ -124,6 +136,11 @@ drops — never the per-device publish topic, so cardinality stays bounded.
   an earlier deployment's filter is still subscribed in the persistent session and
   its publisher is still active; the traffic is discarded safely, but consider a
   fresh `client_id` (a new broker session) to stop it at the source.
+- **`secret_plaintext_reads_total` nonzero** — a `read_plaintext` secret is still
+  being read from legacy plaintext; it must reach zero (and a topic scan come
+  back clean) before turning `read_plaintext` off. **`secret_decrypts_total`
+  under an old `kid` flat** confirms a key rotation's re-encryption sweep is
+  complete (see [Encrypted Secrets](../concepts/secrets.md)).
 
 ## When Metrics Are Off
 

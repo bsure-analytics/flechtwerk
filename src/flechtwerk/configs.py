@@ -32,7 +32,7 @@ import aiokafka
 from aiokafka import ConsumerRecord
 
 from flechtwerk.attribute import Record
-from .kafka import decode_event, decode_key, encode_json, is_tombstone, read_to_end
+from .kafka import decode_event, decode_key, encode_json, is_tombstone, read_to_end, topic_partitions
 from .types import Config
 
 log = logging.getLogger(__name__)
@@ -126,15 +126,7 @@ async def bootstrap_config_store(
     """
     if not topics:
         return {}
-    # Prime the consumer's internal cluster metadata so partitions_for_topic()
-    # returns data — same private-API coupling as restore_changelog, locked
-    # down by the integration tests under tests/integration/.
-    await consumer._client.set_topics(list(topics))
-    tps = [
-        aiokafka.TopicPartition(topic, partition)
-        for topic in topics
-        for partition in sorted(consumer.partitions_for_topic(topic) or ())
-    ]
+    tps = await topic_partitions(consumer, topics)
     latest: dict[str, ConsumerRecord[Any, Any]] = {}
 
     async def collect(msg: ConsumerRecord[Any, Any]) -> None:

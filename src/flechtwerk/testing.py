@@ -5,11 +5,17 @@ never loads paho — mirroring the framework rule that ``flechtwerk/mqtt.py``
 is the only eager paho importer (the ``flechtwerk[mqtt]`` extra seam).
 """
 import asyncio
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Self
 
 from aiokafka import ConsumerRecord, TopicPartition
 
+from flechtwerk.keyring import (
+    Keyring,
+    _override_secret_runtime,
+    _restore_secret_runtime,
+)
 from flechtwerk.observer import Observer
 from flechtwerk.state import StateStore, deserialize
 from flechtwerk.types import Message, State
@@ -23,6 +29,8 @@ __all__ = [
     "FakeMqttConnection",
     "FakeMqttSubscription",
     "InMemoryStateStore",
+    "fixture_keyring",
+    "installed_keyring",
     "make_mqtt_message",
     "make_record",
     "RecordingObserver",
@@ -64,6 +72,15 @@ class RecordingObserver(Observer):
 
     def tokens_assigned(self, n: int) -> None:
         self.calls.append(("tokens_assigned", n))
+
+    def keyring_key_loaded(self, kid: str) -> None:
+        self.calls.append(("keyring_key_loaded", kid))
+
+    def secret_plaintext_read(self, scope: str) -> None:
+        self.calls.append(("secret_plaintext_read", scope))
+
+    def secret_decrypted(self, scope: str, kid: str) -> None:
+        self.calls.append(("secret_decrypted", scope, kid))
 
     def mqtt_buffered(self, topic: str, n: int) -> None:
         self.calls.append(("mqtt_buffered", topic, n))
@@ -127,6 +144,37 @@ class InMemoryStateStore(StateStore):
 
     async def close(self) -> None:
         pass
+
+
+def fixture_keyring() -> Keyring:
+    """A deterministic single-key `Keyring` for tests.
+
+    The key bytes are fixed (not random) so failures are reproducible; the
+    kid is ``test-key``.
+    """
+    return Keyring.of({"test-key": bytes(range(32))}, primary="test-key")
+
+
+@contextmanager
+def installed_keyring(keyring: Keyring | None = None, observer: Observer | None = None) -> Iterator[Keyring]:
+    """Install a keyring for the duration of the block, restoring the prior state on exit.
+
+    The sanctioned way to exercise ``flechtwerk.secrets`` in tests: it saves
+    and restores the process-global secret runtime (keyring + observer) so
+    suites cannot leak keyrings across tests. Defaults to `fixture_keyring()`.
+    Doubles as the basis for a pytest fixture::
+
+        @pytest.fixture
+        def keyring():
+            with installed_keyring() as kr:
+                yield kr
+    """
+    kr = keyring if keyring is not None else fixture_keyring()
+    previous = _override_secret_runtime(kr, observer)
+    try:
+        yield kr
+    finally:
+        _restore_secret_runtime(previous)
 
 
 def make_record(

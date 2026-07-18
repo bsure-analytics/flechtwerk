@@ -43,3 +43,21 @@ Flechtwerk's public surface is small and settled in shape. Every entry below is 
 ::: flechtwerk.MqttBrokerConfig
 
 ::: flechtwerk.CompressionType
+
+## Secrets
+
+The `flechtwerk[secrets]` optional extra — field-level encryption for attributes. See the [Encrypted Secrets](../concepts/secrets.md) concept page for usage and the full spec (wire format, rotation, migration, post-quantum posture).
+
+::: flechtwerk.secrets.ENCRYPTED
+
+::: flechtwerk.keyring.Keyring
+
+::: flechtwerk.secrets.encrypt_value
+
+::: flechtwerk.secrets.reencrypt
+
+::: flechtwerk.secrets.is_encrypted
+
+::: flechtwerk.secrets.kid_of
+
+::: flechtwerk.secrets.scan_config_topics

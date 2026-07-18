@@ -40,6 +40,7 @@ PAGES = {
     "guides-best-practices": ("twill", GARNET),
     "guides-observability": ("chevron5", LAPIS),
     "api-index": ("braid6", VERDIGRIS),
+    "concepts-secrets": ("linkchain", VERDIGRIS),
 }
 
 

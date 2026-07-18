@@ -28,6 +28,7 @@ It exists because the existing Python options each miss a constraint that matter
 ```bash
 pip install flechtwerk            # or: uv add flechtwerk
 pip install "flechtwerk[mqtt]"    # with the MQTT→Kafka bridge (paho-mqtt)
+pip install "flechtwerk[secrets]" # with field-level secret encryption (joserfc)
 ```
 
 Python 3.12+. Runtime dependencies: `aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`. Run it on `uvloop` for best throughput — the framework works on stock `asyncio` (and therefore on Windows), but the event loop is the application's choice.
@@ -90,13 +91,14 @@ The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full 
 - **[Extractors](https://bsure-analytics.github.io/flechtwerk/guides/extractor/)** — poll an external source into Kafka, with `State` as the resume cursor.
 - **[MQTT Extractors](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — a push-driven MQTT source that ACKs to the broker only once a batch is durable in Kafka.
 - **[Transformers](https://bsure-analytics.github.io/flechtwerk/guides/transformer/)** — stream-to-stream processing with partitioned, exactly-once tasks.
-- **[Best Practices](https://bsure-analytics.github.io/flechtwerk/guides/best-practices/)** — co-partitioning, the let-it-crash error strategy, and the operational rules that keep a multi-instance deployment correct.
+- **[Best Practices](https://bsure-analytics.github.io/flechtwerk/guides/best-practices/)** — co-partitioning, the let-it-crash error strategy, secret-handling rules, and the operational rules that keep a multi-instance deployment correct.
 - **[Observability](https://bsure-analytics.github.io/flechtwerk/guides/observability/)** — the Prometheus metrics the runners emit.
 
 **Concepts**
 
 - **[Typed Attributes & Records](https://bsure-analytics.github.io/flechtwerk/concepts/typed-attributes/)** — the middle ground between dicts and dataclasses: the `flechtwerk.attribute` library enforces the JSON boundary at the write site, once per field declaration, with no dataclass per message shape.
 - **[Config Topics](https://bsure-analytics.github.io/flechtwerk/concepts/config-topics/)** — shared, eventually-consistent lookup tables (Kafka Streams' GlobalKTable, specialized to configuration).
+- **[Encrypted Secrets](https://bsure-analytics.github.io/flechtwerk/concepts/secrets/)** — field-level secret encryption via the `flechtwerk[secrets]` extra: the `flenc:jwe:` wire format, keyring rotation, plaintext migration, and post-quantum posture.
 - **[Exactly-Once Delivery](https://bsure-analytics.github.io/flechtwerk/concepts/exactly-once/)** — the task model tying output messages, state writes, and offset commits into one Kafka transaction per batch.
 - **[Architecture](https://bsure-analytics.github.io/flechtwerk/concepts/architecture/)** — the hexagonal (ports and adapters) design and the operational model.
 

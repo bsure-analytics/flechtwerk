@@ -34,6 +34,7 @@ from reactor_di import CachingStrategy, module, lookup
 
 from .configs import ConfigStore
 from .extractor import Extractor, ExtractorRunner
+from .keyring import Keyring, install_keyring, set_secret_observer
 from .metrics import Metrics
 from .observer import Observer, PrometheusObserver
 from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic, partition_counts
@@ -136,6 +137,7 @@ class Flechtwerk(ABC):
         client_id: str,
         stage: Extractor | Transformer,
         compression_type: CompressionType | None = "zstd",
+        keyring: Keyring | None = None,
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
         mqtt: MqttBrokerConfig | None = None,
@@ -150,7 +152,13 @@ class Flechtwerk(ABC):
         per instance and stable across restarts (production K8s passes the
         pod name). ``compression_type`` defaults to ``"zstd"`` because
         Flechtwerk outputs JSON everywhere (encode_json) and JSON
-        compresses ~13×; pass ``None`` to disable. ``metrics_labels``
+        compresses ~13×; pass ``None`` to disable. ``keyring`` carries the
+        process keyring for ``flechtwerk.secrets`` encrypted attributes — it is
+        installed once per process at stage startup (``__aenter__``; a
+        conflicting second install raises) and may be left ``None`` by stages
+        without encrypted attributes. Constructing a handle has no
+        side effects; standalone producers/tooling call
+        ``flechtwerk.secrets.install_keyring(...)`` directly. ``metrics_labels``
         defaults to an empty dict and ``metrics_port`` defaults to 0
         (Prometheus disabled). ``mqtt`` carries the platform's shared MQTT
         broker settings; it is used only by MQTT-sourced stages and ignored
@@ -170,6 +178,7 @@ class Flechtwerk(ABC):
         instance.bootstrap_servers = bootstrap_servers
         instance.client_id = client_id
         instance.compression_type = compression_type
+        instance.keyring = keyring
         instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
         instance.metrics_port = metrics_port
         instance.mqtt = mqtt
@@ -220,6 +229,7 @@ class _FlechtwerkModule(Flechtwerk):
     compression_type: lookup[CompressionType | None]
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
+    keyring: lookup[Keyring | None]
     metrics: Metrics
     metrics_labels: lookup[dict[str, str]]
     metrics_port: lookup[int]
@@ -427,6 +437,17 @@ class _FlechtwerkModule(Flechtwerk):
         # Bring up the scrape endpoint first so health probes see it as
         # soon as the process is up.
         _ = self.metrics_server
+
+        # Install the process keyring (idempotent if of() already did; this
+        # also covers the embedded-module path). Wire the observer so the
+        # ENCRYPTED codec's plaintext/decrypt events — fired deep in a lazy
+        # config read, with no observer in scope — still reach Prometheus, and
+        # publish the startup keyring gauge.
+        if self.keyring is not None:
+            install_keyring(self.keyring)
+            set_secret_observer(self.observer)
+            for kid in self.keyring.kids():
+                self.observer.keyring_key_loaded(kid)
 
         validate_topics(self.stage)
         validate_poll_interval(self.stage, self.poll_interval)
