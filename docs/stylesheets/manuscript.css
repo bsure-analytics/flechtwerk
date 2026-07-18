@@ -177,3 +177,9 @@
   .ms-frame::before,
   .ms-frame::after { display: none; }
 }
+
+/* ---- nested ordered lists render as a., b., c. --------------------------- */
+/* Book convention: a second-level ordered list uses lower-alpha markers, so a
+   sub-point under a numbered item (e.g. the Scope & Caveats caveats) cites as
+   "4a", "4b" — keeping the indentation of a real list. */
+.md-typeset ol ol { list-style-type: lower-alpha; }

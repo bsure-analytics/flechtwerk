@@ -156,6 +156,37 @@ class Metrics:
             registry=self.registry,
         )
 
+    # Secret / keyring metrics (flechtwerk.secrets). `kid` and `scope` labels
+    # are bounded: kids by keyring size, scopes are static declarations (empty
+    # string for an unscoped attribute).
+
+    @cached_property
+    def keyring_keys_loaded(self) -> Gauge:
+        return Gauge(
+            "flechtwerk_keyring_keys_loaded",
+            "Keys present in the installed keyring (1 per kid) — makes 'every reader has the new key' checkable fleet-wide",
+            self._label_names + ["kid"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def secret_plaintext_reads_total(self) -> Counter:
+        return Counter(
+            "flechtwerk_secret_plaintext_reads_total",
+            "Reads of a secret value that took the legacy-plaintext branch — should reach zero before ending the migration",
+            self._label_names + ["scope"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def secret_decrypts_total(self) -> Counter:
+        return Counter(
+            "flechtwerk_secret_decrypts_total",
+            "Successful secret decryptions, by scope and kid — 'decrypts under the old kid are flat' gates a rotation",
+            self._label_names + ["scope", "kid"],
+            registry=self.registry,
+        )
+
     # MQTT metrics — the `topic` label carries the subscription filter from
     # config (bounded cardinality), never the per-device publish topic.
 

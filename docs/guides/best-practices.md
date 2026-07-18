@@ -122,8 +122,70 @@ moving).
     window feeds a **dashboard**; keep it in the transformer when it feeds a
     **decision**.
 
+## Model the Wire Boundary Once
+
+Records cross the JSON boundary through [typed
+attributes](../concepts/typed-attributes.md), which enforce it at the write
+site. A few rules keep that boundary honest:
+
+- **Declare each field once, as a module-level `Attribute` constant**, and share
+  it across every stage that touches the field. The attribute name is the wire
+  key; one declaration means one source of truth for both the key and its codec.
+- **Prefer a specific codec over `ANY`.** `STR`, `INT`, `DATETIME`,
+  `LIST(...)`, `RECORD` validate on every write and document the shape; `ANY` is
+  the escape hatch for genuinely heterogeneous edges, not the default. The more
+  precise the codec, the earlier a bad value fails.
+- **Required by default; `optional=True` only when absence is meaningful.** A
+  required attribute rejects `None` at the write site so a missing value can't
+  land silently as JSON `null`.
+- **Pick the constructor by input shape:** `Record.wrap(raw_dict)` for
+  wire-format JSON (an API payload, a `.raw`), the `Record({ATTR: value})`
+  constructor for typed literals. Wrapping raw source data verbatim is the
+  extractor rule above; typed construction is for records you build yourself.
+- **Treat `.raw` as read-only from outside.** Read and write through attributes
+  (`record[ATTR]`), not by reaching into the underlying dict — that is what
+  keeps `.raw` JSON-native and the codecs in force.
+
+## Handle Secrets at the Boundary
+
+Secret fields — API keys, tokens, passwords — are encrypted in place with the
+[`flechtwerk[secrets]`](../concepts/secrets.md) extra. The operational rules:
+
+- **Encrypt only what is secret.** Wrap the secret field's codec with
+  `ENCRYPTED(...)` (`Attribute("api_key", ENCRYPTED(STR))`); leave non-secret
+  fields plaintext so the record stays browsable in a topic UI.
+- **Config and State, not Event.** Config is the primary home; `State` works
+  too (a fresh nonce re-encrypts only on an explicit write, so carried-forward
+  state stays byte-stable), but an `Event` stream re-encrypts per message and
+  hits the AES-GCM nonce budget — and encrypted event fields are opaque to
+  analytics engines anyway (see the
+  [caveats](../concepts/secrets.md#scope-caveats)).
+- **Inject the keyring; encrypt at the write boundary.** Pass the keyring via
+  `Flechtwerk.of(keyring=...)`, and have producers write secrets through
+  `encrypt_value(ATTR, value)` — never hand-assemble a token. Reading is
+  transparent.
+- **Rotate reader-first.** Add a new key to every reader before promoting it to
+  primary on the writers; between those steps, a reader rollback is a
+  deterministic crash-loop (see [Rotation](../concepts/secrets.md#rotating-keys)).
+- **Decide `scope` up front, if at all.** `ENCRYPTED(STR, scope="…")` binds a
+  token to a compartment so it can't be relocated into a differently-scoped
+  field. Adding a scope later is non-breaking (a scoped codec still reads
+  unscoped tokens; sweep with `reencrypt`), but *removing* one is blocked, so
+  don't scope a field unless you mean to keep it scoped.
+- **Turn `read_plaintext` off after the migration.** It exists to accept legacy
+  plaintext during a transition; every such read logs a WARNING and bumps
+  `secret_plaintext_reads_total`. Flipping it back on to silence a
+  `PlaintextSecretError` is the anti-pattern — a plaintext value in a strict
+  field means a secret was pasted in the clear: treat it as compromised, rotate
+  the credential, and re-produce the record encrypted.
+- **After migrating a plaintext topic, rotate the credentials.** Any value that
+  ever rested in plaintext is disclosed (backups and pre-compaction segments
+  keep it); encryption protects only what is written after it.
+
 ## Next Steps
 
 - **[Extractors](extractor.md)** — build the ingestion half that writes the raw topic.
 - **[Transformers](transformer.md)** — build the refinement half that reads it back.
 - **[Exactly-once delivery](../concepts/exactly-once.md)** — why a transformer replay is safe to run to completion.
+- **[Typed Attributes & Records](../concepts/typed-attributes.md)** — the model behind the wire-boundary rules above.
+- **[Encrypted Secrets](../concepts/secrets.md)** — the wire format, keyring, rotation, and migration behind the secret-handling rules above.

@@ -12,6 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+__all__ = ["Codec", "Decoder", "Encoder"]
+
 type Decoder[V] = Callable[[Any], V]
 """A function that decodes a JSON-native wire value to a Python value of type `V`."""
 

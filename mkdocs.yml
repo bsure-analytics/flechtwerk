@@ -83,6 +83,7 @@ nav:
       - concepts/index.md
       - "Typed Attributes & Records": concepts/typed-attributes.md
       - Config Topics: concepts/config-topics.md
+      - Encrypted Secrets: concepts/secrets.md
       - Exactly-Once Delivery: concepts/exactly-once.md
       - Architecture: concepts/architecture.md
   - API Reference: api/index.md

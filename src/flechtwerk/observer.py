@@ -34,6 +34,14 @@ class Observer:
     def tasks_assigned(self, n: int) -> None: pass
     def tokens_assigned(self, n: int) -> None: pass
 
+    # Secret / keyring events (flechtwerk.secrets). `keyring_key_loaded` fires
+    # once per key at startup; the other two fire from the `ENCRYPTED` codec
+    # deep in a lazy config read, through the process-global observer installed
+    # alongside the keyring.
+    def keyring_key_loaded(self, kid: str) -> None: pass
+    def secret_plaintext_read(self, scope: str) -> None: pass
+    def secret_decrypted(self, scope: str, kid: str) -> None: pass
+
     # MQTT events — `topic` is always the subscription filter from config,
     # or the "(unmatched)" sentinel on `stale` drops (`flechtwerk.mqtt.
     # UNMATCHED`) — never the per-device publish topic, whose cardinality
@@ -89,6 +97,15 @@ class PrometheusObserver(Observer):
 
     def tokens_assigned(self, n: int) -> None:
         self.metrics.tokens_assigned.labels(**self.metrics_labels).set(n)
+
+    def keyring_key_loaded(self, kid: str) -> None:
+        self.metrics.keyring_keys_loaded.labels(**self.metrics_labels, kid=kid).set(1)
+
+    def secret_plaintext_read(self, scope: str) -> None:
+        self.metrics.secret_plaintext_reads_total.labels(**self.metrics_labels, scope=scope).inc()
+
+    def secret_decrypted(self, scope: str, kid: str) -> None:
+        self.metrics.secret_decrypts_total.labels(**self.metrics_labels, scope=scope, kid=kid).inc()
 
     def mqtt_buffered(self, topic: str, n: int) -> None:
         self.metrics.mqtt_buffered_messages.labels(**self.metrics_labels, topic=topic).set(n)
