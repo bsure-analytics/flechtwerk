@@ -11,6 +11,8 @@
   <img src="assets/flechtwerk-ornament.svg" alt="Flechtwerk — Celtic interlace" width="100%" height="60">
 </div>
 
+<p align="center"><strong>easy + reliable + scalable =&gt; productive</strong></p>
+
 Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data.
 
 📖 **Documentation: [bsure-analytics.github.io/flechtwerk](https://bsure-analytics.github.io/flechtwerk/)** — guides, concepts, and the full API reference.

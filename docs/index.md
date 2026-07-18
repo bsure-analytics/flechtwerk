@@ -1,12 +1,12 @@
 ---
 opener: true
 title: Flechtwerk
-tagline: Truly async Kafka stream processing for modern Python — exactly-once, ephemeral, and immediately familiar.
+tagline: "<strong>Easy + Reliable + Scalable => Productive</strong>"
 ---
 
 # Flechtwerk
 
-Flechtwerk (German: *interlacing, wickerwork*) is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to modern async Python.
+Flechtwerk (German: *interlacing, wickerwork*) is a truly async Kafka stream-processing framework for modern Python. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to async Python.
 
 If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via real Kafka transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
