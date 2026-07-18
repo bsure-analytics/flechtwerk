@@ -9,6 +9,7 @@ from flechtwerk.extractor import Extractor
 from flechtwerk.module import (
     MqttBrokerConfig,
     _FlechtwerkModule,
+    ensure_topics,
     validate_poll_interval,
     validate_topics,
 )
@@ -71,6 +72,141 @@ def test_poll_interval_optional_for_transformer_positive_for_extractor():
     validate_poll_interval(Transformer.of(input_topics=["in"], transform=noop_transform), None)
     # a positive duration satisfies an extractor
     validate_poll_interval(Extractor.of(config_topics=["cfg"], poll=noop_poll), timedelta(seconds=60))
+
+
+# -- ensure_topics (broker-side startup checks) --------------------------------
+
+
+class _FakeCreateResponse:
+    def __init__(self, topic_errors):
+        self.topic_errors = topic_errors
+
+
+class _FakeAdmin:
+    """AIOKafkaAdminClient stand-in for ensure_topics: canned describe/create replies.
+
+    ``partitions`` maps topic -> partition count; a topic absent from it
+    describes as UnknownTopicOrPartitionError. ``changelog_exists`` decides
+    whether create_topics reports the changelog as freshly created or
+    pre-existing.
+    """
+
+    def __init__(self, partitions, changelog_exists=False):
+        self._partitions = partitions
+        self._changelog_exists = changelog_exists
+        self.created = []
+        self.started = False
+        self.closed = False
+
+    async def start(self):
+        self.started = True
+
+    async def close(self):
+        self.closed = True
+
+    async def describe_topics(self, topics):
+        from aiokafka.errors import UnknownTopicOrPartitionError
+
+        return [
+            {"topic": t, "error_code": 0, "partitions": list(range(self._partitions[t]))}
+            if t in self._partitions
+            else {"topic": t, "error_code": UnknownTopicOrPartitionError.errno, "partitions": []}
+            for t in topics
+        ]
+
+    async def create_topics(self, new_topics):
+        from aiokafka.errors import TopicAlreadyExistsError
+
+        self.created.extend(nt.name for nt in new_topics)
+        errno = TopicAlreadyExistsError.errno if self._changelog_exists else 0
+        return _FakeCreateResponse([(nt.name, errno) for nt in new_topics])
+
+
+def test_ensure_topics_transformer_creates_changelog_and_skips_validation():
+    """A just-created changelog is never re-described (the topic isn't even in
+    the fake's partition map, so a describe would raise — passing proves the
+    ``not created`` short-circuit held)."""
+    async def run():
+        stage = Transformer.of(input_topics=["in"], transform=noop_transform)
+        admin = _FakeAdmin({"in": 3}, changelog_exists=False)
+        await ensure_topics(admin, stage, "cl", "app")
+        assert admin.created == ["cl"]
+
+    asyncio.run(run())
+
+
+def test_ensure_topics_transformer_accepts_matching_preexisting_changelog():
+    async def run():
+        stage = Transformer.of(input_topics=["in"], transform=noop_transform)
+        admin = _FakeAdmin({"in": 3, "cl": 3}, changelog_exists=True)
+        await ensure_topics(admin, stage, "cl", "app")
+
+    asyncio.run(run())
+
+
+def test_ensure_topics_transformer_rejects_mismatched_preexisting_changelog():
+    async def run():
+        stage = Transformer.of(input_topics=["in"], transform=noop_transform)
+        admin = _FakeAdmin({"in": 3, "cl": 2}, changelog_exists=True)
+        with pytest.raises(ValueError, match="repartitioning requires a state migration"):
+            await ensure_topics(admin, stage, "cl", "app")
+
+    asyncio.run(run())
+
+
+def test_ensure_topics_rejects_unequal_input_partition_counts():
+    async def run():
+        stage = Transformer.of(input_topics=["a", "b"], transform=noop_transform)
+        admin = _FakeAdmin({"a": 2, "b": 3})
+        with pytest.raises(ValueError, match="must have equal partition counts"):
+            await ensure_topics(admin, stage, "cl", "app")
+
+    asyncio.run(run())
+
+
+def test_ensure_topics_extractor_rejects_unequal_config_partition_counts():
+    async def run():
+        stage = Extractor.of(config_topics=["c1", "c2"], poll=noop_poll)
+        admin = _FakeAdmin({"c1": 2, "c2": 3})
+        with pytest.raises(ValueError, match="ownership-token space"):
+            await ensure_topics(admin, stage, "cl", "app")
+
+    asyncio.run(run())
+
+
+def test_ensure_topics_extractor_creates_changelog_without_partition_validation():
+    """An extractor's changelog uses the broker default and is never validated
+    against input topics (it has none)."""
+    async def run():
+        stage = Extractor.of(config_topics=["c1", "c2"], poll=noop_poll)
+        admin = _FakeAdmin({"c1": 2, "c2": 2}, changelog_exists=False)
+        await ensure_topics(admin, stage, "cl", "app")
+        assert admin.created == ["cl"]
+
+    asyncio.run(run())
+
+
+def test_aenter_calls_ensure_topics_under_admin_try_finally(monkeypatch):
+    """__aenter__ runs ensure_topics against a started admin and closes it even
+    when a topic check fails (the failure propagates before broker startup)."""
+    async def run():
+        admin = _FakeAdmin({"a": 2, "b": 3})
+        monkeypatch.setattr("flechtwerk.module.AIOKafkaAdminClient", lambda **_: admin)
+
+        mod = _FlechtwerkModule()
+        mod.application_id = "app"
+        mod.bootstrap_servers = "localhost:9092"
+        mod.client_id = "pod-0"
+        mod.keyring = None
+        mod.metrics_port = 0
+        mod.poll_interval = None
+        mod.stage = Transformer.of(input_topics=["a", "b"], transform=noop_transform)
+
+        with pytest.raises(ValueError, match="must have equal partition counts"):
+            await mod.__aenter__()
+        assert admin.started and admin.closed
+
+    asyncio.run(run())
 
 
 # -- membership ----------------------------------------------------------------

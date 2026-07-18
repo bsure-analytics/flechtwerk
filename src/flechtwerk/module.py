@@ -97,6 +97,56 @@ def validate_poll_interval(stage: Extractor | Transformer, poll_interval: timede
         raise ValueError("an extractor needs a positive poll_interval")
 
 
+async def ensure_topics(admin: Any, stage: Extractor | Transformer, changelog_topic: str, application_id: str) -> None:
+    """Broker-side topic checks and changelog creation — the counterpart to the broker-free ``validate_topics``.
+
+    Config topics are existence-checked (a missing one must fail fast: the
+    assign-based bootstrap would otherwise yield a silently empty store and
+    never discover a topic created later). A transformer's input topics must
+    share one partition count, and the compacted changelog is created with
+    that count; an extractor's changelog uses the broker default (-1). A
+    pre-existing changelog is re-described and validated; a just-created one
+    is not — see ``ensure_changelog_topic``.
+    """
+    if stage.config_topics:
+        # Partition counts are unconstrained for a transformer's config topics
+        # (exempt from co-partitioning) — but an extractor's config topics form
+        # its ownership-token space: a token is a partition NUMBER co-assigned
+        # across topics by the Range assignor, so the counts must match exactly.
+        counts = await partition_counts(admin, stage.config_topics)
+        if isinstance(stage, Extractor) and len(set(counts.values())) != 1:
+            raise ValueError(
+                f"config topics of the extractor {application_id} must have equal "
+                f"partition counts — they form its ownership-token space — got {counts}"
+            )
+    num_partitions = -1
+    if isinstance(stage, Transformer):
+        # Tasks are identified by partition number across all input topics, and
+        # a task's explicit-partition changelog write must have somewhere to
+        # land — so all input topics must share one partition count (Range only
+        # co-assigns same-numbered partitions when counts match) and the
+        # changelog must match it.
+        counts = await partition_counts(admin, stage.input_topics)
+        if len(set(counts.values())) != 1:
+            raise ValueError(f"input topics of {application_id} must have equal partition counts, got {counts}")
+        num_partitions = next(iter(counts.values()))
+    created = await ensure_changelog_topic(admin, changelog_topic, num_partitions)
+    if isinstance(stage, Transformer) and not created:
+        # Only validate a changelog we did NOT just create: a pre-existing one
+        # may carry a partition count from an earlier topology that no longer
+        # matches the input topics (repartitioning needs a state migration). A
+        # just-created changelog was made with num_partitions, so re-describing
+        # it here is redundant — and races the broker's metadata cache, which
+        # lags CreateTopics and would raise a spurious UnknownTopicOrPartitionError
+        # on a cold broker.
+        changelog_count = (await partition_counts(admin, [changelog_topic]))[changelog_topic]
+        if changelog_count != num_partitions:
+            raise ValueError(
+                f"changelog topic {changelog_topic} has {changelog_count} partitions, "
+                f"input topics have {num_partitions} — repartitioning requires a state migration"
+            )
+
+
 class Flechtwerk(ABC):
     """The application-facing handle for a Flechtwerk stage.
 
@@ -454,47 +504,7 @@ class _FlechtwerkModule(Flechtwerk):
         admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         await admin.start()
         try:
-            if self.stage.config_topics:
-                # Existence check — a missing config topic must fail fast:
-                # the assign-based bootstrap would otherwise yield a silently
-                # empty store and never discover a topic created later.
-                # Partition counts are unconstrained for a transformer's
-                # config topics (exempt from co-partitioning) — but an
-                # extractor's config topics form its ownership-token space:
-                # a token is a partition NUMBER co-assigned across topics by
-                # the Range assignor, so the counts must match exactly.
-                counts = await partition_counts(admin, self.stage.config_topics)
-                if isinstance(self.stage, Extractor) and len(set(counts.values())) != 1:
-                    raise ValueError(
-                        f"config topics of the extractor {self.application_id} must have equal "
-                        f"partition counts — they form its ownership-token space — got {counts}"
-                    )
-            num_partitions = -1
-            if isinstance(self.stage, Transformer):
-                # Tasks are identified by partition number across all input
-                # topics, and a task's explicit-partition changelog write must
-                # have somewhere to land — so all input topics must share one
-                # partition count (Range only co-assigns same-numbered
-                # partitions when counts match) and the changelog must match it.
-                counts = await partition_counts(admin, self.stage.input_topics)
-                if len(set(counts.values())) != 1:
-                    raise ValueError(f"input topics of {self.application_id} must have equal partition counts, got {counts}")
-                num_partitions = next(iter(counts.values()))
-            created = await ensure_changelog_topic(admin, self.changelog_topic, num_partitions)
-            if isinstance(self.stage, Transformer) and not created:
-                # Only validate a changelog we did NOT just create: a pre-existing
-                # one may carry a partition count from an earlier topology that no
-                # longer matches the input topics (repartitioning needs a state
-                # migration). A just-created changelog was made with num_partitions,
-                # so re-describing it here is redundant — and races the broker's
-                # metadata cache, which lags CreateTopics and would raise a spurious
-                # UnknownTopicOrPartitionError on a cold broker.
-                changelog_count = (await partition_counts(admin, [self.changelog_topic]))[self.changelog_topic]
-                if changelog_count != num_partitions:
-                    raise ValueError(
-                        f"changelog topic {self.changelog_topic} has {changelog_count} partitions, "
-                        f"input topics have {num_partitions} — repartitioning requires a state migration"
-                    )
+            await ensure_topics(admin, self.stage, self.changelog_topic, self.application_id)
         finally:
             await admin.close()
 
