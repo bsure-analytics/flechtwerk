@@ -279,11 +279,10 @@ class _EncryptedCodec(Codec):
     """The plain `Codec` returned by `ENCRYPTED(...)`.
 
     A marker the tooling recognizes via `isinstance` — it carries the `scope`
-    (so `reencrypt` re-stamps the same one) and `read_plaintext`; `decode` /
-    `encode` close over both."""
+    so `reencrypt` re-stamps the same one. `read_plaintext` needs no field:
+    `decode` closes over it."""
 
     scope: str = ""
-    read_plaintext: bool = False
 
 
 def ENCRYPTED[V](inner: Codec[V], *, scope: str = "", read_plaintext: bool = False) -> Codec[V]:
@@ -323,7 +322,7 @@ def ENCRYPTED[V](inner: Codec[V], *, scope: str = "", read_plaintext: bool = Fal
             return inner.decode(value)
         raise PlaintextSecretError(scope=scope)
 
-    return _EncryptedCodec(decode=decode, encode=encode, scope=scope, read_plaintext=read_plaintext)
+    return _EncryptedCodec(decode=decode, encode=encode, scope=scope)
 
 
 # --- ops tooling primitives ---
