@@ -11,7 +11,7 @@
   <img src="assets/flechtwerk-ornament.svg" alt="Flechtwerk — Celtic interlace" width="100%" height="60">
 </div>
 
-<p align="center"><strong>easy + reliable + scalable =&gt; productive</strong></p>
+<p align="center"><strong>Easy + Reliable + Scalable =&gt; Productive</strong></p>
 
 Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data.
 
