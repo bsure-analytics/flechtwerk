@@ -152,12 +152,13 @@ async def topic_partitions(
     """Prime metadata and return every partition of every topic in ``topics``.
 
     Shared by the config bootstrap (`configs.bootstrap_config_store`) and the
-    secrets scan (`secrets.scan_config_topics`) — the one place the
-    `consumer._client.set_topics` private-API coupling lives (no fully public
-    API primes the consumer's own metadata cache; the integration tests under
-    tests/integration/ lock this down against aiokafka upgrades). Unknown
-    topics contribute no partitions; a caller that must fail on a missing topic
-    checks the returned set itself.
+    secrets scan (`secrets.scan_config_topics`), factoring out the
+    `consumer._client.set_topics` private-API coupling (no fully public API
+    primes the consumer's own metadata cache; the integration tests under
+    tests/integration/ lock this down against aiokafka upgrades). `restore_changelog`
+    keeps its own copy of the same priming for its single-topic, partition-subset
+    case. Unknown topics contribute no partitions; a caller that must fail on a
+    missing topic checks the returned set itself.
     """
     await consumer._client.set_topics(list(topics))
     return [

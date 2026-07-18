@@ -410,10 +410,15 @@ belong in application tooling per the framework's boundary rule):
 - `reencrypt(token, attribute) -> str` — decrypt-with-named-kid,
   re-encrypt-with-primary: the building block for sweeps and cross-environment
   promotion.
-- `scan_config_topics(consumer, topics, attributes)` — an async iterator over
-  *(topic, partition, wire key, attribute, kid-or-None)* for every
-  secret-bearing value, the engine behind the migration and rotation scans
-  (`kid=None` marks a value still in plaintext).
+- `scan_config_topics(consumer, topics, attributes)` — an async iterator of
+  `ScanEntry` *(attribute, error, kid, partition, topic, wire key)* for every
+  secret-bearing value, the engine behind the migration and rotation scans.
+  `kid=None` with `error=None` marks a value still in plaintext; a set `error`
+  marks a `flenc:` value whose `kid` could not be read (a corrupt token — it is
+  reported, not raised, so one bad record never aborts the scan); a
+  present-but-null field is skipped (absence, not a plaintext leak). Because the
+  scan gates destructive steps, it stays a *complete* report: a missing topic
+  raises rather than reading as a clean all-clear.
 
 ## Migrating From Plaintext
 

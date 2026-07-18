@@ -7,11 +7,10 @@ reactor-di-resolves-annotations-at-decoration reason). The actual encryption
 lives in `flechtwerk.secrets`, which reads the process-global installed here.
 
 A key is 32 random bytes named by a `kid`. The `Keyring` is the small value
-object holding a few of them plus which one is `primary` (used to encrypt) and
-an optional `plaintext_until` migration marker. It parses from — and its file
-form is — an RFC 7517 JWK Set with two extension members (`primary`,
-`plaintext_until`), so the same document loads in joserfc, panva jose, and
-Nimbus.
+object holding a few of them plus which one is `primary` (used to encrypt). It
+parses from — and its file form is — an RFC 7517 JWK Set with a single
+`primary` extension member, so the same document loads in joserfc, panva jose,
+and Nimbus.
 
 The keyring is a **process-global** installed once at startup: attributes are
 module-level constants, so their `ENCRYPTED` codecs cannot carry key material

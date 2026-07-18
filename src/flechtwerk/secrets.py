@@ -196,8 +196,8 @@ def _read_kid(compact: str) -> str:
     except Exception as e:
         raise SecretFormatError(f"malformed JWE header: {e}") from e
     kid = header.get("kid")
-    if not kid:
-        raise SecretFormatError("JWE header carries no kid")
+    if not isinstance(kid, str) or not kid:
+        raise SecretFormatError(f"JWE header carries no usable kid: {kid!r}")
     return kid
 
 
@@ -367,11 +367,18 @@ class ScanEntry:
     """One secret-bearing value found on a config topic by ``scan_config_topics``.
 
     ``kid`` is the key a ``flenc`` token depends on; ``None`` means the value
-    is legacy plaintext — an unencrypted secret still on the topic, the thing
-    the migration scan is looking for.
+    is either legacy plaintext — an unencrypted secret still on the topic, the
+    thing the migration scan is looking for — or (when ``error`` is set) a
+    ``flenc`` value the scan could not read the ``kid`` from. ``error`` is the
+    reason a ciphertext-form value could not be classified (a malformed header
+    or envelope); ``None`` for a cleanly-read ciphertext or a plaintext value.
+    A non-``None`` ``error`` is neither a clean ciphertext nor plaintext — it
+    keeps a corrupt record from silently reading as either, and from aborting
+    the whole scan.
     """
 
     attribute: str
+    error: str | None
     kid: str | None
     partition: int
     topic: str
@@ -387,15 +394,18 @@ async def scan_config_topics(
 
     The engine behind the migration and rotation topic scans: for every
     surviving record it reports which secret attributes carry ciphertext (with
-    the ``kid``) and which still carry plaintext (``kid=None``). Reads each
-    topic to its end group-less on the given consumer, exactly as the config
-    bootstrap does. Config topics are small by contract, so results are
-    gathered then yielded.
+    the ``kid``), which still carry plaintext (``kid=None``, ``error=None``),
+    and which carry a ``flenc`` value whose ``kid`` could not be read
+    (``error`` set). Reads each topic to its end group-less on the given
+    consumer, exactly as the config bootstrap does. Config topics are small by
+    contract, so results are gathered then yielded.
 
     Since the scan is the authoritative gate before destructive steps (removing
-    a key, ending plaintext tolerance), a topic that does not exist raises
-    `SecretError` rather than silently contributing zero records — a missing
-    topic must not read as a clean "no plaintext / no old-kid" result.
+    a key, ending plaintext tolerance), it must produce a COMPLETE report: a
+    topic that does not exist raises `SecretError` rather than silently
+    contributing zero records — a missing topic must not read as a clean "no
+    plaintext / no old-kid" result — and a single corrupt token is reported as
+    a `ScanEntry` with ``error`` set rather than aborting the whole scan.
     """
     names = [a.name for a in attributes]
     topics = list(topics)
@@ -407,15 +417,33 @@ async def scan_config_topics(
         wire_key = decode_key(msg.key)
         raw = decode_event(msg.value, f"{msg.topic}/{msg.offset}").raw
         for name in names:
-            if name in raw:
-                value = raw[name]
-                found.append(ScanEntry(
-                    attribute=name,
-                    kid=kid_of(value) if is_encrypted(value) else None,
-                    partition=msg.partition,
-                    topic=msg.topic,
-                    wire_key=wire_key,
-                ))
+            value = raw.get(name)
+            if value is None:
+                # Absent, or present-but-null — no secret value either way, so
+                # not a plaintext leak (`kid=None` is reserved for a value that
+                # IS present and unencrypted).
+                continue
+            kid: str | None = None
+            error: str | None = None
+            if is_encrypted(value):
+                try:
+                    kid = kid_of(value)
+                except SecretFormatError as e:
+                    # A corrupt ciphertext token: report it, don't abort the
+                    # scan. The scan is the gate before destructive steps, so a
+                    # complete report across every record matters more than
+                    # failing fast on the first bad one.
+                    log.warning("Unreadable %s token at %s/%d key %r: %s",
+                                SCHEME, msg.topic, msg.offset, wire_key, e)
+                    error = str(e)
+            found.append(ScanEntry(
+                attribute=name,
+                error=error,
+                kid=kid,
+                partition=msg.partition,
+                topic=msg.topic,
+                wire_key=wire_key,
+            ))
 
     tps = await topic_partitions(consumer, topics)
     present = {tp.topic for tp in tps}

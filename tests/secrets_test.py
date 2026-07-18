@@ -260,6 +260,14 @@ def test_kid_of_rejects_header_without_kid():
         kid_of(f"flenc:jwe:{header}..a.b.c")
 
 
+def test_kid_of_rejects_non_string_kid():
+    """A non-string kid must surface as SecretFormatError, not an unhashable-key TypeError."""
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "dir", "enc": "A256GCM", "kid": ["x"]}).encode()).rstrip(b"=").decode()
+    with pytest.raises(SecretFormatError):
+        kid_of(f"flenc:jwe:{header}..a.b.c")
+
+
 def test_reencrypt_rotates_to_primary_and_still_decodes():
     with installed_keyring(Keyring.of({"old": KEY_A}, primary="old")):
         token = encrypt_value(API_KEY, "s")
@@ -300,8 +308,40 @@ async def test_scan_config_topics_classifies_ciphertext_and_plaintext():
     entries = [e async for e in scan_config_topics(consumer, ["cfg"], [API_KEY])]
     by_key = {e.wire_key: e for e in entries}
     assert by_key["tenant-a"].kid == "test-key"
+    assert by_key["tenant-a"].error is None
     assert by_key["tenant-b"].kid is None            # legacy plaintext still present
+    assert by_key["tenant-b"].error is None
     assert "tenant-c" not in by_key                  # attribute absent
+
+
+async def test_scan_skips_null_valued_attribute():
+    """A present-but-null field is not a plaintext leak — it must not be reported as one."""
+    records = [
+        make_record(topic="cfg", partition=0, offset=0, key=b"tenant-a",
+                    value=json.dumps({"api_key": None}).encode()),
+    ]
+    consumer = FakeKafkaConsumer(records)
+    entries = [e async for e in scan_config_topics(consumer, ["cfg"], [API_KEY])]
+    assert entries == []                             # null ≠ plaintext (kid=None) entry
+
+
+async def test_scan_reports_corrupt_token_without_aborting():
+    """A single corrupt flenc token is reported with `error`, not raised — the scan completes."""
+    with installed_keyring():
+        good = encrypt_value(API_KEY, "s")
+    records = [
+        make_record(topic="cfg", partition=0, offset=0, key=b"tenant-a",
+                    value=json.dumps({"api_key": "flenc:jwe:@@bad@@..a.b.c"}).encode()),
+        make_record(topic="cfg", partition=0, offset=1, key=b"tenant-b",
+                    value=json.dumps({"api_key": good}).encode()),
+    ]
+    consumer = FakeKafkaConsumer(records)
+    entries = [e async for e in scan_config_topics(consumer, ["cfg"], [API_KEY])]
+    by_key = {e.wire_key: e for e in entries}
+    assert by_key["tenant-a"].kid is None
+    assert by_key["tenant-a"].error is not None      # corrupt token surfaced, scan not aborted
+    assert by_key["tenant-b"].kid == "test-key"      # the good record still reported
+    assert by_key["tenant-b"].error is None
 
 
 async def test_scan_raises_on_unknown_topic():

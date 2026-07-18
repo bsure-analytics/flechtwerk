@@ -6,6 +6,7 @@ requires = ["hatchling", "hatch-vcs"]
 dev = [
     "aiokafka[lz4,snappy,zstd]~=0.13",
     "coverage>=7.6",
+    "cryptography>=44",  # secrets_test.py's independent AES-GCM oracle (not via joserfc)
     "hypothesis>=6.100",
     "joserfc~=1.7",
     "paho-mqtt~=2.1",

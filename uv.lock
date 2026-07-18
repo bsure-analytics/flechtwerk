@@ -506,6 +506,7 @@ secrets = [
 dev = [
     { name = "aiokafka", extra = ["lz4", "snappy", "zstd"] },
     { name = "coverage" },
+    { name = "cryptography" },
     { name = "hypothesis" },
     { name = "joserfc" },
     { name = "paho-mqtt" },
@@ -536,6 +537,7 @@ provides-extras = ["mqtt", "secrets"]
 dev = [
     { name = "aiokafka", extras = ["lz4", "snappy", "zstd"], specifier = "~=0.13" },
     { name = "coverage", specifier = ">=7.6" },
+    { name = "cryptography", specifier = ">=44" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "joserfc", specifier = "~=1.7" },
     { name = "paho-mqtt", specifier = "~=2.1" },
