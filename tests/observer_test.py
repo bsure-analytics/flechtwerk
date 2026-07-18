@@ -160,6 +160,34 @@ def test_poll_cycle_scope_records_histogram():
     assert count == 1
 
 
+def test_keyring_key_loaded_sets_gauge_per_kid():
+    observer, registry = make_observer()
+    observer.keyring_key_loaded("prod-2026-07")
+    assert registry.get_sample_value(
+        "flechtwerk_keyring_keys_loaded",
+        {"datasource": "ds1", "stage": "extractor", "kid": "prod-2026-07"},
+    ) == 1
+
+
+def test_secret_plaintext_read_increments_counter_per_scope():
+    observer, registry = make_observer()
+    observer.secret_plaintext_read("api_key")
+    observer.secret_plaintext_read("api_key")
+    assert registry.get_sample_value(
+        "flechtwerk_secret_plaintext_reads_total",
+        {"datasource": "ds1", "stage": "extractor", "scope": "api_key"},
+    ) == 2
+
+
+def test_secret_decrypted_increments_counter_per_scope_and_kid():
+    observer, registry = make_observer()
+    observer.secret_decrypted("api_key", "k1")
+    assert registry.get_sample_value(
+        "flechtwerk_secret_decrypts_total",
+        {"datasource": "ds1", "stage": "extractor", "scope": "api_key", "kid": "k1"},
+    ) == 1
+
+
 def test_mqtt_connects_and_disconnects_increment_counters():
     observer, registry = make_observer()
     observer.mqtt_connected()

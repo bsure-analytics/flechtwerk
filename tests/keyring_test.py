@@ -104,6 +104,8 @@ _GOOD_KEY = base64.urlsafe_b64encode(KEY_A).rstrip(b"=").decode()
     json.dumps({"keys": [{"kty": "oct", "kid": "k1", "k": _GOOD_KEY},
                          {"kty": "oct", "kid": "k1", "k": _GOOD_KEY}], "primary": "k1"}),  # duplicate kid
     json.dumps({"keys": [{"kty": "oct", "kid": 5, "k": _GOOD_KEY}], "primary": "k1"}),  # non-string kid
+    json.dumps({"keys": ["not-an-object"], "primary": "k1"}),                        # JWK not a JSON object
+    json.dumps({"keys": [{"kty": "oct", "kid": "k1", "k": 123}], "primary": "k1"}),  # non-string k
 ])
 def test_from_json_wraps_malformed_documents_as_keyring_error(text):
     """Ops-authored files are the expected error case — all surface as KeyringError, not raw tracebacks."""

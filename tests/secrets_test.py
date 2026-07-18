@@ -233,6 +233,13 @@ def test_decrypt_emits_observer_event():
     assert ("secret_decrypted", "api_key", "test-key") in rec.calls
 
 
+def test_recording_observer_records_keyring_key_loaded():
+    """The keyring startup gauge event the module fires per kid is recorded."""
+    rec = RecordingObserver()
+    rec.keyring_key_loaded("prod-2026-07")
+    assert ("keyring_key_loaded", "prod-2026-07") in rec.calls
+
+
 # --- tooling primitives ---
 
 
@@ -344,11 +351,36 @@ async def test_scan_reports_corrupt_token_without_aborting():
     assert by_key["tenant-b"].error is None
 
 
+async def test_scan_skips_tombstones():
+    """A tombstone (deleted config) carries no secret and is not reported."""
+    records = [
+        make_record(topic="cfg", partition=0, offset=0, key=b"tenant-a", value=b""),
+    ]
+    consumer = FakeKafkaConsumer(records)
+    entries = [e async for e in scan_config_topics(consumer, ["cfg"], [API_KEY])]
+    assert entries == []
+
+
 async def test_scan_raises_on_unknown_topic():
     """A missing topic must not read as a clean scan (false all-clear before key removal)."""
     consumer = FakeKafkaConsumer([])  # no records → no partitions for any topic
     with pytest.raises(SecretError):
         [e async for e in scan_config_topics(consumer, ["ghost-topic"], [API_KEY])]
+
+
+def test_secret_decrypt_error_renders_all_context():
+    """The exception the scan/quarantine hook reads carries scope, kid, key, topic, reason."""
+    assert str(SecretDecryptError())                 # no optional fields — bare message
+    msg = str(SecretDecryptError(scope="api_key", kid="k1", topic="cfg",
+                                 wire_key="tenant-a", reason="tag mismatch"))
+    assert "scope='api_key'" in msg and "kid='k1'" in msg
+    assert "key='tenant-a'" in msg and "topic='cfg'" in msg and "tag mismatch" in msg
+
+
+def test_plaintext_secret_error_renders_all_context():
+    assert str(PlaintextSecretError())               # no scope/topic/key — bare message
+    msg = str(PlaintextSecretError(scope="api_key", topic="cfg", wire_key="tenant-a"))
+    assert "scope='api_key'" in msg and "key='tenant-a'" in msg and "topic='cfg'" in msg
 
 
 def test_secret_observer_first_wins():
@@ -358,6 +390,15 @@ def test_secret_observer_first_wins():
     assert active_observer() is first
     set_secret_observer(second)                      # differs → keep first, warn
     assert active_observer() is first
+
+
+def test_secret_observer_same_instance_is_noop():
+    """Re-installing the same observer object is an idempotent early return, not a warning."""
+    from flechtwerk.keyring import active_observer, set_secret_observer
+    obs = RecordingObserver()
+    set_secret_observer(obs)
+    set_secret_observer(obs)                          # same object → early return
+    assert active_observer() is obs
 
 
 # --- cross-language interop ---

@@ -17,11 +17,12 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.coordinator.assignors.range import RangePartitionAssignor
 from aiokafka.errors import KafkaError
 
+from flechtwerk.keyring import current_keyring
 from flechtwerk.module import Flechtwerk
 from flechtwerk.observer import Observer
 from flechtwerk.configs import ConfigStore, bootstrap_config_store
 from flechtwerk.state import ChangelogStateStore
-from flechtwerk.testing import InMemoryStateStore
+from flechtwerk.testing import InMemoryStateStore, fixture_keyring
 from flechtwerk.transformer import Transformer, TransformerRunner
 from flechtwerk.types import Message, State
 
@@ -245,6 +246,10 @@ async def test_missing_config_topic_fails_startup(
     with auto-creation off (production), LeaderNotAvailableError when the
     describe triggers auto-creation (this test broker). Either way the
     existence check crashes the stage instead of letting it idle.
+
+    Also pins that a passed ``keyring`` is installed early in ``__aenter__`` —
+    before the topic existence check — so a stage with encrypted attributes
+    has its key material ready even on a startup that later fails.
     """
     input_topic = f"input-{unique_topic}"
     await _create_topics(kafka_bootstrap, {input_topic: 1})
@@ -254,9 +259,11 @@ async def test_missing_config_topic_fails_startup(
         application_id=unique_group_id,
         bootstrap_servers=kafka_bootstrap,
         client_id=unique_group_id,
+        keyring=fixture_keyring(),
         poll_interval=timedelta(seconds=1),
         stage=transformer,
     )
     with pytest.raises(KafkaError):
         async with mod:
             pytest.fail("startup must not succeed")
+    assert current_keyring() is not None  # installed before the crash
