@@ -85,7 +85,7 @@ That plus one stage definition is the whole program — point it at any Kafka br
 
 ## Learn More
 
-The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full story.
+The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full story, and [flechtwerk-examples](https://github.com/bsure-analytics/flechtwerk-examples) has runnable end-to-end examples.
 
 **Guides**
 
