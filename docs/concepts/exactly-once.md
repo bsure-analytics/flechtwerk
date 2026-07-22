@@ -24,7 +24,7 @@ The store shares the task's producer via dependency injection, so a `put()` insi
 
 ## What One Transaction Spans
 
-The runner consumes with `getmany()`. For each batch, it commits **one Kafka transaction per task**, and that transaction covers exactly that task's:
+The runner consumes with `getmany()`, capped at `max_poll_records` per batch (default 500 — see `Flechtwerk.of`; aiokafka alone leaves it unbounded, and an unbounded fetch after downtime would return the entire backlog as one batch). For each batch, it commits **one Kafka transaction per task**, and that transaction covers exactly that task's:
 
 1. output messages,
 2. state changelog writes (via the task's `ChangelogStateStore`, sharing the producer), and

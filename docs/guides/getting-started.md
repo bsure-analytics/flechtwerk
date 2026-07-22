@@ -98,7 +98,10 @@ only the `stage` you pass changes. The required knobs:
 - **`stage`** — the `Extractor` or `Transformer` you've built.
 
 Optional knobs: `compression_type` (defaults to `"zstd"` — JSON compresses ~13×;
-pass `None` to disable), `metrics_port` / `metrics_labels`
+pass `None` to disable), `max_poll_records` (caps the records per consumer
+fetch — Kafka's `max.poll.records`, same default of 500; the cap is what makes
+a backlog drain as many ordinary batches instead of one giant one),
+`metrics_port` / `metrics_labels`
 ([Prometheus](observability.md); disabled while `metrics_port` is `0`), `mqtt`
 (broker settings, used only by an [MQTT Extractor](mqtt.md)), and
 `poll_interval` (a `timedelta` — an [extractor](extractor.md)'s poll cadence,

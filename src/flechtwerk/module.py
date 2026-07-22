@@ -208,6 +208,7 @@ class Flechtwerk(ABC):
         stage: Extractor | Transformer,
         compression_type: CompressionType | None = "zstd",
         keyring: Keyring | None = None,
+        max_poll_records: int = 500,
         metrics_labels: dict[str, str] | None = None,
         metrics_port: int = 0,
         mqtt: MqttBrokerConfig | None = None,
@@ -228,7 +229,16 @@ class Flechtwerk(ABC):
         conflicting second install raises) and may be left ``None`` by stages
         without encrypted attributes. Constructing a handle has no
         side effects; standalone producers/tooling call
-        ``flechtwerk.secrets.install_keyring(...)`` directly. ``metrics_labels``
+        ``flechtwerk.secrets.install_keyring(...)`` directly.
+        ``max_poll_records`` caps how many records one ``getmany()`` fetch
+        may return — Kafka's ``max.poll.records``, and the same default of
+        500 (aiokafka alone leaves it unbounded). The cap is what makes a
+        backlog drain as many ordinary batches instead of one giant one: an
+        unbounded first fetch after downtime returns the entire backlog as
+        a single batch, which pins it in memory in parsed form, floods any
+        per-message I/O in ``transform`` with one concurrent call per state
+        key, and outlives ``max.poll.interval.ms`` — a mid-batch group
+        eviction. ``metrics_labels``
         defaults to an empty dict and ``metrics_port`` defaults to 0
         (Prometheus disabled). ``mqtt`` carries the platform's shared MQTT
         broker settings; it is used only by MQTT-sourced stages and ignored
@@ -249,6 +259,7 @@ class Flechtwerk(ABC):
         instance.client_id = client_id
         instance.compression_type = compression_type
         instance.keyring = keyring
+        instance.max_poll_records = max_poll_records
         instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
         instance.metrics_port = metrics_port
         instance.mqtt = mqtt
@@ -300,6 +311,7 @@ class _FlechtwerkModule(Flechtwerk):
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
     keyring: lookup[Keyring | None]
+    max_poll_records: lookup[int]
     metrics: Metrics
     metrics_labels: lookup[dict[str, str]]
     metrics_port: lookup[int]
@@ -367,6 +379,8 @@ class _FlechtwerkModule(Flechtwerk):
         # The Range assignor (not aiokafka's RoundRobin default) co-assigns
         # partition p of every input topic to the same member, which is what
         # makes a task span all input topics.
+        # max_poll_records bounds every getmany() batch (aiokafka's default
+        # is UNBOUNDED, unlike the Java client's 500) — see Flechtwerk.of.
         return AIOKafkaConsumer(
             bootstrap_servers=self.bootstrap_servers,
             auto_offset_reset="earliest",
@@ -374,6 +388,7 @@ class _FlechtwerkModule(Flechtwerk):
             enable_auto_commit=False,
             group_id=self.application_id if isinstance(self.stage, Transformer) else None,
             isolation_level="read_committed",
+            max_poll_records=self.max_poll_records,
             partition_assignment_strategy=(RangePartitionAssignor,),  # noqa: aiokafka's docstring says list, but its own default is a tuple
         )
 

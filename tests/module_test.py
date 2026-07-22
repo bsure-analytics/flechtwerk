@@ -14,7 +14,6 @@ from flechtwerk.module import (
     validate_topics,
 )
 from flechtwerk.mqtt import MqttExtractor
-from flechtwerk.observer import Observer
 from flechtwerk.transformer import Transformer
 from flechtwerk.types import Message, State
 
@@ -231,6 +230,46 @@ def test_membership_consumer_exists_only_for_extractors():
         consumer = mod.membership_consumer
         assert consumer is not None
         await consumer.stop()  # never started; stop() keeps the double-check ledger clean
+
+    asyncio.run(run())
+
+
+# -- batch cap -----------------------------------------------------------------
+
+
+def test_consumer_caps_getmany_batches():
+    """The main consumer bounds every getmany() batch via max_poll_records.
+
+    aiokafka's own default is UNBOUNDED (unlike the Java client's 500), so
+    without the cap a backlog returns as ONE giant batch: pinned in memory in
+    parsed form, one concurrent transform per state key, and long enough to
+    outlive max.poll.interval.ms — a mid-batch group eviction. An invalid cap
+    must fail at consumer construction (startup), not at the first fetch.
+    """
+    from flechtwerk.module import Flechtwerk
+
+    def make(**kwargs):
+        return Flechtwerk.of(
+            application_id="app",
+            bootstrap_servers="localhost:9092",
+            client_id="pod-0",
+            stage=Transformer.of(input_topics=["in"], transform=noop_transform),
+            **kwargs,
+        )
+
+    async def run():
+        # No public accessor on aiokafka's consumer — pin the private slot
+        # getmany() reads (the kafka.py `_client` precedent).
+        consumer = make().consumer
+        assert consumer._max_poll_records == 500  # Kafka's max.poll.records default
+        await consumer.stop()  # never started; stop() keeps the double-check ledger clean
+
+        consumer = make(max_poll_records=100).consumer
+        assert consumer._max_poll_records == 100
+        await consumer.stop()
+
+        with pytest.raises(ValueError, match="max_poll_records"):
+            _ = make(max_poll_records=0).consumer
 
     asyncio.run(run())
 

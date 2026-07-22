@@ -56,7 +56,7 @@ The runner also exposes an optional `wakeup` event so a push-driven stage (MQTT)
 
 Transformer work is partitioned into per-input-partition **tasks**, one per partition number spanning that partition of every input topic (the consumer uses the Range assignor, which co-assigns same-numbered partitions). Each task owns a transactional producer with the static transactional ID `{application_id}-{partition}` (EOS-v1 fencing) and a partition-scoped `ChangelogStateStore` sharing that producer via DI.
 
-Exactly-once delivery is one Kafka transaction per task per `getmany()` batch, covering that task's output messages, state changes (deduped to one final write per key), and offset commits. Task transactions commit concurrently and independently. On a rebalance, all tasks are torn down under the batch lock and rebuilt for the assigned partitions — never retained, since a missed rebalance would make retained producers or stores silently stale.
+Exactly-once delivery is one Kafka transaction per task per `getmany()` batch (capped at `max_poll_records`, default 500), covering that task's output messages, state changes (deduped to one final write per key), and offset commits. Task transactions commit concurrently and independently. On a rebalance, all tasks are torn down under the batch lock and rebuilt for the assigned partitions — never retained, since a missed rebalance would make retained producers or stores silently stale.
 
 A transformer may additionally declare `config_topics` and look entries up via `self.configs.get(wire_key)`. Config topics are read by a dedicated group-less consumer and never participate in any task transaction; lookups are eventually consistent (the GlobalKTable caveat).
 

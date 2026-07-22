@@ -54,7 +54,7 @@ Emitted by both stage shapes unless noted.
 | `messages_in_total` | Counter | `topic` | Input messages consumed and dispatched to user code. |
 | `messages_out_total` | Counter | `topic` | Output messages yielded by user code (produced to Kafka). |
 | `message_processing_seconds` | Histogram | — | Time in a single `transform()` / `poll()` dispatch (a transformer's transaction is outside; an extractor's per-page sends and commits are inside). |
-| `batch_size` | Histogram | — | Records returned by one `getmany()` call. *Transformer only.* |
+| `batch_size` | Histogram | — | Records returned by one `getmany()` call — bounded above by `max_poll_records` (default 500). *Transformer only.* |
 | `batch_processing_seconds` | Histogram | — | Wall time to process a batch, including the transaction commit. *Transformer only.* |
 | `transactions_committed_total` | Counter | — | Kafka transactions successfully committed — a transformer's per-task batches, an extractor's per-page commits. |
 | `poll_cycle_seconds` | Histogram | — | Wall time for one poll cycle across all active configs. *Extractor only.* |
