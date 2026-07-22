@@ -25,24 +25,34 @@ def test_encode_json_string_passthrough():
     assert encode_json("already a string") == b"already a string"
 
 
-def test_encode_json_dict():
-    result = encode_json({"b": 2, "a": 1})
+def test_encode_json_bytes_passthrough():
+    assert encode_json(b"\x00pre-encoded\xff") == b"\x00pre-encoded\xff"
+
+
+def test_encode_json_record():
+    result = encode_json(Event.wrap({"b": 2, "a": 1}))
     assert result == b'{"a":1,"b":2}'  # sorted keys, compact
 
 
 def test_encode_json_unicode():
-    result = encode_json({"name": "Müller"})
+    result = encode_json(Event.wrap({"name": "Müller"}))
     assert "Müller".encode("utf-8") in result  # ensure_ascii=False
 
 
 def test_encode_json_rejects_nan():
     with pytest.raises(ValueError):
-        encode_json({"x": float("nan")})
+        encode_json(Event.wrap({"x": float("nan")}))
 
 
 def test_encode_json_nested():
-    result = encode_json({"outer": {"inner": [1, 2, 3]}})
+    result = encode_json(Event.wrap({"outer": {"inner": [1, 2, 3]}}))
     assert result == b'{"outer":{"inner":[1,2,3]}}'
+
+
+def test_encode_json_rejects_raw_dict():
+    """Raw dicts are rejected — Event.wrap(d) produces identical wire bytes plus validation."""
+    with pytest.raises(TypeError, match="got dict"):
+        encode_json({"a": 1})
 
 
 def test_datetime_to_millis():
@@ -79,7 +89,8 @@ _json_scalars = st.one_of(
     st.floats(allow_nan=False, allow_infinity=False, width=32),
     st.text(),
 )
-# Non-string JSON values (since encode_json treats str specially — raw UTF-8 passthrough).
+# Non-string JSON values — encode_json rejects them all when raw (str is UTF-8
+# passthrough; dicts must arrive wrapped in a Record).
 _json_non_strings = st.recursive(
     st.one_of(
         st.none(), st.booleans(),
@@ -104,15 +115,22 @@ _json_dicts = st.dictionaries(
 
 
 @given(_json_non_strings)
-def test_encode_json_round_trips_non_string_values(value):
-    """Non-string values round-trip through encode_json → json.loads."""
-    assert json.loads(encode_json(value).decode("utf-8")) == value
+def test_encode_json_rejects_unwrapped_json_values(value):
+    """Every raw JSON-native value is rejected — dicts arrive as Records, scalars/arrays as bytes."""
+    with pytest.raises(TypeError):
+        encode_json(value)
 
 
-@given(_json_non_strings)
+@given(_json_dicts)
+def test_encode_json_round_trips_records(value):
+    """Record payloads round-trip through encode_json → json.loads."""
+    assert json.loads(encode_json(Event.wrap(value)).decode("utf-8")) == value
+
+
+@given(_json_dicts)
 def test_encode_json_dict_keys_are_sorted(value):
     """Dict keys at every nesting level must appear in sorted order."""
-    encoded = encode_json(value).decode("utf-8")
+    encoded = encode_json(Event.wrap(value)).decode("utf-8")
     parsed = json.loads(encoded, object_pairs_hook=list)
 
     def _assert_sorted(obj):
@@ -150,7 +168,7 @@ def test_parse_message_round_trips_dict_payloads(key, value, offset, partition, 
     Non-dict payloads are normalized to {} by parse_message, so the
     round-trip contract only holds for dicts.
     """
-    encoded_value = encode_json(value)
+    encoded_value = encode_json(Event.wrap(value))
     raw = SimpleNamespace(
         key=key, value=encoded_value, offset=offset, partition=partition,
         timestamp=timestamp, topic="some-topic",
@@ -201,6 +219,26 @@ def test_parse_message_invalid_json_falls_back_to_empty_event(caplog):
     assert msg.value == Event({})
     assert msg.offset == 42
     assert any("Malformed" in rec.message and "JSONDecodeError" in rec.message for rec in caplog.records)
+
+
+def test_parse_message_cesu8_surrogate_falls_back_to_empty_event(caplog):
+    """CESU-8-encoded surrogates must hit the malformed fallback, not decode.
+
+    Pins the strict UTF-8 decode in decode_event: json.loads(bytes) would
+    accept b'"\\xed\\xa0\\x80"' via errors="surrogatepass" and return the
+    ill-formed str '\\ud800', which crashes encode_json when a stage re-emits
+    it — far from the source, on every redelivery.
+    """
+    raw = SimpleNamespace(
+        key=b"k", value=b'"\xed\xa0\x80"', offset=0, partition=0, timestamp=None, topic="t",
+    )
+    with caplog.at_level(logging.WARNING, logger="flechtwerk.kafka"):
+        msg = parse_message(raw)
+    assert msg.value == Event({})
+    assert any(
+        "Malformed" in rec.message and "UnicodeDecodeError" in rec.message
+        for rec in caplog.records
+    )
 
 
 # --- restore_changelog ---

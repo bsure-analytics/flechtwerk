@@ -30,7 +30,7 @@ event.raw          # {'device': 'sensor-1', 'last_seen': '2026-07-12T09:30:00Z',
 #   event[DEVICE] = None   # cannot assign None to required Attribute('device')
 ```
 
-`Event`, `State`, and `Config` are `Record` subclasses — dict-like containers indexed by these handles rather than string keys. (`Message` is a frozen dataclass envelope carrying a key, topic, `Event` value, and optional timestamp.) The codec runs on **every write**, so the underlying `.raw` payload stays JSON-native by construction: wire encoding is a straight `json.dumps(event.raw)`, decoding is a straight `Event.wrap(raw)`, and nothing in between ever needs to re-validate.
+`Event`, `State`, and `Config` are `Record` subclasses — dict-like containers indexed by these handles rather than string keys. (`Message` is a frozen dataclass envelope carrying a key, a topic, a value, and an optional timestamp — key and value each accept any `Payload`: `bytes`, `str`, `Config`, or `Event`.) The codec runs on **every write**, so the underlying `.raw` payload stays JSON-native by construction: wire encoding is a straight `json.dumps(event.raw)`, decoding is a straight `Event.wrap(raw)`, and nothing in between ever needs to re-validate.
 
 !!! note "JSON Is the Only Wire Format — For Now"
 

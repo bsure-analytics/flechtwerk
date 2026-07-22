@@ -14,7 +14,7 @@ from flechtwerk.observer import Observer
 from flechtwerk.state import ChangelogStateStore
 from flechtwerk.testing import InMemoryStateStore
 from flechtwerk.transformer import Task, TransformerRunner
-from flechtwerk.types import Message, State
+from flechtwerk.types import Event, Message, State
 
 pytestmark = pytest.mark.integration
 
@@ -106,7 +106,7 @@ async def test_successful_transaction_commits_output_state_and_offsets(
         await runner.send_transactional(
             Task(0, txn_producer, state_store),
             messages=[Message(
-                topic=output_topic, key="out-key", value={"derived": "yes"}, timestamp=None,
+                topic=output_topic, key="out-key", value=Event.wrap({"derived": "yes"}), timestamp=None,
             )],
             state_changes={"k": State.wrap({"cursor": "done"})},
             offsets={tp: 1},

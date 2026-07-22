@@ -17,7 +17,7 @@ from flechtwerk.module import _FlechtwerkModule
 from flechtwerk.observer import Observer
 from flechtwerk.state import ChangelogStateStore
 from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
-from flechtwerk.types import Config, Message, State
+from flechtwerk.types import Config, Event, Message, State
 
 API_KEY: Final = Attribute("api_key", STR)
 CURSOR: Final = Attribute("cursor", INT)
@@ -39,7 +39,7 @@ class SimpleExtractor(Extractor):
         yield Message(
             key=config[API_KEY],
             topic="test-output",
-            value={"cursor": cursor, "data": "polled"},
+            value=Event.wrap({"cursor": cursor, "data": "polled"}),
         )
         yield State.wrap({"cursor": cursor + 1})
 
@@ -55,7 +55,7 @@ class EnrichingExtractor(Extractor):
         yield Message(
             key=config[API_KEY],
             topic="out",
-            value={"enriched": config.get(ENRICHED, False)},
+            value=Event.wrap({"enriched": config.get(ENRICHED, False)}),
         )
 
 
@@ -72,7 +72,7 @@ class ContextManagerExtractor(Extractor):
         self.exited = True
 
     async def poll(self, config, state) -> AsyncIterator[Message | State]:
-        yield Message(key="k", topic="t", value={"entered": self.entered})
+        yield Message(key="k", topic="t", value=Event.wrap({"entered": self.entered}))
 
 
 class ConfigMutatingExtractor(Extractor):
@@ -81,7 +81,7 @@ class ConfigMutatingExtractor(Extractor):
     async def poll(self, config, state) -> AsyncIterator[Message | State]:
         # Report the current cursor, then mutate the config parameter in place.
         # The runner must discard that mutation so the next poll sees the original.
-        yield Message(key="k", topic="out", value={"cursor": config.get(CURSOR, 0)})
+        yield Message(key="k", topic="out", value=Event.wrap({"cursor": config.get(CURSOR, 0)}))
         config[CURSOR] = config.get(CURSOR, 0) + 1
 
 
@@ -171,7 +171,7 @@ def test_simple_extractor_poll():
         messages = [i for i in items if isinstance(i, Message)]
         states = [i for i in items if isinstance(i, State)]
         assert len(messages) == 1
-        assert messages[0].value == {"cursor": 0, "data": "polled"}
+        assert messages[0].value == Event.wrap({"cursor": 0, "data": "polled"})
         assert len(states) == 1
         assert states[0][CURSOR] == 1
 
@@ -556,7 +556,7 @@ def test_functional_extractor():
     """Functional Extractor with a poll function (no subclass)."""
 
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
-        yield Message(key=config[API_KEY], topic="out", value={"polled": True})
+        yield Message(key=config[API_KEY], topic="out", value=Event.wrap({"polled": True}))
 
     ext = Extractor.of(config_topics=["cfg"], poll=my_poll)
 
@@ -564,7 +564,7 @@ def test_functional_extractor():
         config = Config.wrap({"api_key": "k"})
         items = [item async for item in ext.poll(config, State())]
         assert len(items) == 1
-        assert items[0].value == {"polled": True}
+        assert items[0].value == Event.wrap({"polled": True})
 
     asyncio.run(run())
 
@@ -573,7 +573,7 @@ def test_functional_extractor_with_enrich_and_extract_state_key():
     """Functional Extractor with custom enrich_config and extract_state_key."""
 
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
-        yield Message(key=config[API_KEY], topic="out", value={"tag": config.get(TAG)})
+        yield Message(key=config[API_KEY], topic="out", value=Event.wrap({"tag": config.get(TAG)}))
 
     async def my_enrich_config(config):
         config[TAG] = "enriched"
@@ -622,7 +622,7 @@ def test_extractor_decorator_builds_equivalent_stage():
 
     @extractor(config_topics=["cfg"])
     async def stage(config, state) -> AsyncIterator[Message | State]:
-        yield Message(key=config[API_KEY], topic="out", value={"polled": True})
+        yield Message(key=config[API_KEY], topic="out", value=Event.wrap({"polled": True}))
 
     assert isinstance(stage, Extractor)
     assert stage.config_topics == ["cfg"]
@@ -630,7 +630,7 @@ def test_extractor_decorator_builds_equivalent_stage():
     async def run():
         items = [item async for item in stage.poll(Config.wrap({"api_key": "k"}), State())]
         assert len(items) == 1
-        assert items[0].value == {"polled": True}
+        assert items[0].value == Event.wrap({"polled": True})
 
     asyncio.run(run())
 
@@ -699,7 +699,7 @@ def test_reentry_contract_commit_strictly_precedes_next_poll():
             events.append("poll")
             if events.count("poll") >= 3:
                 raise StopRunner
-            yield Message(key="k", topic="out", value={"data": "x"})
+            yield Message(key="k", topic="out", value=Event.wrap({"data": "x"}))
 
     async def run():
         record = json_record(key="k", value={"api_key": "a"})
@@ -794,7 +794,7 @@ def test_functional_extractor_end_to_end_with_runner():
 
     async def my_poll(config, state) -> AsyncIterator[Message | State]:
         cursor = state.get(CURSOR, 0)
-        yield Message(key=config[API_KEY], topic="out", value={"cursor": cursor})
+        yield Message(key=config[API_KEY], topic="out", value=Event.wrap({"cursor": cursor}))
         yield State.wrap({"cursor": cursor + 1})
 
     async def run():
@@ -1283,13 +1283,13 @@ def test_state_yields_are_commit_boundaries():
         config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
-            yield Message(key="k", topic="out", value={"page": 1})
+            yield Message(key="k", topic="out", value=Event.wrap({"page": 1}))
             yield State.wrap({"cursor": 1})
             yield State.wrap({"cursor": 1})  # unchanged — must open nothing
-            yield Message(key="k", topic="out", value={"page": 2})
-            yield Message(key="k", topic="out", value={"page": 2})
+            yield Message(key="k", topic="out", value=Event.wrap({"page": 2}))
+            yield Message(key="k", topic="out", value=Event.wrap({"page": 2}))
             yield State.wrap({"cursor": 2})
-            yield Message(key="k", topic="out", value={"tail": True})
+            yield Message(key="k", topic="out", value=Event.wrap({"tail": True}))
 
     async def run():
         producer = TxnRecordingProducer()
@@ -1318,9 +1318,9 @@ def test_error_after_boundary_keeps_committed_pages_and_aborts_the_open_one():
         config_topics = ["cfg"]
 
         async def poll(self, config, state) -> AsyncIterator[Message | State]:
-            yield Message(key="k", topic="out", value={"page": 1})
+            yield Message(key="k", topic="out", value=Event.wrap({"page": 1}))
             yield State.wrap({"cursor": 1})
-            yield Message(key="k", topic="out", value={"page": 2})
+            yield Message(key="k", topic="out", value=Event.wrap({"page": 2}))
             raise RuntimeError("source went away")
 
     async def run():

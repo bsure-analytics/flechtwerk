@@ -22,22 +22,38 @@ __all__: list[str] = []
 # --- Utilities ---
 
 
-def encode_json(value: Any) -> bytes:
-    """Encode a value to compact, sorted-key JSON bytes for Kafka.
+def encode_json(value: bytes | str | Record) -> bytes:
+    """Encode a payload to bytes for Kafka — one rule per accepted type.
 
-    Returns UTF-8 bytes ready for the producer (no serializer needed).
+    - ``bytes``: passed through untouched (pre-encoded by the caller).
+    - ``str``: UTF-8 text, deliberately NOT JSON-quoted — a wire-format
+      commitment: ``decode_key``'s exact mirror. JSON-quoting strings would
+      remap every partition and state identity across a fleet.
+    - ``Record``: canonical JSON — compact separators, sorted keys,
+      ensure_ascii=False, allow_nan=False — so equal records produce
+      identical bytes.
+
+    Anything else raises TypeError. Application payloads are validated
+    earlier, at `Message` construction (see `flechtwerk.types.Payload`);
+    this check guards the framework's own call sites (`serialize`, the
+    runners).
     """
-    if isinstance(value, str):
-        return value.encode("utf-8")
-    if isinstance(value, Record):
-        value = value.raw
-    return json.dumps(
-        value,
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+
+    match value:
+        case Record():
+            return json.dumps(
+                value.raw,
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        case str():
+            return value.encode("utf-8")
+        case bytes():
+            return value
+        case _:
+            raise TypeError(f"Expected bytes | str | Record, got {type(value).__name__}")
 
 
 def datetime_to_millis(dt: datetime | None) -> int | None:
@@ -71,6 +87,10 @@ def decode_event(value: bytes | str | None, context: str) -> Event:
       - valid JSON that decodes to a non-dict (e.g. scalar or array)
     """
     try:
+        # Strict UTF-8 on purpose — json.loads(bytes) would sniff the encoding
+        # and decode with errors="surrogatepass", letting ill-formed payloads
+        # (CESU-8 surrogates, UTF-16) slip past this fallback as lone-surrogate
+        # str values that crash encode_json when a stage re-emits them.
         raw_value = value.decode("utf-8") if isinstance(value, bytes) else value
         parsed = json.loads(raw_value) if raw_value else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as e:

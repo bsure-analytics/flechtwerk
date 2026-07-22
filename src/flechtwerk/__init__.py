@@ -3,7 +3,7 @@ from .configs import ConfigStore
 from .extractor import Extractor, extractor
 from .module import CompressionType, Flechtwerk, MqttBrokerConfig
 from .transformer import Transformer, transformer
-from .types import Config, Event, IncomingMessage, Message, State
+from .types import Config, Event, IncomingMessage, Message, Payload, State
 
 __all__ = [
     "CompressionType",
@@ -16,6 +16,7 @@ __all__ = [
     "IncomingMessage",
     "Message",
     "MqttBrokerConfig",
+    "Payload",
     "State",
     "Transformer",
     "transformer",

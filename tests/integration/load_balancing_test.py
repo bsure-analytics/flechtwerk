@@ -30,7 +30,7 @@ from flechtwerk.configs import ConfigStore
 from flechtwerk.state import ChangelogStateStore
 from flechtwerk.testing import InMemoryStateStore
 from flechtwerk.transformer import Transformer, TransformerRunner
-from flechtwerk.types import Message, State
+from flechtwerk.types import Event, Message, State
 
 pytestmark = pytest.mark.integration
 
@@ -233,7 +233,7 @@ async def test_two_runners_split_tasks_and_hand_over_state(
 
     async def counter(msg, state):
         count = state.get(COUNT, 0) + 1
-        yield Message(key=msg.key, topic=output_topic, value={"count": count, "key": msg.key})
+        yield Message(key=msg.key, topic=output_topic, value=Event.wrap({"count": count, "key": msg.key}))
         yield State.wrap({"count": count})
 
     transform = Transformer.of(input_topics=[input_topic], transform=counter)

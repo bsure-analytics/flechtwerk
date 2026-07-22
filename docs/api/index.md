@@ -6,7 +6,7 @@ tagline: The vocabulary of the loom — set down here exactly as the source decl
 
 # API Reference
 
-Flechtwerk's public surface is small and settled in shape. Every entry below is generated directly from the source docstrings, so it never drifts from the code. The core vocabulary is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`, `ConfigStore`, the runtime handle `Flechtwerk`, and the typed-record handles of `flechtwerk.attribute` — with a few supporting types (`IncomingMessage`, `MqttBrokerConfig`, `CompressionType`) documented alongside them below.
+Flechtwerk's public surface is small and settled in shape. Every entry below is generated directly from the source docstrings, so it never drifts from the code. The core vocabulary is `Extractor`, `Transformer`, `Message`, `State`, `Event`, `Config`, `ConfigStore`, the runtime handle `Flechtwerk`, and the typed-record handles of `flechtwerk.attribute` — with a few supporting types (`Payload`, `IncomingMessage`, `MqttBrokerConfig`, `CompressionType`) documented alongside them below.
 
 ## Stages
 
@@ -27,6 +27,8 @@ Flechtwerk's public surface is small and settled in shape. Every entry below is 
 ::: flechtwerk.Config
 
 ::: flechtwerk.Message
+
+::: flechtwerk.Payload
 
 ::: flechtwerk.IncomingMessage
 

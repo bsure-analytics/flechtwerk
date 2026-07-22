@@ -34,7 +34,7 @@ from flechtwerk.extractor import Extractor, ExtractorRunner, token_for
 from flechtwerk.module import Flechtwerk
 from flechtwerk.observer import Observer
 from flechtwerk.state import RocksDBStateStore
-from flechtwerk.types import Message, State
+from flechtwerk.types import Event, Message, State
 
 pytestmark = pytest.mark.integration
 
@@ -80,7 +80,7 @@ def _make_stage(config_topic: str, output_topic: str, owner: str, polled: set[st
         name = config[NAME]
         polled.add(name)
         n = state.get(COUNTER, 0) + 1
-        yield Message(key=name, topic=output_topic, value={"count": n, "key": name, "owner": owner})
+        yield Message(key=name, topic=output_topic, value=Event.wrap({"count": n, "key": name, "owner": owner}))
         yield State.wrap({"counter": n})
 
     return Extractor.of(config_topics=[config_topic], poll=poll)

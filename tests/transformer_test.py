@@ -479,7 +479,7 @@ def test_transformer_runner_yielding_empty_state_deletes_existing_entry():
 
     async def run():
         state_store = InMemoryStateStore()
-        await state_store.put("k1", {"cursor": 5})
+        await state_store.put("k1", State.wrap({"cursor": 5}))
 
         record = json_record(key="k1", topic="in")
         consumer = FakeKafkaConsumer([record])
