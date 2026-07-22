@@ -202,26 +202,6 @@ class ChangelogStateStore(StateStore):
         )
 
 
-async def partition_counts(admin: Any, topics: list[str]) -> dict[str, int]:
-    """Partition count per topic, from broker metadata.
-
-    Raises the broker's error (e.g. UnknownTopicOrPartitionError) when a
-    topic doesn't exist — transformer input topics must exist before the
-    stage starts, since the changelog partition count derives from them.
-
-    Args:
-        admin: An already-started AIOKafkaAdminClient.
-        topics: Topic names to describe.
-    """
-    from aiokafka.errors import for_code
-
-    response = await admin.describe_topics(topics)
-    for t in response:
-        if t["error_code"]:
-            raise for_code(t["error_code"])(t["topic"])
-    return {t["topic"]: len(t["partitions"]) for t in response}
-
-
 async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -1) -> bool:
     """Create the changelog topic if it doesn't exist.
 

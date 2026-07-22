@@ -96,6 +96,18 @@ class Record:
 
     @classmethod
     def wrap(cls, source: RawDict, /) -> Self:
+        """Wrap a wire-format dict: raw JSON, `.raw` payloads, pickle restore.
+
+        Every value runs through the `_encode_any` walker — an identity for
+        already-JSON-native input (pickle restore depends on that), a
+        normalization to the one canonical JSON form for JSON-adjacent
+        conveniences (`datetime`/`date`/`time` → ISO 8601, `set`/`tuple` →
+        list, nested `Record` → its `raw`), and a `TypeError` for anything
+        else. Copying verbatim instead would defer the crash to `json.dumps`
+        at send time and break the differs-from-baseline state dedup —
+        canonical form is what makes value equality coincide with wire
+        equality. The result never aliases ``source``.
+        """
         self = cls()
         for k, v in source.items():
             self.raw[k] = _encode_any(v)

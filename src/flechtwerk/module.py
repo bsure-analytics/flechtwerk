@@ -37,7 +37,7 @@ from .extractor import Extractor, ExtractorRunner
 from .keyring import Keyring, install_keyring, set_secret_observer
 from .metrics import Metrics
 from .observer import Observer, PrometheusObserver
-from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic, partition_counts
+from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -95,6 +95,26 @@ def validate_poll_interval(stage: Extractor | Transformer, poll_interval: timede
     """
     if isinstance(stage, Extractor) and (poll_interval is None or poll_interval <= timedelta(0)):
         raise ValueError("an extractor needs a positive poll_interval")
+
+
+async def partition_counts(admin: Any, topics: list[str]) -> dict[str, int]:
+    """Partition count per topic, from broker metadata.
+
+    Raises the broker's error (e.g. UnknownTopicOrPartitionError) when a
+    topic doesn't exist — transformer input topics must exist before the
+    stage starts, since the changelog partition count derives from them.
+
+    Args:
+        admin: An already-started AIOKafkaAdminClient.
+        topics: Topic names to describe.
+    """
+    from aiokafka.errors import for_code
+
+    response = await admin.describe_topics(topics)
+    for t in response:
+        if t["error_code"]:
+            raise for_code(t["error_code"])(t["topic"])
+    return {t["topic"]: len(t["partitions"]) for t in response}
 
 
 async def ensure_topics(admin: Any, stage: Extractor | Transformer, changelog_topic: str, application_id: str) -> None:
