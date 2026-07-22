@@ -25,7 +25,7 @@ EVENT: Final[Codec[Event]] = record_codec(Event)
 STATE: Final[Codec[State]] = record_codec(State)
 
 
-Payload = bytes | str | Config | Event
+Payload = bytes | str | Event
 """What a `Message` may carry as key or value — one wire encoding per member.
 
 - ``bytes``: sent as-is; the application has already encoded it. The escape
@@ -34,13 +34,17 @@ Payload = bytes | str | Config | Event
   commitment: string keys are ``decode_key``'s exact mirror, and plain-text
   values feed foreign readers (e.g. Druid lookup tables). Quoting them would
   remap every partition and state identity.
-- ``Config`` / ``Event``: canonical JSON — compact, sorted keys — so equal
-  records produce identical bytes (stable partitioning for structured keys).
+- ``Event``: canonical JSON — compact, sorted keys — so equal records
+  produce identical bytes (stable partitioning for structured keys).
 
-Raw dicts are rejected: wrap them in ``Event.wrap(d)`` for identical wire
-bytes plus codec validation. ``State`` is excluded on purpose — a ``State``
-inside a ``Message`` would be *emitted*, not persisted; yield it bare to
-persist it, or wrap it in ``Event(state)`` to emit its contents.
+``Event`` is the one Flechtwerk-schema payload: the wire carries no type,
+so the reader assigns the semantics — a config topic's consumers wrap the
+same bytes as ``Config`` regardless of what the producer held. Raw dicts
+are rejected: wrap them in ``Event.wrap(d)`` for identical wire bytes plus
+codec validation. ``State`` and ``Config`` are excluded on purpose — a
+``State`` inside a ``Message`` would be *emitted*, not persisted (yield it
+bare to persist it), and a ``Config`` travels as data (wrap it in
+``Event(config)``); the explicit conversion marks the semantic handoff.
 """
 
 
@@ -74,8 +78,14 @@ class Message:
     def __post_init__(self) -> None:
         for name in ("key", "value"):
             v = getattr(self, name)
-            if isinstance(v, (bytes, str, Config, Event)):
+            if isinstance(v, (bytes, str, Event)):
                 continue
+            if isinstance(v, Config):
+                raise TypeError(
+                    f"Message.{name} must not be a Config: on the wire it travels as"
+                    " data, and the reader assigns the semantics. Wrap it in"
+                    " Event(config) — identical bytes — to mark the handoff."
+                )
             if isinstance(v, State):
                 raise TypeError(
                     f"Message.{name} must not be a State: a State inside a Message is"
@@ -88,6 +98,6 @@ class Message:
                     " for identical wire bytes plus codec validation."
                 )
             raise TypeError(
-                f"Message.{name} must be bytes | str | Config | Event, got"
+                f"Message.{name} must be bytes | str | Event, got"
                 f" {type(v).__name__}. Encode other shapes to bytes yourself."
             )

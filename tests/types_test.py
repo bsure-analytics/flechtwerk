@@ -22,7 +22,7 @@ def test_message_with_timestamp():
 
 def test_message_accepts_every_payload_shape():
     """Each Payload member is accepted for key and value alike."""
-    for payload in (b"pre-encoded", "plain text", Config.wrap({"a": 1}), Event.wrap({"b": 2})):
+    for payload in (b"pre-encoded", "plain text", Event.wrap({"b": 2})):
         msg = Message(key=payload, topic="t", value=payload)
         assert msg.key is payload
         assert msg.value is payload
@@ -32,6 +32,12 @@ def test_message_rejects_state_with_yield_guidance():
     """A State inside a Message would be emitted, not persisted — the error teaches the fix."""
     with pytest.raises(TypeError, match="emitted, not persisted"):
         Message(key="k", topic="t", value=State.wrap({"cursor": 1}))
+
+
+def test_message_rejects_config_with_wrap_guidance():
+    """On the wire a config travels as data — the error teaches the Event(config) handoff."""
+    with pytest.raises(TypeError, match="travels as data"):
+        Message(key="k", topic="t", value=Config.wrap({"tenant": "a"}))
 
 
 def test_message_rejects_raw_dict_with_wrap_guidance():
@@ -46,7 +52,7 @@ def test_message_key_is_validated_like_value():
 
 def test_message_rejects_other_shapes():
     """Non-Payload shapes get the generic teaching error (encode to bytes yourself)."""
-    with pytest.raises(TypeError, match=r"bytes \| str \| Config \| Event"):
+    with pytest.raises(TypeError, match=r"bytes \| str \| Event"):
         Message(key="k", topic="t", value=42)
 
 

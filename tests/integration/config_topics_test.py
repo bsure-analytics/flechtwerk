@@ -24,7 +24,7 @@ from flechtwerk.configs import ConfigStore, bootstrap_config_store
 from flechtwerk.state import ChangelogStateStore
 from flechtwerk.testing import InMemoryStateStore, fixture_keyring
 from flechtwerk.transformer import Transformer, TransformerRunner
-from flechtwerk.types import Message, State
+from flechtwerk.types import Event, Message, State
 
 pytestmark = pytest.mark.integration
 
@@ -126,7 +126,7 @@ class ConfigJoin(Transformer):
     async def transform(self, msg, state) -> AsyncIterator[Message | State]:
         config = self.configs.get(msg.key)
         if config is not None:
-            yield Message(key=msg.key, topic=self.output_topic, value=config)
+            yield Message(key=msg.key, topic=self.output_topic, value=Event(config))
 
 
 def make_runner(bootstrap: str, group_id: str, transformer: Transformer, changelog_topic: str) -> TransformerRunner:

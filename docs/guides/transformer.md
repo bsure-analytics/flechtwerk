@@ -63,8 +63,8 @@ What each yield does here:
 
 - `yield Message(...)` emits an output record. `Message` is a frozen dataclass
   envelope carrying a `key`, a `topic`, a value, and an optional timestamp.
-  Key and value each accept any `Payload` (`bytes | str | Config | Event`) —
-  an `Event` is the common case; `str` writes plain UTF-8 text and `bytes`
+  Key and value each accept any `Payload` (`bytes | str | Event`) — an
+  `Event` is the common case; `str` writes plain UTF-8 text and `bytes`
   passes through pre-encoded, for output topics read by foreign consumers.
 - `yield State(...)` persists the running count for `msg.key`. On the next
   record for that key, `state.get(SEEN)` reads it back.

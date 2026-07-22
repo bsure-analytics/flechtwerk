@@ -1009,7 +1009,7 @@ class ConfigLookupTransformer(Transformer):
     async def transform(self, msg, state) -> AsyncIterator[Message]:
         config = self.configs.get(msg.key)
         if config is not None:
-            yield Message(key=msg.key, topic="out", value=config)
+            yield Message(key=msg.key, topic="out", value=Event(config))
 
 
 def test_configs_unseeded_access_raises_attribute_error():
@@ -1025,7 +1025,7 @@ def test_configs_lookup_with_seeded_store():
         t = ConfigLookupTransformer()
         t.configs = ConfigStore.of({"k": Config.wrap({"a": 1})})
         result = [m async for m in t.transform(make_incoming(value={"data": "x"}), State())]
-        assert result[0].value == Config.wrap({"a": 1})
+        assert result[0].value == Event.wrap({"a": 1})
 
     asyncio.run(run())
 
