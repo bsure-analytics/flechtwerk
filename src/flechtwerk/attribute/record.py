@@ -96,28 +96,23 @@ class Record:
 
     @classmethod
     def wrap(cls, source: RawDict, /) -> Self:
-        """Wrap a wire-format dict: raw JSON, `.raw` payloads, pickle restore.
+        """Wrap a wire-format dict: raw JSON or another Record's `.raw`.
 
-        Every value runs through the `_encode_any` walker — an identity for
-        already-JSON-native input (pickle restore depends on that), a
-        normalization to the one canonical JSON form for JSON-adjacent
-        conveniences (`datetime`/`date`/`time` → ISO 8601, `set`/`tuple` →
-        list, nested `Record` → its `raw`), and a `TypeError` for anything
-        else. Copying verbatim instead would defer the crash to `json.dumps`
-        at send time and break the differs-from-baseline state dedup —
-        canonical form is what makes value equality coincide with wire
-        equality. The result never aliases ``source``.
+        Every value is encoded through the `ANY` codec — an identity for
+        already-JSON-native input (wire decode and `.raw` re-wraps are
+        lossless), a normalization to the
+        one canonical JSON form for JSON-adjacent conveniences
+        (`datetime`/`date`/`time` → ISO 8601, `set`/`tuple` → list, nested
+        `Record` → its `raw`), and a `TypeError` for anything else. Copying
+        verbatim instead would defer the crash to `json.dumps` at send time
+        and break the differs-from-baseline state dedup — canonical form is
+        what makes value equality coincide with wire equality. The result
+        never aliases `source`.
         """
         self = cls()
         for k, v in source.items():
             self.raw[k] = _encode_any(v)
         return self
-
-    def __reduce__(self) -> tuple:
-        # Pickle reconstructs via (cls.wrap, (raw,)), running back through the
-        # wire-format path. copy.copy/deepcopy do not ride this — they use the
-        # dedicated __copy__/__deepcopy__ below.
-        return self.__class__.wrap, (self.raw,)
 
     # --- indexing ---
 

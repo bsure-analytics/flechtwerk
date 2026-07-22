@@ -1,5 +1,4 @@
 import copy
-import pickle
 
 import pytest
 
@@ -252,16 +251,6 @@ def test_deepcopy_is_independent():
     assert d.raw["nested"]["a"] == 1
 
 
-# --- pickle ---
-
-
-def test_pickle_round_trip():
-    d = Record.wrap({"count": "42", "name": "x"})
-    restored = pickle.loads(pickle.dumps(d))
-    assert restored == d
-    assert restored.raw == d.raw
-
-
 # --- get() ---
 
 
@@ -367,12 +356,6 @@ def test_subclass_preserves_type_via_deepcopy():
     e = Event.wrap({"count": "42"})
     c = copy.deepcopy(e)
     assert isinstance(c, Event)
-
-
-def test_subclass_preserves_type_via_pickle():
-    e = Event.wrap({"count": "42"})
-    restored = pickle.loads(pickle.dumps(e))
-    assert isinstance(restored, Event)
 
 
 def test_subclass_repr_uses_subclass_name():

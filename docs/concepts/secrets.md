@@ -245,8 +245,8 @@ codecs at construction). Two consequences:
   evaluated at import time; the keyring (or the testing fixture) must be
   installed first.
 - **Tokens pass through everything else untouched.** `Record.wrap`, the
-  Record-copy constructor, `copy`/`deepcopy`/pickle, and dict-spread all move
-  the wire-form string as-is; only typed-literal construction and `__setitem__`
+  Record-copy constructor, `copy`/`deepcopy`, and dict-spread all move the
+  wire-form string as-is; only typed-literal construction and `__setitem__`
   re-encrypt.
 
 One testing consequence: `ENCRYPTED` makes the enclosing Record's value-equality
@@ -506,7 +506,7 @@ mode, that is what a new envelope segment under `flenc:` is for.
 1. **`Config` first, but `State` is usable.** JWE draws a fresh nonce, so
    encoding the same value twice yields different bytes. This matters only on an
    *explicit typed write* to the attribute (`state[SECRET] = value`): reading,
-   carrying the state forward, deepcopy, pickle, and even dict-spread
+   carrying the state forward, deepcopy, and even dict-spread
    (`State({**state, OTHER: x})`, where the secret rides a pass-through
    `ViewAttribute`) all preserve the exact ciphertext token, so an untouched
    encrypted field re-serializes byte-identically and the extractor's
