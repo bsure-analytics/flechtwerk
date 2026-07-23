@@ -59,6 +59,13 @@ Emitted by both stage shapes unless noted.
 | `transactions_committed_total` | Counter | — | Kafka transactions successfully committed — a transformer's per-task batches, an extractor's per-page commits. |
 | `poll_cycle_seconds` | Histogram | — | Wall time for one poll cycle across all active configs. *Extractor only.* |
 
+The three duration histograms (`message_processing_seconds`,
+`batch_processing_seconds`, `poll_cycle_seconds`) bucket out to **10 minutes** —
+the transaction timeout, and the longest a single poll page may legally run.
+prometheus_client's default ladder tops out at 10 s, and `histogram_quantile`
+never returns more than the largest finite bound, so a single slow source would
+otherwise peg every latency quantile at a flat 10 s.
+
 ### Config Store (GlobalKTable)
 
 Emitted by any stage that declares `config_topics`.

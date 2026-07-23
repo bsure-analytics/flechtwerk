@@ -5,12 +5,22 @@ values are caller-provided via `metrics_labels` — Flechtwerk itself doesn't
 know what they're called, which keeps it application-agnostic.
 """
 from functools import cached_property
+from typing import Final
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 # Framework-internal on purpose: `PrometheusObserver` is the only consumer;
 # the application-facing surface is `metrics_port` / `metrics_labels`.
 __all__: list[str] = []
+
+# prometheus_client's default buckets top out at 10 s, and histogram_quantile
+# never returns more than the largest finite bound — one slow source and every
+# latency panel pins at a flat "10 s". Extend the ladder to the transaction
+# timeout (10 minutes), the longest a single poll page may legally run.
+_DURATION_BUCKETS: Final = (
+    0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75,
+    1.0, 2.5, 5.0, 7.5, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0,
+)
 
 
 class Metrics:
@@ -54,6 +64,7 @@ class Metrics:
             "Time spent in a single transform()/poll() dispatch (a transformer's transaction is outside; an extractor's per-page sends and commits are inside)",
             self._label_names,
             registry=self.registry,
+            buckets=_DURATION_BUCKETS,
         )
 
     @cached_property
@@ -73,6 +84,7 @@ class Metrics:
             "Wall time to fully process a batch (incl. Kafka transaction commit)",
             self._label_names,
             registry=self.registry,
+            buckets=_DURATION_BUCKETS,
         )
 
     @cached_property
@@ -100,6 +112,7 @@ class Metrics:
             "Wall time for one poll cycle across all active configs",
             self._label_names,
             registry=self.registry,
+            buckets=_DURATION_BUCKETS,
         )
 
     @cached_property
