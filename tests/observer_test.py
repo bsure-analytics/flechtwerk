@@ -8,6 +8,7 @@ from flechtwerk.observer import Observer, PrometheusObserver
 def make_observer() -> tuple[PrometheusObserver, CollectorRegistry]:
     registry = CollectorRegistry()
     metrics = Metrics()
+    metrics.max_poll_records = 500
     metrics.metrics_labels = {"datasource": "ds1", "stage": "extractor"}
     metrics.registry = registry
 
@@ -131,6 +132,28 @@ def test_dispatch_scope_records_histogram():
         {"datasource": "ds1", "stage": "extractor"},
     )
     assert count == 1
+
+
+def test_batch_size_buckets_derive_from_max_poll_records():
+    """The ladder ends at cap-1/cap so at-cap batches are one bucket subtraction."""
+    observer, registry = make_observer()
+    with observer.batch_scope(300):
+        pass
+    with observer.batch_scope(500):
+        pass
+    labels = {"datasource": "ds1", "stage": "extractor"}
+    below_cap = registry.get_sample_value(
+        "flechtwerk_batch_size_bucket", {**labels, "le": "499.0"},
+    )
+    at_cap = registry.get_sample_value(
+        "flechtwerk_batch_size_bucket", {**labels, "le": "500.0"},
+    )
+    beyond_cap = registry.get_sample_value(
+        "flechtwerk_batch_size_bucket", {**labels, "le": "1000.0"},
+    )
+    assert below_cap == 1
+    assert at_cap == 2
+    assert beyond_cap is None
 
 
 def test_batch_scope_records_size_and_duration():

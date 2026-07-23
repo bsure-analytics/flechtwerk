@@ -4,6 +4,7 @@ from datetime import timedelta
 from typing import AsyncIterator
 
 import pytest
+from prometheus_client import CollectorRegistry
 
 from flechtwerk.extractor import Extractor
 from flechtwerk.module import (
@@ -272,6 +273,31 @@ def test_consumer_caps_getmany_batches():
             _ = make(max_poll_records=0).consumer
 
     asyncio.run(run())
+
+
+def test_batch_size_buckets_follow_max_poll_records():
+    """reactor-di wires the getmany() cap onto Metrics.
+
+    The bucket ladder must end at cap-1/cap: a top bucket below the cap pins
+    saturated histogram_quantile panels flat, one above it never receives a
+    sample, and the cap-1 boundary makes at-cap batches (the consumer-falling-
+    behind signal) a single bucket subtraction in PromQL.
+    """
+    from flechtwerk.module import Flechtwerk
+
+    module = Flechtwerk.of(
+        application_id="app",
+        bootstrap_servers="localhost:9092",
+        client_id="pod-0",
+        stage=Transformer.of(input_topics=["in"], transform=noop_transform),
+        max_poll_records=100,
+    )
+    module.registry = CollectorRegistry()  # keep the process-global REGISTRY clean
+    # No public accessor on prometheus_client's Histogram — pin the private
+    # slot (the module_test `_max_poll_records` precedent).
+    assert module.metrics.batch_size._upper_bounds == [
+        1, 2, 5, 10, 25, 50, 99, 100, float("inf"),
+    ]
 
 
 # -- configured_stage ----------------------------------------------------------

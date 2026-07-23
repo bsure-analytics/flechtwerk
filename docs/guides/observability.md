@@ -66,6 +66,17 @@ prometheus_client's default ladder tops out at 10 s, and `histogram_quantile`
 never returns more than the largest finite bound, so a single slow source would
 otherwise peg every latency quantile at a flat 10 s.
 
+`batch_size` derives its bucket ladder from `max_poll_records`: geometric steps
+below the cap, then `cap - 1` and the cap itself as the top two boundaries. A
+batch at exactly the cap means the backlog outran the fetch — the consumer is
+falling behind — and the `cap - 1` boundary turns that into a single bucket
+subtraction (with the default cap of 500):
+
+```promql
+increase(flechtwerk_batch_size_bucket{le="500.0"}[5m])
+  - ignoring(le) increase(flechtwerk_batch_size_bucket{le="499.0"}[5m])
+```
+
 ### Config Store (GlobalKTable)
 
 Emitted by any stage that declares `config_topics`.

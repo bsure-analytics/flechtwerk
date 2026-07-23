@@ -5,6 +5,7 @@ values are caller-provided via `metrics_labels` — Flechtwerk itself doesn't
 know what they're called, which keeps it application-agnostic.
 """
 from functools import cached_property
+from itertools import count, takewhile
 from typing import Final
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
@@ -23,15 +24,32 @@ _DURATION_BUCKETS: Final = (
 )
 
 
+def _batch_size_buckets(max_poll_records: int) -> tuple[int, ...]:
+    """Bucket ladder for `batch_size`, derived from the `getmany()` cap.
+
+    The top boundary must be the cap itself: histogram_quantile never returns
+    more than the largest finite bound, so a ladder topping out below the cap
+    pins saturated panels flat (the _DURATION_BUCKETS problem), while any
+    boundary above it can never receive a sample. The extra ``cap - 1``
+    boundary isolates batches at exactly the cap — the consumer-falling-behind
+    signal — as a single bucket subtraction in PromQL.
+    """
+    # 1-2.5-5 per decade; the floor division makes decade zero 1, 2, 5.
+    ladder = (m * 10**e // 10 for e in count() for m in (10, 25, 50))
+    below = takewhile(lambda step: step < max_poll_records - 1, ladder)
+    return *below, max_poll_records - 1, max_poll_records
+
+
 class Metrics:
     """Lazy registry for the framework's metric set.
 
-    reactor-di wires `metrics_labels` and `registry` from `Flechtwerk`
-    by attribute name. Each metric is a `cached_property` that builds its
-    prometheus_client object on first access, taking
+    reactor-di wires `max_poll_records`, `metrics_labels`, and `registry`
+    from `Flechtwerk` by attribute name. Each metric is a `cached_property`
+    that builds its prometheus_client object on first access, taking
     `list(self.metrics_labels.keys()) + per_metric_extras` as `labelnames`.
     """
 
+    max_poll_records: int
     metrics_labels: dict[str, str]
     registry: CollectorRegistry
 
@@ -71,10 +89,10 @@ class Metrics:
     def batch_size(self) -> Histogram:
         return Histogram(
             "flechtwerk_batch_size",
-            "Records returned by a single getmany() call",
+            "Records returned by a single getmany() call (capped at max_poll_records)",
             self._label_names,
             registry=self.registry,
-            buckets=(1, 2, 5, 10, 25, 50, 100, 250, 500, 1000),
+            buckets=_batch_size_buckets(self.max_poll_records),
         )
 
     @cached_property
