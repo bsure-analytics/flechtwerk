@@ -538,6 +538,7 @@ class ExtractorRunner:
         await producer.start()
         store = ChangelogStateStore()
         store.inner = self.inner_store
+        store.observer = self.observer
         store.producer = producer
         store.topic = self.changelog_topic
         self.tasks[token] = TokenTask(asyncio.Lock(), producer, store)
@@ -751,13 +752,15 @@ class ExtractorRunner:
                                 if not in_transaction:
                                     await task.producer.begin_transaction()
                                     in_transaction = True
+                                key_bytes, value_bytes = encode_json(item.key), encode_json(item.value)
                                 deliveries.append(await task.producer.send(
                                     item.topic,
-                                    key=encode_json(item.key),
-                                    value=encode_json(item.value),
+                                    key=key_bytes,
+                                    value=value_bytes,
                                     timestamp_ms=datetime_to_millis(item.timestamp),
                                 ))
                                 self.observer.message_out(item.topic)
+                                self.observer.message_out_bytes(item.topic, len(key_bytes) + len(value_bytes))
                             else:
                                 raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
                     finally:

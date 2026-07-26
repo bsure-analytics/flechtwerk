@@ -1056,6 +1056,36 @@ def test_run_bootstraps_config_store_and_subscribes_input_topics_only():
     asyncio.run(run())
 
 
+def test_process_batch_weighs_messages_and_state_records():
+    """The runner observes bytes in both directions and for every changelog
+    write — the operator's early warning that a record is nearing the ~1 MiB
+    ceiling that kills the producer."""
+    async def run():
+        from flechtwerk.testing import RecordingObserver
+
+        record = json_record(key="form1", value={"data": "hello"})
+        consumer = FakeKafkaConsumer([record])
+        producer = FakeKafkaProducer()
+        mod = make_module(StatefulCounterTransformer(), consumer, producer)
+        mod.observer = RecordingObserver()
+        # The pre-wired task 0 store is a bare InMemoryStateStore; a changelog
+        # view over it is what production runs, and what observes writes.
+        mod.runner.tasks[0] = Task(0, producer, mod.create_task_store(0, producer))
+        runner = mod.runner
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        calls = mod.observer.calls
+        # Inbound: exactly the key + value lengths the broker reported.
+        expected_in = record.serialized_key_size + record.serialized_value_size
+        assert ("message_in_bytes", "input-topic", expected_in) in calls
+        assert [c for c in calls if c[0] == "message_out_bytes" and c[1] == "output" and c[2] > 0]
+        assert [c for c in calls if c[0] == "state_record_bytes" and c[1] > 0]
+
+    asyncio.run(run())
+
+
 def test_check_config_updates_applies_enriches_and_observes():
     async def run():
         from flechtwerk.testing import RecordingObserver

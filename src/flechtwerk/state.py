@@ -11,6 +11,7 @@ from aiokafka import AIOKafkaProducer
 from reactor_di import lookup
 
 from .kafka import encode_json, restore_changelog
+from .observer import Observer
 from .types import State
 
 log = logging.getLogger(__name__)
@@ -155,9 +156,17 @@ class ChangelogStateStore(StateStore):
     the changelog partition matching the records that produced it, regardless
     of what the state key hashes to. ``None`` (extractors) leaves routing to
     the default key-hash partitioner.
+
+    Every changelog write is weighed through ``observer`` — a state key's whole
+    value is ONE Kafka record, so it is subject to the producer's
+    ``max_request_size`` (1 MiB by default), and the framework deliberately
+    does not guard: an oversized record crashes the stage exactly as aiokafka
+    makes it. The metric is how an operator watches the approach instead of
+    doing forensics after the fall.
     """
 
     inner: lookup[StateStore, "inner_store"]  # noqa: PyUnresolvedReferences
+    observer: Observer = Observer()
     partition: int | None = None
     producer: AIOKafkaProducer
     topic: lookup[str, "changelog_topic"]  # noqa: PyUnresolvedReferences
@@ -166,6 +175,11 @@ class ChangelogStateStore(StateStore):
         return await self.inner.get(key)
 
     async def put_bytes(self, key: str, raw: bytes) -> None:
+        # Observe BEFORE the send: when a record does blow the ceiling, its
+        # fatal size is the last value on the scrape. `restore` bypasses this
+        # method entirely (it feeds `inner.put_bytes`), so a replay of the
+        # whole changelog can never inflate the distribution.
+        self.observer.state_record_bytes(len(raw))
         await self.inner.put_bytes(key, raw)
         await self.producer.send(
             self.topic,

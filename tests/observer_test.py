@@ -21,7 +21,10 @@ def make_observer() -> tuple[PrometheusObserver, CollectorRegistry]:
 def test_no_op_observer_does_nothing():
     observer = Observer()
     observer.message_in("t")
+    observer.message_in_bytes("t", 128)
     observer.message_out("t")
+    observer.message_out_bytes("t", 128)
+    observer.state_record_bytes(128)
     observer.transaction_committed()
     observer.active_configs(3)
     with observer.dispatch_scope():
@@ -54,6 +57,118 @@ def test_message_out_increments_counter():
         "flechtwerk_messages_out_total",
         {"datasource": "ds1", "stage": "extractor", "topic": "out-topic"},
     ) == 1
+
+
+# --- Byte histograms and their high-water-mark gauges ---
+
+
+def test_message_in_bytes_observes_per_topic():
+    observer, registry = make_observer()
+    observer.message_in_bytes("topic-a", 300)
+    observer.message_in_bytes("topic-b", 5_000)
+    a = {"datasource": "ds1", "stage": "extractor", "topic": "topic-a"}
+    b = {"datasource": "ds1", "stage": "extractor", "topic": "topic-b"}
+    assert registry.get_sample_value("flechtwerk_message_in_bytes_sum", a) == 300
+    assert registry.get_sample_value("flechtwerk_message_in_bytes_bucket", {**a, "le": "1024.0"}) == 1
+    assert registry.get_sample_value("flechtwerk_message_in_bytes_bucket", {**a, "le": "256.0"}) == 0
+    assert registry.get_sample_value("flechtwerk_message_in_bytes_sum", b) == 5_000
+    assert registry.get_sample_value("flechtwerk_message_in_bytes_bucket", {**b, "le": "16384.0"}) == 1
+
+
+def test_message_out_bytes_observes_per_topic():
+    observer, registry = make_observer()
+    observer.message_out_bytes("out-topic", 2_000)
+    labels = {"datasource": "ds1", "stage": "extractor", "topic": "out-topic"}
+    assert registry.get_sample_value("flechtwerk_message_out_bytes_count", labels) == 1
+    assert registry.get_sample_value("flechtwerk_message_out_bytes_sum", labels) == 2_000
+    assert registry.get_sample_value("flechtwerk_message_out_bytes_bucket", {**labels, "le": "4096.0"}) == 1
+    assert registry.get_sample_value("flechtwerk_message_out_bytes_bucket", {**labels, "le": "1024.0"}) == 0
+
+
+def test_state_record_bytes_brackets_the_record_ceiling():
+    """The ladder must resolve the danger zone: the crash that motivated this
+    metric wrote 1 014 623 bytes, which has to read as "past 917 504, under the
+    1 MiB ceiling" — not as an anonymous sample in the last decade.
+
+    The `le` for the ceiling is spelled `1.048576e+06`: prometheus_client
+    formats bounds Go-style and switches to scientific notation above 1e6. The
+    exact string is what an operator types into PromQL, so pin it here.
+    """
+    observer, registry = make_observer()
+    observer.state_record_bytes(1_014_623)
+    labels = {"datasource": "ds1", "stage": "extractor"}
+    assert registry.get_sample_value("flechtwerk_state_record_bytes_count", labels) == 1
+    assert registry.get_sample_value("flechtwerk_state_record_bytes_sum", labels) == 1_014_623
+    assert registry.get_sample_value(
+        "flechtwerk_state_record_bytes_bucket", {**labels, "le": "917504.0"},
+    ) == 0
+    assert registry.get_sample_value(
+        "flechtwerk_state_record_bytes_bucket", {**labels, "le": "1.048576e+06"},
+    ) == 1
+
+
+def test_state_record_bytes_beyond_the_top_bound_lands_only_in_inf():
+    """A raised-limit deployment's oversized record still counts — the ladder's
+    top finite bound is 4 MiB, and anything past it falls in +Inf alone."""
+    observer, registry = make_observer()
+    observer.state_record_bytes(5_000_000)
+    labels = {"datasource": "ds1", "stage": "extractor"}
+    assert registry.get_sample_value(
+        "flechtwerk_state_record_bytes_bucket", {**labels, "le": "4.194304e+06"},
+    ) == 0
+    assert registry.get_sample_value(
+        "flechtwerk_state_record_bytes_bucket", {**labels, "le": "+Inf"},
+    ) == 1
+
+
+def test_state_record_max_bytes_is_a_running_high_water_mark():
+    """A last-value gauge would lose every peak between scrape instants, so the
+    mark only ever climbs — it is the largest observation since process start."""
+    observer, registry = make_observer()
+    labels = {"datasource": "ds1", "stage": "extractor"}
+
+    observer.state_record_bytes(100)
+    assert registry.get_sample_value("flechtwerk_state_record_max_bytes", labels) == 100
+
+    observer.state_record_bytes(50)
+    assert registry.get_sample_value("flechtwerk_state_record_max_bytes", labels) == 100
+
+    observer.state_record_bytes(200)
+    assert registry.get_sample_value("flechtwerk_state_record_max_bytes", labels) == 200
+
+
+def test_message_max_bytes_gauges_track_topics_independently():
+    observer, registry = make_observer()
+    observer.message_out_bytes("topic-a", 100)
+    observer.message_out_bytes("topic-b", 900)
+    observer.message_out_bytes("topic-a", 50)
+    observer.message_in_bytes("topic-a", 700)
+    a = {"datasource": "ds1", "stage": "extractor", "topic": "topic-a"}
+    b = {"datasource": "ds1", "stage": "extractor", "topic": "topic-b"}
+    assert registry.get_sample_value("flechtwerk_message_out_max_bytes", a) == 100
+    assert registry.get_sample_value("flechtwerk_message_out_max_bytes", b) == 900
+    # The in/out marks are separate series, not one shared tracker.
+    assert registry.get_sample_value("flechtwerk_message_in_max_bytes", a) == 700
+    assert registry.get_sample_value("flechtwerk_message_in_max_bytes", b) is None
+
+
+def test_max_bytes_trackers_are_per_observer_instance():
+    """The trackers must not be mutable class attributes — two observers over
+    two registries would otherwise suppress each other's first observation."""
+    first, first_registry = make_observer()
+    second, second_registry = make_observer()
+    labels = {"datasource": "ds1", "stage": "extractor"}
+
+    first.state_record_bytes(500)
+    first.message_out_bytes("t", 500)
+    second.state_record_bytes(10)
+    second.message_out_bytes("t", 10)
+
+    assert second_registry.get_sample_value("flechtwerk_state_record_max_bytes", labels) == 10
+    assert second_registry.get_sample_value(
+        "flechtwerk_message_out_max_bytes", {**labels, "topic": "t"},
+    ) == 10
+    assert first_registry.get_sample_value("flechtwerk_state_record_max_bytes", labels) == 500
 
 
 def test_transaction_committed_increments_counter():

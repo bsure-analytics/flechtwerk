@@ -5,6 +5,7 @@ transaction committed, poll cycle, …). The `Observer` class lets a
 pluggable implementation decide what to do with those events.
 """
 from contextlib import AbstractContextManager, nullcontext
+from functools import cached_property
 
 from .metrics import Metrics
 
@@ -23,14 +24,22 @@ class Observer:
     point-in-time notifications.
     """
 
+    # The `*_bytes` hooks are separate from their counting siblings rather than
+    # widened signatures on them: `RecordingObserver` tuples are asserted by
+    # shape here and downstream, so widening would break test helpers for no
+    # gain. `state_record_bytes` carries no key and no partition — see
+    # `Metrics.state_record_bytes` for why.
     def message_in(self, topic: str) -> None: pass
+    def message_in_bytes(self, topic: str, n: int) -> None: pass
     def message_out(self, topic: str) -> None: pass
+    def message_out_bytes(self, topic: str, n: int) -> None: pass
     def transaction_committed(self) -> None: pass
     def active_configs(self, n: int) -> None: pass
     def config_message_in(self, topic: str) -> None: pass
     def config_store_entries(self, n: int) -> None: pass
     def config_store_restored(self, entries: int) -> None: pass
     def state_restored(self, partition: int, entries: int) -> None: pass
+    def state_record_bytes(self, n: int) -> None: pass
     def tasks_assigned(self, n: int) -> None: pass
     def tokens_assigned(self, n: int) -> None: pass
 
@@ -68,11 +77,38 @@ class PrometheusObserver(Observer):
     metrics: Metrics
     metrics_labels: dict[str, str]
 
+    # High-water-mark trackers for the byte histograms' paired `*_max_bytes`
+    # gauges. Deliberately unannotated / lazy: reactor-di wires this class's
+    # annotated fields by name, and a mutable class-level default would be
+    # shared across instances. The int rebinds into the instance on first
+    # write; a single event loop makes read-then-set race-free.
+    _state_record_max = 0
+
+    @cached_property
+    def _message_in_max(self) -> dict[str, int]:
+        return {}
+
+    @cached_property
+    def _message_out_max(self) -> dict[str, int]:
+        return {}
+
     def message_in(self, topic: str) -> None:
         self.metrics.messages_in_total.labels(**self.metrics_labels, topic=topic).inc()
 
+    def message_in_bytes(self, topic: str, n: int) -> None:
+        self.metrics.message_in_bytes.labels(**self.metrics_labels, topic=topic).observe(n)
+        if n > self._message_in_max.get(topic, 0):
+            self._message_in_max[topic] = n
+            self.metrics.message_in_max_bytes.labels(**self.metrics_labels, topic=topic).set(n)
+
     def message_out(self, topic: str) -> None:
         self.metrics.messages_out_total.labels(**self.metrics_labels, topic=topic).inc()
+
+    def message_out_bytes(self, topic: str, n: int) -> None:
+        self.metrics.message_out_bytes.labels(**self.metrics_labels, topic=topic).observe(n)
+        if n > self._message_out_max.get(topic, 0):
+            self._message_out_max[topic] = n
+            self.metrics.message_out_max_bytes.labels(**self.metrics_labels, topic=topic).set(n)
 
     def transaction_committed(self) -> None:
         self.metrics.transactions_committed_total.labels(**self.metrics_labels).inc()
@@ -91,6 +127,12 @@ class PrometheusObserver(Observer):
 
     def state_restored(self, partition: int, entries: int) -> None:
         self.metrics.state_restored_entries_total.labels(**self.metrics_labels, partition=str(partition)).inc(entries)
+
+    def state_record_bytes(self, n: int) -> None:
+        self.metrics.state_record_bytes.labels(**self.metrics_labels).observe(n)
+        if n > self._state_record_max:
+            self._state_record_max = n
+            self.metrics.state_record_max_bytes.labels(**self.metrics_labels).set(n)
 
     def tasks_assigned(self, n: int) -> None:
         self.metrics.tasks_assigned.labels(**self.metrics_labels).set(n)

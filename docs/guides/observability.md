@@ -53,6 +53,10 @@ Emitted by both stage shapes unless noted.
 | --- | --- | --- | --- |
 | `messages_in_total` | Counter | `topic` | Input messages consumed and dispatched to user code. |
 | `messages_out_total` | Counter | `topic` | Output messages yielded by user code (produced to Kafka). |
+| `message_in_bytes` | Histogram | `topic` | Serialized size (key + value) of one consumed record — reported by the broker, so it costs no re-serialization. |
+| `message_in_max_bytes` | Gauge | `topic` | Largest consumed record since process start (high-water mark). |
+| `message_out_bytes` | Histogram | `topic` | Serialized size (key + value) of one produced record. |
+| `message_out_max_bytes` | Gauge | `topic` | Largest produced record since process start (high-water mark). |
 | `message_processing_seconds` | Histogram | — | Time in a single `transform()` / `poll()` dispatch (a transformer's transaction is outside; an extractor's per-page sends and commits are inside). |
 | `batch_size` | Histogram | — | Records returned by one `getmany()` call — bounded above by `max_poll_records` (default 500). *Transformer only.* |
 | `batch_processing_seconds` | Histogram | — | Wall time to process a batch, including the transaction commit. *Transformer only.* |
@@ -77,6 +81,32 @@ increase(flechtwerk_batch_size_bucket{le="500.0"}[5m])
   - ignoring(le) increase(flechtwerk_batch_size_bucket{le="499.0"}[5m])
 ```
 
+The three **byte** histograms — `message_in_bytes`, `message_out_bytes`, and
+`state_record_bytes` below — share one ladder, because a message and a state
+record face the same ceiling: aiokafka's `max_request_size` and the broker's
+`max.message.bytes`, both 1 MiB by default. Cross a ceiling and the producer
+raises `MessageSizeTooLargeError` mid-transaction and the stage crashes. The
+ladder is fine at the bottom (typical messages run hundreds of bytes) and dense
+from 256 KiB up, with a boundary exactly on 1 048 576 and two beyond it for
+deployments that raised their limits. Being histograms, each `_sum` doubles as
+byte throughput per topic, or total changelog bytes written.
+
+!!! note "`le` labels above 1e6 are in scientific notation"
+
+    prometheus_client formats bucket bounds Go-style, so the 1 MiB boundary is
+    `le="1.048576e+06"`, not `le="1048576.0"`. Bounds at or below 1e6 keep the
+    plain form (`le="524288.0"`).
+
+Each byte histogram is paired with a `*_max_bytes` **gauge**, and the gauge is
+usually the one you alert on. The buckets can tell you *that* something crossed a
+threshold, but not what the maximum was — the 1 014 623-byte record that motivated
+these metrics reads only as "between 917 504 and 1 048 576", when what you want is
+*"97 % of the ceiling"*. The gauge is a **running** max, not a last-value gauge:
+Prometheus samples at scrape instants, so a last-value gauge would lose every
+peak between scrapes. It is the largest observation since process start and
+resets on restart — honest, and self-healing, since state buckets are rewritten
+whole on every commit and re-establish the mark within minutes.
+
 ### Config Store (GlobalKTable)
 
 Emitted by any stage that declares `config_topics`.
@@ -98,6 +128,12 @@ work), tokens for extractors (config-partition ownership leases).
 | `tasks_assigned` | Gauge | — | Tasks (input partitions) currently owned and initialized by this instance. |
 | `tokens_assigned` | Gauge | — | Ownership tokens (config-partition leases) held by this extractor instance — 0 means hot standby. |
 | `state_restored_entries_total` | Counter | `partition` | Changelog records replayed into the local state store on task initialization. |
+| `state_record_bytes` | Histogram | — | Serialized size of each state changelog record, observed at write. Restore is not counted (it bypasses the write path). |
+| `state_record_max_bytes` | Gauge | — | Largest state record since process start (high-water mark). |
+
+Neither state metric carries a key or partition label: a state key is unbounded
+cardinality, and the question you are asking is *"is **any** key approaching the
+ceiling?"* — which the high-water mark answers directly.
 
 ### MQTT
 
@@ -139,6 +175,33 @@ static declarations — empty string for an unscoped attribute).
 - **`tokens_assigned`** — an extractor's ownership-lease count per instance.
   The sum across instances should equal the config topics' partition count; an
   instance sitting at 0 is a hot standby.
+- **`state_record_max_bytes` (or `message_out_max_bytes`) approaching 1 MiB** —
+  the single most valuable alert here. A state key's whole value is one Kafka
+  record, and so is every message; crossing the ~1 MiB record ceiling crashes
+  the stage deterministically, forever, until the state is reset or the record
+  shrinks:
+
+  ```promql
+  flechtwerk_state_record_max_bytes > 0.8 * 1048576
+  ```
+
+  ```promql
+  flechtwerk_message_out_max_bytes > 0.8 * 1048576
+  ```
+
+  The gauges are *largest since process start*, so they reset on restart — after
+  a crashloop, expect the mark to climb back within minutes. The histograms
+  answer the windowed form instead — *"did any record exceed 512 KiB in the last
+  10 minutes?"*:
+
+  ```promql
+  sum(increase(flechtwerk_state_record_bytes_count[10m]))
+    - sum(increase(flechtwerk_state_record_bytes_bucket{le="524288.0"}[10m]))
+  ```
+
+  A climbing mark on state means unbounded state — see [Exactly-once
+  delivery](../concepts/exactly-once.md#constraints) for the contract and the
+  ways to bound it.
 - **`transactions_committed_total` flat while `messages_in_total` climbs** — a
   transformer is consuming but not committing: transactions are stalling or
   aborting. Read it alongside `batch_processing_seconds`.

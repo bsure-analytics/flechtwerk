@@ -46,8 +46,14 @@ class RecordingObserver(Observer):
     def message_in(self, topic: str) -> None:
         self.calls.append(("message_in", topic))
 
+    def message_in_bytes(self, topic: str, n: int) -> None:
+        self.calls.append(("message_in_bytes", topic, n))
+
     def message_out(self, topic: str) -> None:
         self.calls.append(("message_out", topic))
+
+    def message_out_bytes(self, topic: str, n: int) -> None:
+        self.calls.append(("message_out_bytes", topic, n))
 
     def transaction_committed(self) -> None:
         self.calls.append(("transaction_committed",))
@@ -66,6 +72,9 @@ class RecordingObserver(Observer):
 
     def state_restored(self, partition: int, entries: int) -> None:
         self.calls.append(("state_restored", partition, entries))
+
+    def state_record_bytes(self, n: int) -> None:
+        self.calls.append(("state_record_bytes", n))
 
     def tasks_assigned(self, n: int) -> None:
         self.calls.append(("tasks_assigned", n))
@@ -177,6 +186,13 @@ def installed_keyring(keyring: Keyring | None = None, observer: Observer | None 
         _restore_secret_runtime(previous)
 
 
+def _serialized_size(payload: bytes | str | None) -> int:
+    """Wire length of a `make_record` key or value — -1 when absent, as Kafka reports it."""
+    if payload is None:
+        return -1
+    return len(payload.encode("utf-8") if isinstance(payload, str) else payload)
+
+
 def make_record(
     *,
     key: bytes | str | None = None,
@@ -189,8 +205,10 @@ def make_record(
     """Build a real ``aiokafka.ConsumerRecord`` with sensible defaults for tests.
 
     Only the six fields ``parse_message`` actually reads are exposed — the
-    remaining aiokafka-internal fields (``timestamp_type``, ``checksum``, the
-    ``serialized_*_size`` fields, ``headers``) get placeholder values.
+    remaining aiokafka-internal fields (``timestamp_type``, ``checksum``,
+    ``headers``) get placeholder values. The ``serialized_*_size`` fields are
+    filled from the real encoded lengths so the runners' byte metrics see
+    honest numbers, matching the broker's own convention of -1 for absent.
     """
     return ConsumerRecord(
         topic=topic,
@@ -201,8 +219,8 @@ def make_record(
         key=key,
         value=value,
         checksum=None,
-        serialized_key_size=-1,
-        serialized_value_size=-1,
+        serialized_key_size=_serialized_size(key),
+        serialized_value_size=_serialized_size(value),
         headers=(),
     )
 

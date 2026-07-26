@@ -211,6 +211,30 @@ def test_extractor_runner_polls_configs():
     asyncio.run(run())
 
 
+def test_poll_one_weighs_produced_messages():
+    """Every message the extractor sends is weighed at the send site, key +
+    value — the same ~1 MiB ceiling that kills an oversized state record kills
+    an oversized event."""
+
+    async def run():
+        from flechtwerk.testing import RecordingObserver
+
+        record = json_record(key="k", value={"api_key": "key123"})
+        producer = FakeKafkaProducer()
+        mod = make_module(SimpleExtractor(), FakeKafkaConsumer([record]), producer)
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+        await runner.load_initial_configs()
+
+        await runner.poll_one(runner.entries["k"])
+
+        topic, payload = producer.sent[0]
+        expected = len(payload["key"]) + len(payload["value"])
+        assert ("message_out_bytes", topic, expected) in mod.observer.calls
+
+    asyncio.run(run())
+
+
 def test_poll_config_mutation_does_not_leak_across_polls():
     """A poll() that mutates its config in place must not corrupt the cached
     config: the runner hands each poll a private copy, so the mutation is

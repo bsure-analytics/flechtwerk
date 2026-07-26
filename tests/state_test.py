@@ -6,8 +6,15 @@ from typing import Final
 import pytest
 
 from flechtwerk.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
-from flechtwerk.state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
-from flechtwerk.testing import FakeKafkaProducer, InMemoryStateStore
+from flechtwerk.observer import Observer
+from flechtwerk.state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic, serialize
+from flechtwerk.testing import (
+    FakeKafkaConsumer,
+    FakeKafkaProducer,
+    InMemoryStateStore,
+    RecordingObserver,
+    make_record,
+)
 from flechtwerk.types import State
 
 
@@ -310,6 +317,80 @@ def test_changelog_inner_store_tombstone_deletes():
     asyncio.run(run())
 
 
+def test_changelog_put_observes_the_serialized_size():
+    """Every changelog write is weighed — the framework's one new invariant
+    here. A state key's whole value is ONE Kafka record, so this is the number
+    that must stay under the producer's ``max_request_size``."""
+    async def run():
+        observer = RecordingObserver()
+        store = ChangelogStateStore()
+        store.inner = InMemoryStateStore()
+        store.observer = observer
+        store.producer = FakeKafkaProducer()
+        store.topic = "test-changelog"
+
+        state = State.wrap({"cursor": 42})
+        await store.put("k1", state)
+
+        assert ("state_record_bytes", len(serialize(state))) in observer.calls
+
+    asyncio.run(run())
+
+
+def test_changelog_delete_observes_nothing():
+    """A tombstone is ``b""`` — no size signal, so no observation."""
+    async def run():
+        observer = RecordingObserver()
+        store = ChangelogStateStore()
+        store.inner = InMemoryStateStore()
+        store.observer = observer
+        store.producer = FakeKafkaProducer()
+        store.topic = "test-changelog"
+
+        await store.delete("k1")
+
+        assert observer.calls == []
+
+    asyncio.run(run())
+
+
+def test_changelog_restore_observes_nothing():
+    """restore() feeds ``inner.put_bytes`` directly, so replaying the whole
+    changelog on every token assignment can never inflate the distribution."""
+    async def run():
+        observer = RecordingObserver()
+        store = ChangelogStateStore()
+        store.inner = InMemoryStateStore()
+        store.observer = observer
+        store.producer = FakeKafkaProducer()
+        store.topic = "test-changelog"
+
+        count = await store.restore(FakeKafkaConsumer([
+            make_record(topic="test-changelog", key="k1", value='{"cursor":1}'),
+        ]))
+
+        assert count == 1
+        assert (await store.get("k1")).raw == {"cursor": 1}
+        assert observer.calls == []
+
+    asyncio.run(run())
+
+
+def test_changelog_observer_defaults_to_the_no_op():
+    """An unwired store must not blow up — the default is a bare `Observer`."""
+    async def run():
+        store = ChangelogStateStore()
+        store.inner = InMemoryStateStore()
+        store.producer = FakeKafkaProducer()
+        store.topic = "test-changelog"
+
+        await store.put("k1", State.wrap({"cursor": 1}))  # should not raise
+
+        assert isinstance(store.observer, Observer)
+
+    asyncio.run(run())
+
+
 def test_changelog_close_closes_inner():
     """close() closes the inner store but does NOT stop the producer.
 
@@ -408,6 +489,7 @@ def test_module_wires_extractor_runner_state_collaborators():
         mod.bootstrap_servers = "localhost:9092"
         mod.client_id = "test-app"
         mod.compression_type = None
+        mod.metrics_port = 0
         mod.stage = StubExtractor()
 
         runner = mod.runner
@@ -423,7 +505,40 @@ def test_module_wires_extractor_runner_state_collaborators():
         producer = runner.create_token_producer(3)
         assert producer is not None
 
+        # start_task's store view gets the module's observer, or every
+        # changelog write an extractor makes goes unweighed
+        runner.create_token_producer = lambda token: FakeKafkaProducer()
+        await runner.start_task(0)
+        assert runner.tasks[0].store.observer is mod.observer
+
     asyncio.run(run())
+
+
+def test_module_wires_task_store_observer():
+    """``create_task_store`` hands a transformer task's changelog store the
+    module's observer — the other half of "every changelog write is weighed"."""
+    from flechtwerk.module import _FlechtwerkModule
+    from flechtwerk.transformer import Transformer
+
+    class StubTransformer(Transformer):
+        input_topics = ["in"]
+
+        async def transform(self, msg, state):
+            return
+            yield  # pragma: no cover
+
+    mod = _FlechtwerkModule()
+    mod.application_id = "test-app"
+    mod.bootstrap_servers = "localhost:9092"
+    mod.client_id = "test-app"
+    mod.compression_type = None
+    mod.metrics_port = 0
+    mod.stage = StubTransformer()
+
+    store = mod.create_task_store(2, FakeKafkaProducer())
+
+    assert store.observer is mod.observer
+    assert store.partition == 2
 
 
 def test_module_lookups_resolve_from_parent():

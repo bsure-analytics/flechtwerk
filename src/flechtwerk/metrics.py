@@ -23,6 +23,29 @@ _DURATION_BUCKETS: Final = (
     1.0, 2.5, 5.0, 7.5, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0,
 )
 
+# One ladder for every byte histogram: a state changelog record and a produced
+# message face the SAME ceiling — aiokafka's `max_request_size` and the broker's
+# `max.message.bytes`, both 1 MiB by default — so they deserve the same
+# boundaries and directly comparable panels.
+#
+# The actionable signal is the TOP of the distribution approaching that ceiling,
+# not the median, which is why the ladder is fine at the bottom (typical
+# messages run hundreds of bytes), coarse through the middle, and dense from
+# 256 KiB up: the crash this metric exists to predict died at 1 014 623 bytes —
+# 97 % of the ceiling — and a ladder that jumped 512 KiB → 1 MiB would have
+# shown that only as "somewhere in the last decade". A boundary sits exactly on
+# 1 048 576 so "did any record cross the default ceiling?" is one bucket
+# subtraction, and two beyond it serve deployments that raised their limits.
+#
+# Same histogram_quantile caveat as _DURATION_BUCKETS: the quantile never
+# exceeds the largest finite bound, so a raised-limit deployment reading
+# quantiles (rather than the paired `*_max_bytes` gauge) will see them pin at
+# 4 MiB.
+_RECORD_BYTE_BUCKETS: Final = (
+    256, 1_024, 4_096, 16_384, 65_536, 131_072, 262_144, 393_216, 524_288,
+    655_360, 786_432, 917_504, 1_048_576, 2_097_152, 4_194_304,
+)
+
 
 def _batch_size_buckets(max_poll_records: int) -> tuple[int, ...]:
     """Bucket ladder for `batch_size`, derived from the `getmany()` cap.
@@ -71,6 +94,53 @@ class Metrics:
         return Counter(
             "flechtwerk_messages_out_total",
             "Output messages yielded by user code (i.e. produced to Kafka)",
+            self._label_names + ["topic"],
+            registry=self.registry,
+        )
+
+    # Byte twins of the two counters above, plus their high-water marks. A
+    # histogram's buckets detect a ceiling crossing exactly but cannot report
+    # the actual maximum ("between 917 504 and 1 048 576" when the operator
+    # wants "1 014 623 = 97 % of the ceiling"), and a last-value gauge would
+    # lose every peak between scrapes — hence a RUNNING max, which is
+    # scrape-timing-proof. It is the largest observation since process start
+    # and resets on restart; state buckets are rewritten whole on every commit,
+    # so the mark re-establishes itself within minutes.
+
+    @cached_property
+    def message_in_bytes(self) -> Histogram:
+        return Histogram(
+            "flechtwerk_message_in_bytes",
+            "Serialized size (key + value) of one consumed record (bytes)",
+            self._label_names + ["topic"],
+            registry=self.registry,
+            buckets=_RECORD_BYTE_BUCKETS,
+        )
+
+    @cached_property
+    def message_in_max_bytes(self) -> Gauge:
+        return Gauge(
+            "flechtwerk_message_in_max_bytes",
+            "Largest consumed record since process start (high-water mark, bytes)",
+            self._label_names + ["topic"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def message_out_bytes(self) -> Histogram:
+        return Histogram(
+            "flechtwerk_message_out_bytes",
+            "Serialized size (key + value) of one produced record (bytes)",
+            self._label_names + ["topic"],
+            registry=self.registry,
+            buckets=_RECORD_BYTE_BUCKETS,
+        )
+
+    @cached_property
+    def message_out_max_bytes(self) -> Gauge:
+        return Gauge(
+            "flechtwerk_message_out_max_bytes",
+            "Largest produced record since process start (high-water mark, bytes)",
             self._label_names + ["topic"],
             registry=self.registry,
         )
@@ -166,6 +236,30 @@ class Metrics:
             "flechtwerk_state_restored_entries_total",
             "Changelog records replayed into the local state store on task initialization",
             self._label_names + ["partition"],
+            registry=self.registry,
+        )
+
+    # Deliberately unlabelled beyond the caller's own: a state key is unbounded
+    # cardinality (one examples-repo scenario runs 343 keys) and per-partition
+    # series would multiply for no operational gain — the question is "is ANY
+    # key approaching the ceiling?", and the paired gauge answers it.
+
+    @cached_property
+    def state_record_bytes(self) -> Histogram:
+        return Histogram(
+            "flechtwerk_state_record_bytes",
+            "Serialized size of one state changelog record, observed at every write (bytes)",
+            self._label_names,
+            registry=self.registry,
+            buckets=_RECORD_BYTE_BUCKETS,
+        )
+
+    @cached_property
+    def state_record_max_bytes(self) -> Gauge:
+        return Gauge(
+            "flechtwerk_state_record_max_bytes",
+            "Largest state changelog record since process start (high-water mark, bytes)",
+            self._label_names,
             registry=self.registry,
         )
 

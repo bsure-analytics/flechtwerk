@@ -398,6 +398,17 @@ class TransformerRunner:
             task_offsets = offsets.setdefault(tp.partition, {})
             for raw_msg in records[tp]:
                 msg = parse_message(raw_msg)
+                # Inbound bytes are weighed HERE and not beside the
+                # `message_in` count in `_process_key_bucket`: the sizes ride
+                # free on the broker's `ConsumerRecord`, which `parse_message`
+                # has already collapsed into an `IncomingMessage` by then, and
+                # re-serializing to recover them would defeat the point. Kafka
+                # reports -1 for an absent key or value, which must not
+                # subtract from the observation.
+                self.observer.message_in_bytes(
+                    msg.topic,
+                    max(raw_msg.serialized_key_size, 0) + max(raw_msg.serialized_value_size, 0),
+                )
                 key = self.transformer.extract_state_key(msg)
                 buckets.setdefault((tp.partition, key), []).append(msg)
                 task_offsets[tp] = max(task_offsets.get(tp, 0), msg.offset + 1)
@@ -469,12 +480,19 @@ class TransformerRunner:
         """
         async with task.producer.transaction():
             for msg in messages:
+                # Outbound bytes are weighed HERE — where the encoding already
+                # happens — rather than beside the `message_out` count at the
+                # yield site, which would cost a second serialization per
+                # message. Key + value, because aiokafka's `max_request_size`
+                # check estimates the whole record.
+                key_bytes, value_bytes = encode_json(msg.key), encode_json(msg.value)
                 await task.producer.send(
                     msg.topic,
-                    key=encode_json(msg.key),
-                    value=encode_json(msg.value),
+                    key=key_bytes,
+                    value=value_bytes,
                     timestamp_ms=datetime_to_millis(msg.timestamp),
                 )
+                self.observer.message_out_bytes(msg.topic, len(key_bytes) + len(value_bytes))
             for key, new_state in state_changes.items():
                 if new_state:
                     await task.store.put(key, new_state)

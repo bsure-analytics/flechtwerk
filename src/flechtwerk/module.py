@@ -433,6 +433,7 @@ class _FlechtwerkModule(Flechtwerk):
         inner.path = self.path / str(partition)
         store = ChangelogStateStore()
         store.inner = inner
+        store.observer = self.observer
         store.partition = partition
         store.producer = producer
         store.topic = self.changelog_topic
