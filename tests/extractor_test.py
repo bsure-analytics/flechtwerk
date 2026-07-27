@@ -17,7 +17,7 @@ from flechtwerk.module import _FlechtwerkModule
 from flechtwerk.observer import Observer
 from flechtwerk.state import ChangelogStateStore
 from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
-from flechtwerk.types import Config, Event, Message, State
+from flechtwerk.types import Config, Event, InvalidMessageError, Message, State
 
 API_KEY: Final = Attribute("api_key", STR)
 CURSOR: Final = Attribute("cursor", INT)
@@ -89,6 +89,17 @@ def json_record(key="k", value=None, topic="test-config", offset=0, partition=0)
     if value is None:
         value = {}
     return make_record(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
+
+
+def raising(error):
+    """The default `Stage.on_invalid_message` policy, as a bare handler."""
+    raise error
+
+
+def make_incoming(key="k", value=None, topic="test-config"):
+    """Build an IncomingMessage via parse_message on a ConsumerRecord."""
+    from flechtwerk.kafka import parse_message
+    return parse_message(json_record(key=key, value=value, topic=topic), raising)
 
 
 class AutoJoinMembershipConsumer(FakeKafkaConsumer):
@@ -452,6 +463,167 @@ def test_extractor_runner_config_update_during_operation():
     asyncio.run(run())
 
 
+# --- Invalid config records ---
+
+
+class PolicyExtractor(Extractor):
+    """Records every handler call, then applies ``outcome`` to it."""
+    config_topics = ["test-config"]
+
+    def __init__(self, outcome) -> None:
+        self.invalid: list[InvalidMessageError] = []
+        self.outcome = outcome
+
+    def on_invalid_message(self, error):
+        self.invalid.append(error)
+        return self.outcome(error)
+
+    async def poll(self, config, state) -> AsyncIterator[Message | State]:
+        return
+        yield  # pragma: no cover
+
+
+def broken_config_record(offset=0, key=b"k", value=b"{not json"):
+    return make_record(key=key, value=value, topic="test-config", offset=offset)
+
+
+def test_load_initial_configs_default_policy_crashes():
+    """One bad config record crash-loops the stage — deliberate for an ops-written topic."""
+    async def run():
+        mod = make_module(SimpleExtractor(), FakeKafkaConsumer([broken_config_record()]))
+        runner = mod.runner
+
+        with pytest.raises(InvalidMessageError) as excinfo:
+            await runner.load_initial_configs()
+
+        assert excinfo.value.part == "value"
+        assert runner.entries == {}
+
+    asyncio.run(run())
+
+
+def test_load_initial_configs_skip_leaves_no_entry():
+    async def run():
+        stage = PolicyExtractor(lambda error: None)
+        mod = make_module(stage, FakeKafkaConsumer([broken_config_record()]))
+        runner = mod.runner
+
+        await runner.load_initial_configs()
+
+        assert runner.entries == {}
+        assert len(runner.config_store) == 0
+        assert len(stage.invalid) == 1
+
+    asyncio.run(run())
+
+
+def test_load_initial_configs_decodes_each_record_exactly_once():
+    """The runner builds its entries from the machinery's decoded messages.
+
+    If it re-parsed the raw record — as it once did — the handler would fire a
+    second time for the same record.
+    """
+    async def run():
+        stage = PolicyExtractor(lambda error: Event.wrap({"api_key": "salvaged"}))
+        mod = make_module(stage, FakeKafkaConsumer([broken_config_record()]))
+        runner = mod.runner
+
+        await runner.load_initial_configs()
+
+        assert len(stage.invalid) == 1
+        assert runner.entries["k"].config[API_KEY] == "salvaged"
+        assert runner.entries["k"].state_key == "k"
+
+    asyncio.run(run())
+
+
+def test_check_config_updates_decodes_each_record_exactly_once():
+    async def run():
+        stage = PolicyExtractor(lambda error: Event.wrap({"api_key": "salvaged"}))
+        consumer = FakeKafkaConsumer([broken_config_record(offset=1)])
+        mod = make_module(stage, consumer)
+        runner = mod.runner
+
+        await runner.check_config_updates()
+
+        assert len(stage.invalid) == 1
+        assert runner.entries["k"].config[API_KEY] == "salvaged"
+
+    asyncio.run(run())
+
+
+def test_check_config_updates_skip_leaves_the_previous_entry():
+    async def run():
+        stage = PolicyExtractor(lambda error: None)
+        consumer = FakeKafkaConsumer([json_record(key="k", value={"api_key": "v1"})])
+        mod = make_module(stage, consumer)
+        runner = mod.runner
+        await runner.load_initial_configs()
+
+        consumer.records = [broken_config_record(offset=1)]
+        await runner.check_config_updates()
+
+        assert runner.entries["k"].config[API_KEY] == "v1"
+        assert [e.part for e in stage.invalid] == ["value"]
+
+    asyncio.run(run())
+
+
+def test_invalid_config_record_is_counted_with_its_outcome():
+    async def run():
+        from flechtwerk.testing import RecordingObserver
+
+        stage = PolicyExtractor(lambda error: None)
+        mod = make_module(stage, FakeKafkaConsumer([broken_config_record()]))
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+
+        await runner.load_initial_configs()
+
+        assert ("message_invalid", "test-config", "skipped") in mod.observer.calls
+
+    asyncio.run(run())
+
+
+def test_functional_extractor_threads_on_invalid_message():
+    async def my_poll(config, state) -> AsyncIterator[Message | State]:
+        return
+        yield  # pragma: no cover
+
+    ext = Extractor.of(
+        config_topics=["cfg"],
+        poll=my_poll,
+        on_invalid_message=lambda error: None,
+    )
+
+    assert ext.on_invalid_message(_invalid_error()) is None
+
+
+def test_extractor_decorator_threads_on_invalid_message():
+    """@extractor forwards the same on_invalid_message override as Extractor.of."""
+
+    @extractor(config_topics=["cfg"], on_invalid_message=lambda error: Event.wrap({"salvaged": True}))
+    async def stage(config, state) -> AsyncIterator[Message | State]:
+        return
+        yield  # pragma: no cover
+
+    assert stage.on_invalid_message(_invalid_error()) == Event.wrap({"salvaged": True})
+
+
+def test_default_on_invalid_message_raises():
+    """The framework default is "let it crash" — the traceback is the announcement."""
+    error = _invalid_error()
+    with pytest.raises(InvalidMessageError) as excinfo:
+        SimpleExtractor().on_invalid_message(error)
+    assert excinfo.value is error
+
+
+def _invalid_error() -> InvalidMessageError:
+    return InvalidMessageError(
+        part="value", topic="cfg", partition=0, offset=0, key=b"k", value=b"{not json",
+    )
+
+
 def test_extractor_poll_yields_no_state():
     """Poll that yields no State does not persist."""
 
@@ -617,9 +789,8 @@ def test_functional_extractor_with_enrich_and_extract_state_key():
         enriched = await ext.enrich_config(Config.wrap({"api_key": "k"}))
         assert enriched[TAG] == "enriched"
 
-        msg = json_record(key="ignored", value={"api_key": "a", "id": "custom"})
-        from flechtwerk.kafka import parse_message
-        assert ext.extract_state_key(parse_message(msg)) == "custom"
+        msg = make_incoming(key="ignored", value={"api_key": "a", "id": "custom"})
+        assert ext.extract_state_key(msg) == "custom"
 
     asyncio.run(run())
 
@@ -633,8 +804,7 @@ def test_functional_extractor_default_extract_state_key():
 
     ext = Extractor.of(config_topics=["cfg"], poll=my_poll)
 
-    from flechtwerk.kafka import parse_message
-    msg = parse_message(json_record(key="tenant/channel", value={"api_key": "a"}))
+    msg = make_incoming(key="tenant/channel", value={"api_key": "a"})
     assert ext.extract_state_key(msg) == "tenant/channel"
 
 
@@ -678,8 +848,7 @@ def test_extractor_decorator_threads_enrich_config_and_extract_state_key():
         enriched = await stage.enrich_config(Config.wrap({"api_key": "k"}))
         assert enriched[TAG] == "enriched"
 
-        from flechtwerk.kafka import parse_message
-        msg = parse_message(json_record(key="ignored", value={"api_key": "a", "id": "custom"}))
+        msg = make_incoming(key="ignored", value={"api_key": "a", "id": "custom"})
         assert stage.extract_state_key(msg) == "custom"
 
     asyncio.run(run())

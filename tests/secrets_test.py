@@ -351,6 +351,38 @@ async def test_scan_reports_corrupt_token_without_aborting():
     assert by_key["tenant-b"].error is None
 
 
+async def test_scan_reports_undecodable_records_without_aborting():
+    """A record-level decode failure is a finding, not a crash.
+
+    The scan has no stage, so it never consults `Stage.on_invalid_message` — a
+    diagnostic tool that is the gate before destructive steps must report and
+    keep going. Record-level findings carry an empty ``attribute``.
+    """
+    with installed_keyring():
+        good = encrypt_value(API_KEY, "s")
+    records = [
+        make_record(topic="cfg", partition=0, offset=0, key=b"tenant-a", value=b"{not json"),
+        make_record(topic="cfg", partition=0, offset=1, key=b"\xff\xfe",
+                    value=json.dumps({"api_key": good}).encode()),
+        make_record(topic="cfg", partition=0, offset=2, key=b"tenant-c",
+                    value=json.dumps({"api_key": good}).encode()),
+    ]
+    consumer = FakeKafkaConsumer(records)
+    entries = [e async for e in scan_config_topics(consumer, ["cfg"], [API_KEY])]
+
+    by_key = {e.wire_key: e for e in entries}
+    # Undecodable value: reported against the readable key.
+    assert by_key["tenant-a"].attribute == ""
+    assert by_key["tenant-a"].error is not None
+    assert by_key["tenant-a"].kid is None
+    # Undecodable key: reported under the raw bytes' repr, never lossy-decoded.
+    assert by_key[repr(b"\xff\xfe")].attribute == ""
+    assert by_key[repr(b"\xff\xfe")].error is not None
+    # The healthy record is still reported — the scan completed.
+    assert by_key["tenant-c"].kid == "test-key"
+    assert by_key["tenant-c"].error is None
+
+
 async def test_scan_skips_tombstones():
     """A tombstone (deleted config) carries no secret and is not reported."""
     records = [

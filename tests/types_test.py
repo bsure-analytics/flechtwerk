@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from flechtwerk.types import Config, Event, IncomingMessage, Message, State
+from flechtwerk.types import Config, Event, IncomingMessage, InvalidMessageError, Message, State
 
 
 def test_message_is_frozen():
@@ -69,3 +69,44 @@ def test_incoming_message():
     assert msg.key == "k"
     assert msg.offset == 42
     assert msg.value == Event.wrap({"data": 1})
+
+
+def make_invalid(**overrides) -> InvalidMessageError:
+    return InvalidMessageError(**{
+        "part": "value",
+        "topic": "my-topic",
+        "partition": 3,
+        "offset": 4711,
+        "key": b"tenant-a",
+        "value": b"{not json",
+        **overrides,
+    })
+
+
+def test_invalid_message_error_keeps_every_field():
+    error = make_invalid()
+    assert error.part == "value"
+    assert error.topic == "my-topic"
+    assert error.partition == 3
+    assert error.offset == 4711
+    assert error.key == b"tenant-a"
+    assert error.value == b"{not json"
+
+
+def test_invalid_message_error_message_is_forensically_complete():
+    """The default policy raises, so str() is the only announcement there is."""
+    text = str(make_invalid())
+    assert "value" in text
+    assert "my-topic/3/4711" in text
+    assert "on_invalid_message" in text
+
+
+def test_invalid_message_error_message_omits_the_raw_bytes():
+    """A value may be a megabyte — the raw bytes stay on the attributes."""
+    error = make_invalid(key=b"secret-key-bytes", value=b"x" * 4096)
+    assert "secret-key-bytes" not in str(error)
+    assert "x" * 100 not in str(error)
+
+
+def test_invalid_message_error_reports_the_failing_part():
+    assert make_invalid(part="key").part == "key"

@@ -1,7 +1,6 @@
 """Tests for Flechtwerk Kafka utilities."""
 import asyncio
 import json
-import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -10,15 +9,43 @@ import aiokafka
 import pytest
 from hypothesis import given, strategies as st
 
+from flechtwerk.attribute import Record
 from flechtwerk.kafka import (
     datetime_to_millis,
+    decode_record,
     encode_json,
     millis_to_datetime,
     parse_message,
     restore_changelog,
 )
 from flechtwerk.state import serialize
-from flechtwerk.types import Event, State
+from flechtwerk.types import Config, Event, InvalidMessageError, State
+
+
+def raising(error: InvalidMessageError):
+    """The default `Stage.on_invalid_message` policy, as a bare handler."""
+    raise error
+
+
+def skipping(error: InvalidMessageError):
+    """Handler that skips the record."""
+    return None
+
+
+def substituting(record):
+    """Handler factory: substitute ``record`` for the undecodable part."""
+    return lambda error: record
+
+
+def recording(outcome):
+    """Handler factory: record every invocation, then apply ``outcome``."""
+    seen: list[InvalidMessageError] = []
+
+    def handler(error: InvalidMessageError):
+        seen.append(error)
+        return outcome(error)
+
+    return handler, seen
 
 
 def test_encode_json_string_passthrough():
@@ -103,7 +130,7 @@ _json_non_strings = st.recursive(
     ),
     max_leaves=20,
 ).filter(lambda v: not isinstance(v, str))
-# Dicts only — parse_message normalizes non-dict JSON payloads to {} by design.
+# Dicts only — parse_message rejects non-dict JSON payloads by design.
 _json_dicts = st.dictionaries(
     st.text(),
     st.recursive(_json_scalars, lambda c: st.one_of(
@@ -152,8 +179,29 @@ def test_encode_json_string_is_utf8_passthrough(s):
     assert encode_json(s) == s.encode("utf-8")
 
 
+def test_decode_record_returns_the_callers_type():
+    """The wire carries no type, so the CALLER names it — no copy to relabel."""
+    for cls in (Config, Event, Record, State):
+        decoded = decode_record(b'{"a":1}', cls)
+        assert type(decoded) is cls
+        assert decoded.raw == {"a": 1}
+
+
+def test_decode_record_empty_value_is_an_empty_record_of_that_type():
+    for empty in (b"", None, ""):
+        assert decode_record(empty, Config) == Config({})
+
+
+def _raw(key=b"k", value=b"{}", offset=0, partition=0, timestamp=None, topic="t"):
+    """A minimal stand-in for what aiokafka's getmany() yields."""
+    return SimpleNamespace(
+        key=key, value=value, offset=offset, partition=partition,
+        timestamp=timestamp, topic=topic,
+    )
+
+
 @given(
-    key=st.one_of(st.none(), st.binary(), st.text()),
+    key=st.one_of(st.none(), st.text().map(str.encode), st.text()),
     value=_json_dicts,
     offset=st.integers(min_value=0, max_value=2**63 - 1),
     partition=st.integers(min_value=0, max_value=999),
@@ -165,15 +213,14 @@ def test_encode_json_string_is_utf8_passthrough(s):
 def test_parse_message_round_trips_dict_payloads(key, value, offset, partition, timestamp):
     """encode_json → parse_message round-trips for dict payloads.
 
-    Non-dict payloads are normalized to {} by parse_message, so the
-    round-trip contract only holds for dicts.
+    Non-dict payloads are rejected by parse_message, so the round-trip
+    contract only holds for dicts.
     """
-    encoded_value = encode_json(Event.wrap(value))
-    raw = SimpleNamespace(
-        key=key, value=encoded_value, offset=offset, partition=partition,
-        timestamp=timestamp, topic="some-topic",
+    raw = _raw(
+        key=key, value=encode_json(Event.wrap(value)), offset=offset,
+        partition=partition, timestamp=timestamp, topic="some-topic",
     )
-    msg = parse_message(raw)
+    msg = parse_message(raw, raising)
     assert msg.value.raw == value
     assert msg.offset == offset
     assert msg.partition == partition
@@ -181,64 +228,126 @@ def test_parse_message_round_trips_dict_payloads(key, value, offset, partition, 
 
 
 @given(st.binary(max_size=200))
-def test_parse_message_never_raises_on_arbitrary_value_bytes(data):
-    """Arbitrary bytes in the value position either decode or fall back to Event({})."""
-    raw = SimpleNamespace(
-        key=b"k", value=data, offset=0, partition=0, timestamp=None, topic="t",
-    )
-    msg = parse_message(raw)
+def test_parse_message_either_decodes_or_raises_invalid_message(data):
+    """Arbitrary value bytes decode to an Event or surface as InvalidMessageError.
+
+    The default policy raises, and the ONLY exception type an application ever
+    has to catch is `InvalidMessageError` — never the raw UnicodeDecodeError /
+    JSONDecodeError underneath, which stays available as ``__cause__``.
+    """
+    try:
+        msg = parse_message(_raw(value=data), raising)
+    except InvalidMessageError as e:
+        assert e.part == "value"
+        assert e.value == data
+        return
     assert isinstance(msg.value, Event)
 
 
-def test_parse_message_non_dict_json_falls_back_to_empty_event(caplog):
-    """Valid JSON that decodes to a non-dict (e.g. a scalar or array) → Event({})."""
-    raw = SimpleNamespace(
-        key=b"k", value=b"42", offset=7, partition=0, timestamp=None, topic="t",
-    )
-    with caplog.at_level(logging.WARNING, logger="flechtwerk.kafka"):
-        msg = parse_message(raw)
-    assert msg.value == Event({})
-    assert any(
-        "Non-dict JSON payload" in rec.message and "int" in rec.message
-        for rec in caplog.records
-    )
+def test_parse_message_raises_on_non_dict_json():
+    """Valid JSON that decodes to a non-dict (a scalar or array) is not an event."""
+    raw = _raw(key=b"k", value=b"42", offset=7, partition=3, topic="t")
+    with pytest.raises(InvalidMessageError) as excinfo:
+        parse_message(raw, raising)
+    error = excinfo.value
+    assert error.part == "value"
+    assert (error.topic, error.partition, error.offset) == ("t", 3, 7)
+    assert error.key == b"k"
+    assert error.value == b"42"
+    assert isinstance(error.__cause__, ValueError)
+    assert "int" in str(error.__cause__)
+    # Forensically complete on its own: the traceback is the only announcement.
+    assert "value" in str(error) and "t/3/7" in str(error)
 
 
-def test_parse_message_invalid_json_falls_back_to_empty_event(caplog):
-    raw = SimpleNamespace(
-        key=b"some-key",
-        value=b"not valid json {",
-        offset=42,
-        partition=1,
-        timestamp=1704067200000,
-        topic="my-topic",
-    )
-    with caplog.at_level(logging.WARNING, logger="flechtwerk.kafka"):
-        msg = parse_message(raw)
-    assert msg.key == "some-key"
-    assert msg.value == Event({})
-    assert msg.offset == 42
-    assert any("Malformed" in rec.message and "JSONDecodeError" in rec.message for rec in caplog.records)
+def test_parse_message_raises_on_invalid_json():
+    raw = _raw(key=b"some-key", value=b"not valid json {", offset=42, partition=1,
+               timestamp=1704067200000, topic="my-topic")
+    with pytest.raises(InvalidMessageError) as excinfo:
+        parse_message(raw, raising)
+    assert excinfo.value.part == "value"
+    assert isinstance(excinfo.value.__cause__, json.JSONDecodeError)
 
 
-def test_parse_message_cesu8_surrogate_falls_back_to_empty_event(caplog):
-    """CESU-8-encoded surrogates must hit the malformed fallback, not decode.
+def test_parse_message_raises_on_cesu8_surrogate():
+    """CESU-8-encoded surrogates must fail the decode, not slip through.
 
-    Pins the strict UTF-8 decode in decode_event: json.loads(bytes) would
+    Pins the strict UTF-8 decode in decode_record: json.loads(bytes) would
     accept b'"\\xed\\xa0\\x80"' via errors="surrogatepass" and return the
     ill-formed str '\\ud800', which crashes encode_json when a stage re-emits
     it — far from the source, on every redelivery.
     """
-    raw = SimpleNamespace(
-        key=b"k", value=b'"\xed\xa0\x80"', offset=0, partition=0, timestamp=None, topic="t",
+    with pytest.raises(InvalidMessageError) as excinfo:
+        parse_message(_raw(value=b'"\xed\xa0\x80"'), raising)
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
+
+
+def test_parse_message_raises_on_non_utf8_key():
+    """A key is never repaired with errors="replace" — it is state identity."""
+    with pytest.raises(InvalidMessageError) as excinfo:
+        parse_message(_raw(key=b"\xff\xfe", value=b'{"a":1}'), raising)
+    error = excinfo.value
+    assert error.part == "key"
+    assert error.key == b"\xff\xfe"
+    assert isinstance(error.__cause__, UnicodeDecodeError)
+
+
+def test_parse_message_decodes_key_before_value():
+    """Both parts broken → exactly one handler call, for the key."""
+    handler, seen = recording(skipping)
+    assert parse_message(_raw(key=b"\xff", value=b"not json {"), handler) is None
+    assert [e.part for e in seen] == ["key"]
+
+
+def test_parse_message_rejects_key_substitution():
+    """Identity must not be synthesized for a record whose identity is unreadable."""
+    with pytest.raises(TypeError, match="state identity") as excinfo:
+        parse_message(_raw(key=b"\xff"), substituting(Event.wrap({"key": "invented"})))
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
+
+
+def test_parse_message_skip_returns_none():
+    assert parse_message(_raw(value=b"not json {"), skipping) is None
+
+
+def test_parse_message_substituted_value_becomes_the_event():
+    """The call site assigns the semantic type: a substitute arrives as an Event."""
+    msg = parse_message(
+        _raw(key=b"k", value=b"\xff\xfe", offset=9),
+        substituting(Event.wrap({"recovered": True})),
     )
-    with caplog.at_level(logging.WARNING, logger="flechtwerk.kafka"):
-        msg = parse_message(raw)
+    assert msg.key == "k"
+    assert msg.offset == 9
+    assert msg.value == Event.wrap({"recovered": True})
+    assert isinstance(msg.value, Event)
+
+
+def test_parse_message_empty_substitute_is_a_substitution_not_a_skip():
+    """Only ``None`` means skip. A falsy Record is a deliberate empty value.
+
+    Elsewhere in the framework a falsy `State` tombstones its key, so the skip
+    check here must stay ``is None`` — widening it to ``if not substitute``
+    would silently turn this substitution into a dropped record.
+    """
+    msg = parse_message(_raw(value=b"not json {"), substituting(Event({})))
+    assert msg is not None
     assert msg.value == Event({})
-    assert any(
-        "Malformed" in rec.message and "UnicodeDecodeError" in rec.message
-        for rec in caplog.records
-    )
+
+
+def test_parse_message_rejects_a_non_record_substitute():
+    """A raw dict would die opaquely inside Record.__init__ — teach at the decision site."""
+    with pytest.raises(TypeError, match=r"Event\.wrap"):
+        parse_message(_raw(value=b"not json {"), substituting({"a": 1}))
+
+
+def test_parse_message_empty_value_needs_no_handler():
+    """Empty is not an error: {} means "empty value", never "garbage"."""
+    handler, seen = recording(raising)
+    for empty in (b"", None):
+        msg = parse_message(_raw(key=None, value=empty), handler)
+        assert msg.key == ""
+        assert msg.value == Event({})
+    assert seen == []
 
 
 # --- restore_changelog ---
@@ -465,6 +574,24 @@ def test_restore_changelog_survives_empty_polls_until_end_offset():
 
         assert count == 1
         put_bytes.assert_awaited_once()
+    asyncio.run(run())
+
+
+def test_restore_changelog_crashes_on_an_undecodable_key():
+    """The changelog is framework-owned — a broken key there is corruption.
+
+    No `on_invalid_message` mediation: every changelog key is written from a
+    `str`, so an undecodable one means foreign writes or corruption, which is
+    an unrecoverable data error (crash, then reset the affected state) and not
+    an application policy question.
+    """
+    async def run():
+        tp = aiokafka.TopicPartition("cl", 0)
+        record = _make_record(key=b"\xff\xfe", value=serialize(State.wrap({"n": 1})))
+        consumer = _make_restore_consumer(batches=[{tp: [record]}])
+
+        with pytest.raises(UnicodeDecodeError):
+            await restore_changelog(consumer, "cl", AsyncMock(), AsyncMock())
     asyncio.run(run())
 
 

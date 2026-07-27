@@ -8,7 +8,7 @@ import pytest
 from flechtwerk.attribute import Attribute, BOOL, INT, LIST, RECORD, STR
 from flechtwerk.module import _FlechtwerkModule
 from flechtwerk.transformer import Task, Transformer, transformer
-from flechtwerk.types import Event, Message, State
+from flechtwerk.types import Event, InvalidMessageError, Message, State
 from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
 
 COUNT: Final = Attribute("count", INT)
@@ -71,10 +71,15 @@ def json_record(key="k", value=None, topic="input-topic", offset=0, partition=0)
     return make_record(key=key, value=json.dumps(value), topic=topic, offset=offset, partition=partition)
 
 
+def raising(error):
+    """The default `Stage.on_invalid_message` policy, as a bare handler."""
+    raise error
+
+
 def make_incoming(key="k", value=None, topic="input-topic"):
     """Build an IncomingMessage-like object via parse_message on a ConsumerRecord."""
     from flechtwerk.kafka import parse_message
-    return parse_message(json_record(key=key, value=value, topic=topic))
+    return parse_message(json_record(key=key, value=value, topic=topic), raising)
 
 
 def make_module(transformer, consumer=None, producer=None, state_store=None):
@@ -1084,6 +1089,198 @@ def test_process_batch_weighs_messages_and_state_records():
         assert [c for c in calls if c[0] == "state_record_bytes" and c[1] > 0]
 
     asyncio.run(run())
+
+
+# --- Invalid input records ---
+
+
+class SkippingTransformer(Transformer):
+    """Passthrough whose policy is to skip undecodable records."""
+    input_topics = ["input-topic"]
+
+    async def transform(self, msg, state) -> AsyncIterator[Message]:
+        yield Message(key=msg.key, topic="output-topic", value=msg.value)
+
+    def on_invalid_message(self, error):
+        return None
+
+
+class SalvagingTransformer(Transformer):
+    """Substitutes a value, and derives its state key from the value."""
+    input_topics = ["input-topic"]
+
+    def __init__(self) -> None:
+        self.seen: list = []
+
+    def extract_state_key(self, msg) -> str:
+        return msg.value.raw.get("id", msg.key)
+
+    def on_invalid_message(self, error):
+        return Event.wrap({"id": "recovered", "salvaged": True})
+
+    async def transform(self, msg, state) -> AsyncIterator[Message | State]:
+        self.seen.append(msg)
+        yield Message(key=msg.key, topic="output-topic", value=msg.value)
+        yield State.wrap({"n": state.get(COUNT, 0) + 1})
+
+
+def broken_record(offset=0, value=b"{not json"):
+    return make_record(key=b"k", value=value, topic="input-topic", offset=offset)
+
+
+def test_process_batch_default_policy_crashes_before_any_transaction():
+    """No transaction begun, no offset committed — the restart re-fetches the record."""
+    async def run():
+        from flechtwerk.testing import RecordingObserver
+
+        consumer = FakeKafkaConsumer([broken_record()])
+        producer = FakeKafkaProducer()
+        mod = make_module(PassthroughTransformer(), consumer, producer)
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        with pytest.raises(InvalidMessageError) as excinfo:
+            await runner.process_batch(records)
+
+        assert excinfo.value.part == "value"
+        assert producer.transaction_count == 0
+        assert producer.offsets_sent == []
+        assert producer.sent == []
+        calls = mod.observer.calls
+        assert ("message_invalid", "input-topic", "raised") in calls
+        # The parse loop precedes batch_scope, so the batch never even opened.
+        assert not [c for c in calls if c[0] == "batch_enter"]
+
+    asyncio.run(run())
+
+
+def test_process_batch_skip_excludes_the_record_but_commits_its_offset():
+    async def run():
+        from aiokafka import TopicPartition
+        from flechtwerk.testing import RecordingObserver
+
+        consumer = FakeKafkaConsumer([
+            broken_record(offset=0),
+            json_record(key="k", value={"data": "good"}, offset=1),
+        ])
+        producer = FakeKafkaProducer()
+        mod = make_module(SkippingTransformer(), consumer, producer)
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        # Only the good record reached transform() — and produced output.
+        assert [json.loads(v["value"]) for _, v in producer.sent] == [{"data": "good"}]
+        # Both offsets commit: the skipped record must not be re-fetched forever.
+        assert producer.offsets_sent == [({TopicPartition("input-topic", 0): 2}, "test-group")]
+        calls = mod.observer.calls
+        assert ("message_invalid", "input-topic", "skipped") in calls
+        # Wire traffic arrived for both; only the dispatched one is counted in.
+        assert len([c for c in calls if c[0] == "message_in_bytes"]) == 2
+        assert len([c for c in calls if c[0] == "message_in"]) == 1
+
+    asyncio.run(run())
+
+
+def test_process_batch_skipping_every_record_still_commits_offsets():
+    """An all-skipped batch still advances — otherwise the stage wedges on it."""
+    async def run():
+        from aiokafka import TopicPartition
+
+        consumer = FakeKafkaConsumer([broken_record(offset=7)])
+        producer = FakeKafkaProducer()
+        mod = make_module(SkippingTransformer(), consumer, producer)
+        runner = mod.runner
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        assert producer.sent == []
+        assert producer.offsets_sent == [({TopicPartition("input-topic", 0): 8}, "test-group")]
+
+    asyncio.run(run())
+
+
+def test_process_batch_substituted_value_reaches_transform_and_state_key():
+    async def run():
+        from flechtwerk.testing import RecordingObserver
+
+        consumer = FakeKafkaConsumer([broken_record(value=b"\xff\xfe")])
+        producer = FakeKafkaProducer()
+        state_store = InMemoryStateStore()
+        stage = SalvagingTransformer()
+        mod = make_module(stage, consumer, producer, state_store)
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        assert [msg.value for msg in stage.seen] == [Event.wrap({"id": "recovered", "salvaged": True})]
+        assert isinstance(stage.seen[0].value, Event)
+        # extract_state_key ran on the SUBSTITUTED value — the bucket proves it.
+        assert list(state_store.store) == ["recovered"]
+        assert ("message_invalid", "input-topic", "substituted") in mod.observer.calls
+
+    asyncio.run(run())
+
+
+def test_process_batch_rejects_a_substituted_key():
+    """A key is state identity: substituting one is a programming error."""
+    async def run():
+        consumer = FakeKafkaConsumer([
+            make_record(key=b"\xff\xfe", value=b'{"a":1}', topic="input-topic"),
+        ])
+        mod = make_module(SalvagingTransformer(), consumer)
+        runner = mod.runner
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        with pytest.raises(TypeError, match="state identity"):
+            await runner.process_batch(records)
+
+    asyncio.run(run())
+
+
+def test_functional_transformer_threads_on_invalid_message():
+    async def my_transform(msg, state) -> AsyncIterator[Message]:
+        return
+        yield  # pragma: no cover
+
+    stage = Transformer.of(
+        input_topics=["in"],
+        transform=my_transform,
+        on_invalid_message=lambda error: None,
+    )
+
+    assert stage.on_invalid_message(_invalid_error()) is None
+
+
+def test_transformer_decorator_threads_on_invalid_message():
+    """@transformer forwards the same on_invalid_message override as Transformer.of."""
+
+    @transformer(input_topics=["in"], on_invalid_message=lambda error: Event.wrap({"salvaged": True}))
+    async def stage(msg, state) -> AsyncIterator[Message]:
+        return
+        yield  # pragma: no cover
+
+    assert stage.on_invalid_message(_invalid_error()) == Event.wrap({"salvaged": True})
+
+
+def test_default_on_invalid_message_raises():
+    """The framework default is "let it crash" — the traceback is the announcement."""
+    error = _invalid_error()
+    with pytest.raises(InvalidMessageError) as excinfo:
+        PassthroughTransformer().on_invalid_message(error)
+    assert excinfo.value is error
+
+
+def _invalid_error() -> InvalidMessageError:
+    return InvalidMessageError(
+        part="value", topic="in", partition=0, offset=0, key=b"k", value=b"{not json",
+    )
 
 
 def test_check_config_updates_applies_enriches_and_observes():

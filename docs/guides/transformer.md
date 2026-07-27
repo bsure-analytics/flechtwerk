@@ -115,4 +115,5 @@ await Flechtwerk.of(
 - **[Extractors](extractor.md)** — the same contract from the other end: bring an external source into Kafka.
 - **[Best Practices](best-practices.md)** — pair a transformer with an extractor so you can reprocess without re-ingesting.
 - **[Exactly-once delivery](../concepts/exactly-once.md)** — how the per-batch transaction ties output, state, and offsets together.
+- **[Invalid messages](../concepts/invalid-messages.md)** — what happens when an input record's key or value will not decode, and how to override the crash-by-default policy.
 - **[Typed attributes & records](../concepts/typed-attributes.md)** — the `Attribute` library behind `Event`, `State`, and `Config`.

@@ -89,6 +89,20 @@ class Metrics:
             registry=self.registry,
         )
 
+    # `outcome` is bounded to three values and `topic` to the stage's declared
+    # topics. The "raised" increment rarely survives to a scrape — the process
+    # is about to die — so restart counts and the traceback carry that case;
+    # it is counted anyway, so the three outcomes read symmetrically in PromQL
+    # and a handler that raises *selectively* (per topic, say) is visible.
+    @cached_property
+    def messages_invalid_total(self) -> Counter:
+        return Counter(
+            "flechtwerk_messages_invalid_total",
+            "Records whose key or value could not be decoded, by what on_invalid_message did with them",
+            self._label_names + ["outcome", "topic"],
+            registry=self.registry,
+        )
+
     @cached_property
     def messages_out_total(self) -> Counter:
         return Counter(

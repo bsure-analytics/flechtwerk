@@ -89,6 +89,8 @@ The line to draw is **recoverable vs non-recoverable**, not transient vs persist
 
     Swallowing a data error is silent data loss. If a record can't be processed correctly, crash — the transaction guarantees nothing partial was committed, and replay will bring the state back.
 
+    The one sanctioned exception is [`Stage.on_invalid_message`](invalid-messages.md), for a record that will not *decode* at all. It crashes by default too; an override that skips is a deliberate, counted decision — never a silent one.
+
 ## Constraints
 
 - **Equal partition counts.** All input topics of a transformer must have equal partition counts — the changelog is created with that same count. It must match *exactly* (not a multiple or a sum): each task writes its changelog to its own partition number, so partition `N` of the inputs maps one-to-one to partition `N` of the changelog. If a changelog already exists at a different count, startup fails — repartitioning requires a state migration.

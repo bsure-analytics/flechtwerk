@@ -22,6 +22,7 @@ def test_no_op_observer_does_nothing():
     observer = Observer()
     observer.message_in("t")
     observer.message_in_bytes("t", 128)
+    observer.message_invalid("t", "skipped")
     observer.message_out("t")
     observer.message_out_bytes("t", 128)
     observer.state_record_bytes(128)
@@ -48,6 +49,31 @@ def test_message_in_increments_counter():
         "flechtwerk_messages_in_total",
         {"datasource": "ds1", "stage": "extractor", "topic": "topic-b"},
     ) == 1
+
+
+def test_message_invalid_increments_counter_per_outcome():
+    observer, registry = make_observer()
+    observer.message_invalid("input-topic", "skipped")
+    observer.message_invalid("input-topic", "substituted")
+    observer.message_invalid("input-topic", "substituted")
+    observer.message_invalid("cfg-topic", "raised")
+    for topic, outcome, expected in (
+        ("input-topic", "skipped", 1),
+        ("input-topic", "substituted", 2),
+        ("cfg-topic", "raised", 1),
+    ):
+        assert registry.get_sample_value(
+            "flechtwerk_messages_invalid_total",
+            {"datasource": "ds1", "outcome": outcome, "stage": "extractor", "topic": topic},
+        ) == expected
+
+
+def test_message_invalid_is_labelled_by_outcome_and_topic():
+    """Both extra label names must be present — a missing one raises at .labels()."""
+    observer, _ = make_observer()
+    assert observer.metrics.messages_invalid_total._labelnames == (
+        "datasource", "stage", "outcome", "topic",
+    )
 
 
 def test_message_out_increments_counter():

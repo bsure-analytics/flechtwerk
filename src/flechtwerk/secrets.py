@@ -37,7 +37,8 @@ from joserfc.registry import HeaderParameter
 from flechtwerk.attribute import Attribute
 from flechtwerk.attribute.codec import Codec
 
-from .kafka import decode_event, decode_key, is_tombstone, read_to_end, topic_partitions
+from .kafka import decode_key, decode_record, is_tombstone, read_to_end, topic_partitions
+from .types import Config
 from .keyring import (
     Keyring,
     UnknownKeyError,
@@ -374,6 +375,11 @@ class ScanEntry:
     A non-``None`` ``error`` is neither a clean ciphertext nor plaintext — it
     keeps a corrupt record from silently reading as either, and from aborting
     the whole scan.
+
+    ``attribute`` is empty for a **record-level** finding: the record's key or
+    value could not be decoded at all, so no attribute could be inspected.
+    Such an entry always carries an ``error``, and its ``wire_key`` falls back
+    to ``repr(raw_key)`` when the key itself is what failed.
     """
 
     attribute: str
@@ -404,17 +410,44 @@ async def scan_config_topics(
     topic that does not exist raises `SecretError` rather than silently
     contributing zero records — a missing topic must not read as a clean "no
     plaintext / no old-kid" result — and a single corrupt token is reported as
-    a `ScanEntry` with ``error`` set rather than aborting the whole scan.
+    a `ScanEntry` with ``error`` set rather than aborting the whole scan. That
+    extends to record-level decode: an undecodable key or value becomes a
+    `ScanEntry` with an empty ``attribute``. The scan has no stage, so it never
+    consults `Stage.on_invalid_message` — a diagnostic tool must report, not
+    adopt a runtime policy that could crash it.
     """
     names = [a.name for a in attributes]
     topics = list(topics)
     found: list[ScanEntry] = []
 
+    def report_record(msg, wire_key: str, error: ValueError) -> None:
+        log.warning("Undecodable config record at %s/%d (key %s): %s",
+                    msg.topic, msg.offset, wire_key, error)
+        found.append(ScanEntry(
+            attribute="",
+            error=str(error),
+            kid=None,
+            partition=msg.partition,
+            topic=msg.topic,
+            wire_key=wire_key,
+        ))
+
     async def collect(msg) -> None:
         if is_tombstone(msg.value):
             return
-        wire_key = decode_key(msg.key)
-        raw = decode_event(msg.value, f"{msg.topic}/{msg.offset}").raw
+        try:
+            wire_key = decode_key(msg.key)
+        except ValueError as e:
+            # An undecodable key has no readable identity, so the report falls
+            # back to the raw bytes' repr — lossy-decoding it would invent an
+            # identity, which is exactly what the runtime path refuses to do.
+            report_record(msg, repr(msg.key), e)
+            return
+        try:
+            raw = decode_record(msg.value, Config).raw
+        except ValueError as e:
+            report_record(msg, wire_key, e)
+            return
         for name in names:
             value = raw.get(name)
             if value is None:

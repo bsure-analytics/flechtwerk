@@ -3,14 +3,20 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiokafka
 from aiokafka import ConsumerRecord
 
 from flechtwerk.attribute import Record
 
-from .types import Event, IncomingMessage
+from .types import Event, IncomingMessage, InvalidMessageError
+
+if TYPE_CHECKING:
+    # `OnInvalidMessageFn` lives on the stage side, beside `ExtractStateKeyFn`
+    # — importing it at runtime would close a stage → configs → kafka → stage
+    # cycle, so the annotations below are quoted forward references.
+    from .stage import OnInvalidMessageFn
 
 log = logging.getLogger(__name__)
 
@@ -71,49 +77,154 @@ def millis_to_datetime(millis: int | None) -> datetime | None:
 
 
 def decode_key(key: bytes | str | None) -> str:
-    """Decode a Kafka message key to a string; missing keys become ``""``."""
-    return (key.decode("utf-8", errors="replace") if isinstance(key, bytes) else key) or ""
+    """Decode a Kafka message key to a string; missing keys become ``""``.
+
+    Strict UTF-8: an ill-formed key raises ``UnicodeDecodeError`` (a
+    ``ValueError``). Repairing it with ``errors="replace"`` — as this once did
+    — would let a broken key flow silently into state identity, bucketing,
+    changelog keys, and ``token_for`` ownership, where distinct broken keys
+    can even collide on the same replacement characters.
+    """
+    return (key.decode("utf-8") if isinstance(key, bytes) else key) or ""
 
 
-def decode_event(value: bytes | str | None, context: str) -> Event:
-    """Decode a Kafka message value into an Event.
+def decode_record[R: Record](value: bytes | str | None, cls: type[R]) -> R:
+    """Decode a Kafka message value into a ``cls`` record.
 
-    Malformed payloads fall back to ``Event.wrap({})`` rather than raising — a
-    single bad message must not crash the stage into an infinite
-    CrashLoopBackOff on its own offset. ``context`` identifies the message in
-    the warning (e.g. ``"topic/offset"``). Handles:
-      - non-UTF-8 bytes in value
-      - invalid JSON
-      - valid JSON that decodes to a non-dict (e.g. scalar or array)
+    The CALLER names the type, because the wire carries none: the same bytes
+    are a `Config` to a config-topic reader and an `Event` to a data-topic
+    reader (see `flechtwerk.types.Payload`). Returning one fixed type would
+    make every other call site copy the record just to relabel it.
+
+    An empty or absent value decodes to ``cls.wrap({})`` — the one
+    unambiguous case, meaning "empty value" and never "garbage". Everything
+    undecodable raises a ``ValueError``, so a caller wraps exactly that one
+    type into an `InvalidMessageError` for `Stage.on_invalid_message`:
+      - non-UTF-8 bytes → ``UnicodeDecodeError``
+      - invalid JSON → ``json.JSONDecodeError``
+      - valid JSON that is not an object (scalar, array) → ``ValueError``
+    """
+    # Strict UTF-8 on purpose — json.loads(bytes) would sniff the encoding and
+    # decode with errors="surrogatepass", letting ill-formed payloads (CESU-8
+    # surrogates, UTF-16) through as lone-surrogate str values that crash
+    # encode_json when a stage re-emits them, far from the source.
+    raw_value = value.decode("utf-8") if isinstance(value, bytes) else value
+    parsed = json.loads(raw_value) if raw_value else {}
+    if not isinstance(parsed, dict):
+        raise ValueError(f"JSON value decoded to {type(parsed).__name__}, expected an object")
+    return cls.wrap(parsed)
+
+
+def invalid_message_error(
+        msg: ConsumerRecord[Any, Any],
+        part: Literal["key", "value"],
+        cause: ValueError,
+) -> InvalidMessageError:
+    """Wrap a strict-decode failure for `Stage.on_invalid_message`.
+
+    Chains ``cause`` in as ``__cause__`` so the original
+    ``UnicodeDecodeError`` / ``json.JSONDecodeError`` / non-dict
+    ``ValueError`` reaches the traceback of a raising handler — the default
+    policy, and the only announcement the framework makes.
+    """
+    error = InvalidMessageError(
+        part=part,
+        topic=msg.topic,
+        partition=msg.partition,
+        offset=msg.offset,
+        key=msg.key,
+        value=msg.value,
+    )
+    error.__cause__ = cause
+    return error
+
+
+def decode_key_mediated(
+        msg: ConsumerRecord[Any, Any],
+        on_invalid: "OnInvalidMessageFn",
+) -> str | None:
+    """Strictly decode a record's key, routing a failure through ``on_invalid``.
+
+    Returns ``None`` when the handler skipped the record. A handler that
+    returns a ``Record`` gets the teaching ``TypeError``: a key is state
+    identity — bucketing, changelog keys, and ``token_for`` ownership all
+    derive from it — and identity must not be synthesized for a record whose
+    identity is unreadable. Key failures accept raise or skip only.
     """
     try:
-        # Strict UTF-8 on purpose — json.loads(bytes) would sniff the encoding
-        # and decode with errors="surrogatepass", letting ill-formed payloads
-        # (CESU-8 surrogates, UTF-16) slip past this fallback as lone-surrogate
-        # str values that crash encode_json when a stage re-emits them.
-        raw_value = value.decode("utf-8") if isinstance(value, bytes) else value
-        parsed = json.loads(raw_value) if raw_value else {}
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        log.warning("Malformed message at %s (%s), using {}", context, type(e).__name__)
-        parsed = {}
-    if not isinstance(parsed, dict):
-        log.warning("Non-dict JSON payload at %s (%s), using {}", context, type(parsed).__name__)
-        parsed = {}
-    return Event.wrap(parsed)
+        return decode_key(msg.key)
+    except ValueError as e:
+        error = invalid_message_error(msg, "key", e)
+        if on_invalid(error) is not None:
+            raise TypeError(
+                "on_invalid_message returned a Record for an undecodable key at"
+                f" {msg.topic}/{msg.partition}/{msg.offset}: a key is state identity"
+                " — bucketing, changelog keys, and token_for ownership all derive"
+                " from it — and identity must not be synthesized for a record whose"
+                " identity is unreadable. Return None to skip the record, or"
+                " re-raise to crash."
+            ) from e
+        return None
 
 
-def parse_message(msg: ConsumerRecord[Any, Any]) -> IncomingMessage:
+def decode_event_mediated(
+        msg: ConsumerRecord[Any, Any],
+        on_invalid: "OnInvalidMessageFn",
+) -> Event | None:
+    """Strictly decode a record's value, routing a failure through ``on_invalid``.
+
+    Returns ``None`` when the handler skipped the record, and the
+    handler-supplied substitute — retyped as an `Event`, because the CALL
+    SITE assigns the semantic type — when it substituted one.
+
+    `Event` and not ``cls`` on purpose: this helper's product is always an
+    `IncomingMessage.value`, which is an `Event` by definition, whatever
+    topic the record came from.
+    """
+    try:
+        return decode_record(msg.value, Event)
+    except ValueError as e:
+        substitute = on_invalid(invalid_message_error(msg, "value", e))
+        if substitute is None:
+            return None
+        if not isinstance(substitute, Record):
+            # Teaching error at the decision site (the `Message.__post_init__`
+            # style): `Event(raw_dict)` would take the typed-literal path and
+            # die inside `Record.__init__` with an opaque AttributeError.
+            raise TypeError(
+                "on_invalid_message must return a Record or None, got"
+                f" {type(substitute).__name__}. Wrap a raw dict in Event.wrap(...) —"
+                " the call site assigns the semantic type."
+            ) from e
+        return Event(substitute)
+
+
+def parse_message(
+        msg: ConsumerRecord[Any, Any],
+        on_invalid: "OnInvalidMessageFn",
+) -> IncomingMessage | None:
     """Parse an aiokafka ConsumerRecord into an IncomingMessage.
 
-    Value decoding is lenient — see `decode_event`.
+    Decoding is strict and mediated by ``on_invalid`` (see
+    `Stage.on_invalid_message`); ``None`` means the handler skipped the
+    record, and a raising handler — the default — propagates.
+
+    The key is decoded FIRST and a key failure short-circuits: the value is
+    never attempted, so one broken record costs one handler call, not two.
     """
+    key = decode_key_mediated(msg, on_invalid)
+    if key is None:
+        return None
+    value = decode_event_mediated(msg, on_invalid)
+    if value is None:
+        return None
     return IncomingMessage(
-        key=decode_key(msg.key),
+        key=key,
         offset=msg.offset,
         partition=msg.partition,
         timestamp=millis_to_datetime(msg.timestamp),
         topic=msg.topic,
-        value=decode_event(msg.value, f"{msg.topic}/{msg.offset}"),
+        value=value,
     )
 
 
@@ -245,6 +356,13 @@ async def restore_changelog(
     async def apply(msg: ConsumerRecord[Any, Any]) -> None:
         # Tombstones delete; anything else is wire bytes — pass through to
         # the inner store.
+        #
+        # No `on_invalid_message` mediation here, deliberately: the changelog
+        # is framework-owned (every key is written from a `str`), so an
+        # undecodable key means foreign writes or corruption — an
+        # unrecoverable data error to crash on and then reset, not an
+        # application policy question. Same reason `state.deserialize` has no
+        # fallback.
         key = decode_key(msg.key)
         if is_tombstone(msg.value):
             await delete(key)

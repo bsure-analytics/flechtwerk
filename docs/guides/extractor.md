@@ -118,7 +118,9 @@ event = Event.wrap(raw)                    # verbatim, JSON-boundary-checked
 through the same JSON-native check every write goes through, so the record is safe
 to serialize and to read back through `Attribute` handles whose names match the
 JSON keys. It is the exact entry point the framework itself uses to decode every
-inbound record (`parse_message` → `Event.wrap`).
+inbound record (`parse_message` → `Event.wrap`), which also means a record whose
+value is not a JSON object never reaches your code — see [Invalid
+messages](../concepts/invalid-messages.md).
 
 Two constructor paths, picked by the shape of your input:
 
@@ -234,5 +236,8 @@ for the full model.
 - **[Config topics](../concepts/config-topics.md)** — how the config topic that
   drives your poll targets is read into a shared, eventually-consistent lookup
   table (Kafka Streams' GlobalKTable).
+- **[Invalid messages](../concepts/invalid-messages.md)** — what happens when a
+  config record's key or value will not decode, and how to override the
+  crash-by-default policy.
 - **[Typed attributes & records](../concepts/typed-attributes.md)** — the `Attribute`
   library that keeps the JSON boundary honest.

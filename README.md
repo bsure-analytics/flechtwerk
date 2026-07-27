@@ -102,6 +102,7 @@ The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full 
 - **[Config Topics](https://bsure-analytics.github.io/flechtwerk/concepts/config-topics/)** — shared, eventually-consistent lookup tables (Kafka Streams' GlobalKTable, specialized to configuration).
 - **[Encrypted Secrets](https://bsure-analytics.github.io/flechtwerk/concepts/secrets/)** — field-level secret encryption via the `flechtwerk[secrets]` extra: the `flenc:jwe:` wire format, keyring rotation, plaintext migration, and post-quantum posture.
 - **[Exactly-Once Delivery](https://bsure-analytics.github.io/flechtwerk/concepts/exactly-once/)** — the task model tying output messages, state writes, and offset commits into one Kafka transaction per batch.
+- **[Invalid Messages](https://bsure-analytics.github.io/flechtwerk/concepts/invalid-messages/)** — strict decoding, and the one hook that decides whether an undecodable record crashes the stage, is skipped, or gets a substituted value.
 - **[Architecture](https://bsure-analytics.github.io/flechtwerk/concepts/architecture/)** — the hexagonal (ports and adapters) design and the operational model.
 
 **[API Reference](https://bsure-analytics.github.io/flechtwerk/api/)** — generated from the source docstrings.

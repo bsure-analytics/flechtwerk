@@ -31,6 +31,12 @@ class Observer:
     # `Metrics.state_record_bytes` for why.
     def message_in(self, topic: str) -> None: pass
     def message_in_bytes(self, topic: str, n: int) -> None: pass
+    # One call per `Stage.on_invalid_message` invocation, `outcome` being
+    # "raised" / "skipped" / "substituted" — mandatory, so an override that
+    # skips records cannot silence the telemetry. The framework logs nothing
+    # about invalid records on any outcome; this counter IS the announcement
+    # for the recovered ones.
+    def message_invalid(self, topic: str, outcome: str) -> None: pass
     def message_out(self, topic: str) -> None: pass
     def message_out_bytes(self, topic: str, n: int) -> None: pass
     def transaction_committed(self) -> None: pass
@@ -100,6 +106,11 @@ class PrometheusObserver(Observer):
         if n > self._message_in_max.get(topic, 0):
             self._message_in_max[topic] = n
             self.metrics.message_in_max_bytes.labels(**self.metrics_labels, topic=topic).set(n)
+
+    def message_invalid(self, topic: str, outcome: str) -> None:
+        self.metrics.messages_invalid_total.labels(
+            **self.metrics_labels, outcome=outcome, topic=topic,
+        ).inc()
 
     def message_out(self, topic: str) -> None:
         self.metrics.messages_out_total.labels(**self.metrics_labels, topic=topic).inc()

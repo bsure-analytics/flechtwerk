@@ -1,11 +1,11 @@
 """Core types for the Flechtwerk framework."""
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final
+from typing import Final, Literal
 
 from flechtwerk.attribute import Codec, Record, record_codec
 
-__all__ = ["Config", "Event", "IncomingMessage", "Message", "Payload", "State"]
+__all__ = ["Config", "Event", "IncomingMessage", "InvalidMessageError", "Message", "Payload", "State"]
 
 
 class Config(Record):
@@ -46,6 +46,47 @@ codec validation. ``State`` and ``Config`` are excluded on purpose — a
 bare to persist it), and a ``Config`` travels as data (wrap it in
 ``Event(config)``); the explicit conversion marks the semantic handoff.
 """
+
+
+class InvalidMessageError(Exception):
+    """A Kafka record whose key or value could not be decoded.
+
+    Raised by default when a record's key is not valid UTF-8 or its value is
+    not a JSON dict; `Stage.on_invalid_message` overrides that policy (skip
+    the record, or substitute a decoded value). The original
+    ``UnicodeDecodeError`` / ``json.JSONDecodeError`` / non-dict
+    ``ValueError`` is always chained in as ``__cause__``.
+
+    ``str(...)`` is forensically complete on its own — part, topic,
+    partition, offset — because the default policy is to raise and the
+    traceback is the only announcement the framework makes (it logs
+    nothing, on any outcome). The raw wire ``key`` and ``value`` stay
+    available as attributes but out of the message: a value may be a
+    megabyte.
+    """
+
+    def __init__(
+            self,
+            *,
+            part: Literal["key", "value"],
+            topic: str,
+            partition: int,
+            offset: int,
+            key: bytes | str | None,
+            value: bytes | str | None,
+    ) -> None:
+        super().__init__(
+            f"Undecodable {part} in the record at {topic}/{partition}/{offset}"
+            " — see __cause__ for the decode error, and the key/value attributes"
+            " for the raw wire bytes. Override Stage.on_invalid_message to skip"
+            " the record or substitute a value."
+        )
+        self.part = part
+        self.topic = topic
+        self.partition = partition
+        self.offset = offset
+        self.key = key
+        self.value = value
 
 
 @dataclass(frozen=True, slots=True)

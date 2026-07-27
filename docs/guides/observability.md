@@ -52,6 +52,7 @@ Emitted by both stage shapes unless noted.
 | Metric | Type | Extra labels | Meaning |
 | --- | --- | --- | --- |
 | `messages_in_total` | Counter | `topic` | Input messages consumed and dispatched to user code. |
+| `messages_invalid_total` | Counter | `outcome`, `topic` | Records whose key or value would not decode, by what [`on_invalid_message`](../concepts/invalid-messages.md) did with them: `raised`, `skipped`, or `substituted`. |
 | `messages_out_total` | Counter | `topic` | Output messages yielded by user code (produced to Kafka). |
 | `message_in_bytes` | Histogram | `topic` | Serialized size (key + value) of one consumed record — reported by the broker, so it costs no re-serialization. |
 | `message_in_max_bytes` | Gauge | `topic` | Largest consumed record since process start (high-water mark). |
@@ -165,8 +166,9 @@ static declarations — empty string for an unscoped attribute).
 
 - **`config_store_entries`** — the fastest answer to *"did my config actually
   arrive?"* If a config you wrote to the topic isn't reflected here, the store
-  never accepted it (wrong topic, tombstoned, or malformed — a bad value decodes
-  to empty). See [Config topics](../concepts/config-topics.md).
+  never accepted it (wrong topic, or tombstoned; a malformed one crashes the
+  stage by default — see `messages_invalid_total` below). See [Config
+  topics](../concepts/config-topics.md).
 - **`poll_cycle_seconds` approaching your `poll_interval`** — the extractor is
   barely keeping up. A poll cycle nearly as long as the interval is the documented
   signal to add replicas — extractors shard config ownership across instances
@@ -202,6 +204,14 @@ static declarations — empty string for an unscoped attribute).
   A climbing mark on state means unbounded state — see [Exactly-once
   delivery](../concepts/exactly-once.md#constraints) for the contract and the
   ways to bound it.
+- **`messages_invalid_total{outcome="skipped"}` rising** — your
+  [`on_invalid_message`](../concepts/invalid-messages.md) override is dropping
+  records, which is data loss by policy. This counter is the *only* signal:
+  the framework logs nothing on a recovered outcome, precisely so that loss
+  lands on a scrape rather than in a log nobody tails. `outcome="substituted"`
+  deserves the same attention — a substitution is a stopgap, not a wire format.
+  An `outcome="raised"` increment usually never reaches a scrape (the process
+  is dying), so pair it with the pod's restart count.
 - **`transactions_committed_total` flat while `messages_in_total` climbs** — a
   transformer is consuming but not committing: transactions are stalling or
   aborting. Read it alongside `batch_processing_seconds`.

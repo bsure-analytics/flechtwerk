@@ -32,6 +32,7 @@ PAGES = {
     "concepts-architecture": ("gridknot", GARNET),
     "concepts-config-topics": ("triquetra", GARNET),
     "concepts-exactly-once": ("chain", LAPIS),
+    "concepts-invalid-messages": ("braid5", VERDIGRIS),
     "guides-index": ("twistknot", GARNET),
     "guides-getting-started": ("stepfret", VERDIGRIS),
     "guides-extractor": ("braid4", GARNET),

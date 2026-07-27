@@ -85,5 +85,6 @@ nav:
       - Config Topics: concepts/config-topics.md
       - Encrypted Secrets: concepts/secrets.md
       - Exactly-Once Delivery: concepts/exactly-once.md
+      - Invalid Messages: concepts/invalid-messages.md
       - Architecture: concepts/architecture.md
   - API Reference: api/index.md

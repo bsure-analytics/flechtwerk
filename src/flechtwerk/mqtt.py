@@ -90,7 +90,7 @@ from .configs import EnrichConfigFn
 from .extractor import Extractor
 from .module import MqttBrokerConfig
 from .observer import Observer
-from .stage import ExtractStateKeyFn
+from .stage import ExtractStateKeyFn, OnInvalidMessageFn
 from .types import Config, Message, State
 
 if TYPE_CHECKING:
@@ -496,14 +496,18 @@ class MqttExtractor(Extractor, ABC):
             drain_limit: int = 1000,
             enrich_config: EnrichConfigFn | None = None,
             extract_state_key: ExtractStateKeyFn | None = None,
+            on_invalid_message: OnInvalidMessageFn | None = None,
     ) -> "MqttExtractor":
         """Build an MqttExtractor from a relay function and config topics.
 
         Mirrors ``Extractor.of``: patches the supplied callables in as
         instance attributes that shadow the class-level abstract method
         ``relay`` (and, when provided, the default ``enrich_config`` /
-        ``extract_state_key`` methods). The ABC discipline still applies to every
-        other construction path.
+        ``extract_state_key`` / ``on_invalid_message`` methods). The ABC
+        discipline still applies to every
+        other construction path. ``on_invalid_message`` governs this stage's
+        Kafka *config* records, not MQTT payloads — see ``poll`` for why the
+        two must differ.
         """
         instance = _FunctionalMqttExtractor()
         instance.config_topics = config_topics
@@ -513,6 +517,8 @@ class MqttExtractor(Extractor, ABC):
             instance.enrich_config = enrich_config
         if extract_state_key is not None:
             instance.extract_state_key = extract_state_key
+        if on_invalid_message is not None:
+            instance.on_invalid_message = on_invalid_message
         return instance
 
     async def __aenter__(self) -> Self:
@@ -603,6 +609,14 @@ class MqttExtractor(Extractor, ABC):
                     # mutation of any parameter must not leak to the next message.
                     message = self.relay(deepcopy(config), msg.topic, Record.wrap(json.loads(msg.payload)))
                 except Exception:
+                    # Deliberately NOT `Stage.on_invalid_message`: that hook's
+                    # default (and its crash-loop trade-off) belongs to Kafka
+                    # records, where the offset is the cursor and a fix at the
+                    # producer lets the same record through cleanly. At QoS 1
+                    # with manual ACK there is no offset to hold back — crashing
+                    # redelivers the poison on every restart and wedges
+                    # ingestion forever — so an undecodable MQTT payload is
+                    # always a warn-ACK-count drop.
                     log.warning("Dropping poison MQTT message from topic %s", msg.topic, exc_info=True)
                     self.observer.mqtt_message_dropped(sub.topic, "poison")
                     sub.ack(msg)
@@ -650,6 +664,7 @@ def mqtt_extractor(
         drain_limit: int = 1000,
         enrich_config: EnrichConfigFn | None = None,
         extract_state_key: ExtractStateKeyFn | None = None,
+        on_invalid_message: OnInvalidMessageFn | None = None,
 ) -> Callable[[RelayFn], MqttExtractor]:
     """Decorator form of `MqttExtractor.of` — bind a relay function to its config topics.
 
@@ -660,7 +675,8 @@ def mqtt_extractor(
         def stage(config: Config, topic: str, payload: Record) -> Message | None:
             ...
 
-    ``drain_limit``, ``enrich_config``, and ``extract_state_key`` are the same optional
+    ``drain_limit``, ``enrich_config``, ``extract_state_key``, and
+    ``on_invalid_message`` are the same optional
     overrides as on `MqttExtractor.of` — this is exactly that call with ``relay``
     supplied by the decoration. Sources needing state, 1:N fan-out, or non-JSON
     payloads subclass `MqttExtractor` and override ``poll()`` instead.
@@ -671,6 +687,7 @@ def mqtt_extractor(
             drain_limit=drain_limit,
             enrich_config=enrich_config,
             extract_state_key=extract_state_key,
+            on_invalid_message=on_invalid_message,
             relay=relay,
         )
     return decorator

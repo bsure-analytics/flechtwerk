@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import cached_property
 from typing import AsyncIterator, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
@@ -14,7 +15,7 @@ from reactor_di import lookup
 from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_config_updates
 from .kafka import encode_json, datetime_to_millis, parse_message
 from .observer import Observer
-from .stage import ExtractStateKeyFn, Stage
+from .stage import ExtractStateKeyFn, OnInvalidMessageFn, Stage, counting_on_invalid
 from .state import ChangelogStateStore, StateStore
 from .types import IncomingMessage, Message, State
 
@@ -94,6 +95,7 @@ class Transformer(Stage, ABC):
             transform: TransformFn,
             enrich_config: EnrichConfigFn | None = None,
             extract_state_key: ExtractStateKeyFn | None = None,
+            on_invalid_message: OnInvalidMessageFn | None = None,
     ) -> "Transformer":
         """Build a Transformer from a transform function and input topics.
 
@@ -103,7 +105,8 @@ class Transformer(Stage, ABC):
 
         Patches the supplied callables in as instance attributes that
         shadow the class-level abstract method ``transform`` (and, when
-        provided, the default ``enrich_config`` / ``extract_state_key``). The ABC
+        provided, the default ``enrich_config`` / ``extract_state_key`` /
+        ``on_invalid_message``). The ABC
         discipline still applies to every other construction path —
         ``Transformer()`` and any abstract subclass remain uninstantiable.
         """
@@ -114,6 +117,8 @@ class Transformer(Stage, ABC):
             instance.enrich_config = enrich_config
         if extract_state_key is not None:
             instance.extract_state_key = extract_state_key
+        if on_invalid_message is not None:
+            instance.on_invalid_message = on_invalid_message
         return instance
 
     @abstractmethod
@@ -155,6 +160,7 @@ def transformer(
         input_topics: list[str],
         enrich_config: EnrichConfigFn | None = None,
         extract_state_key: ExtractStateKeyFn | None = None,
+        on_invalid_message: OnInvalidMessageFn | None = None,
 ) -> Callable[[TransformFn], Transformer]:
     """Decorator form of `Transformer.of` — bind a transform function to its input topics.
 
@@ -165,7 +171,8 @@ def transformer(
         async def stage(msg: IncomingMessage, state: State) -> AsyncIterator[Message | State]:
             ...
 
-    ``enrich_config`` and ``extract_state_key`` are the same optional overrides as on
+    ``enrich_config``, ``extract_state_key``, and ``on_invalid_message`` are the
+    same optional overrides as on
     `Transformer.of` — this is exactly that call with ``transform`` supplied by
     the decoration. Call `Transformer.of` directly when the transform function
     must stay callable under its own name, and subclass `Transformer` when you
@@ -176,6 +183,7 @@ def transformer(
             enrich_config=enrich_config,
             extract_state_key=extract_state_key,
             input_topics=input_topics,
+            on_invalid_message=on_invalid_message,
             transform=transform,
         )
     return decorator
@@ -267,6 +275,18 @@ class TransformerRunner:
         self.pending: set[int] = set()
         self.tasks: dict[int, Task] = {}
 
+    @cached_property
+    def on_invalid(self) -> OnInvalidMessageFn:
+        """The stage's invalid-message policy, wrapped once in its counter.
+
+        Lazy rather than annotated: reactor-di wires annotated fields by
+        name, and this is derived from two of them. Built once per runner and
+        handed to every mediated decode site — the parse loop below and the
+        config machinery — so each handler invocation is counted exactly once
+        (see `counting_on_invalid`).
+        """
+        return counting_on_invalid(self.transformer.on_invalid_message, self.observer)
+
     async def run(self) -> Never:
         """Main event loop. Consumes batches and processes each transactionally.
 
@@ -291,7 +311,7 @@ class TransformerRunner:
         if self.config_consumer is not None:
             await bootstrap_config_store(
                 self.config_consumer, self.transformer.config_topics,
-                self.config_store, self.transformer.enrich_config,
+                self.config_store, self.transformer.enrich_config, self.on_invalid,
             )
             self.observer.config_store_restored(len(self.config_store))
             self.observer.config_store_entries(len(self.config_store))
@@ -325,10 +345,15 @@ class TransformerRunner:
         of a batch sees one consistent config snapshot (updates land at
         batch boundaries; that is slightly stronger than Kafka Streams'
         concurrent GlobalKTable updates).
+
+        Only records the machinery actually APPLIED come back, so a record
+        `on_invalid_message` skipped is not counted here — it changed nothing.
         """
         if self.config_consumer is None:
             return
-        records = await drain_config_updates(self.config_consumer, self.config_store, self.transformer.enrich_config)
+        records = await drain_config_updates(
+            self.config_consumer, self.config_store, self.transformer.enrich_config, self.on_invalid,
+        )
         for msg in records:
             self.observer.config_message_in(msg.topic)
         if records:
@@ -385,6 +410,11 @@ class TransformerRunner:
         then Kafka offset order. Task transactions commit independently and
         concurrently — each covers exactly one task's outputs, state changes,
         and offsets.
+
+        Decoding happens in the parse loop, which deliberately precedes every
+        transaction: an `InvalidMessageError` from the default
+        `Stage.on_invalid_message` therefore propagates with nothing begun and
+        no offset committed, so the restart re-fetches the same record.
         """
         topic_order = {t: i for i, t in enumerate(self.transformer.input_topics)}
         ordered_tps = sorted(records, key=lambda p: topic_order[p.topic])
@@ -397,21 +427,29 @@ class TransformerRunner:
         for tp in ordered_tps:
             task_offsets = offsets.setdefault(tp.partition, {})
             for raw_msg in records[tp]:
-                msg = parse_message(raw_msg)
                 # Inbound bytes are weighed HERE and not beside the
                 # `message_in` count in `_process_key_bucket`: the sizes ride
                 # free on the broker's `ConsumerRecord`, which `parse_message`
-                # has already collapsed into an `IncomingMessage` by then, and
-                # re-serializing to recover them would defeat the point. Kafka
-                # reports -1 for an absent key or value, which must not
-                # subtract from the observation.
+                # collapses into an `IncomingMessage`, and re-serializing to
+                # recover them would defeat the point. Kafka reports -1 for an
+                # absent key or value, which must not subtract from the
+                # observation. Before the decode, too: an undecodable record
+                # the handler skips still arrived as wire traffic, and only
+                # `message_in` (in the bucket) means "dispatched to user code".
                 self.observer.message_in_bytes(
-                    msg.topic,
+                    raw_msg.topic,
                     max(raw_msg.serialized_key_size, 0) + max(raw_msg.serialized_value_size, 0),
                 )
+                # The offset advances even for a record `on_invalid_message`
+                # skips: it commits with this batch's transaction, so the stage
+                # does not re-fetch — and crash-loop on — a record its own
+                # policy chose to skip. A raising handler never reaches here.
+                task_offsets[tp] = max(task_offsets.get(tp, 0), raw_msg.offset + 1)
+                msg = parse_message(raw_msg, self.on_invalid)
+                if msg is None:
+                    continue
                 key = self.transformer.extract_state_key(msg)
                 buckets.setdefault((tp.partition, key), []).append(msg)
-                task_offsets[tp] = max(task_offsets.get(tp, 0), msg.offset + 1)
 
         with self.observer.batch_scope(total):
             results = await asyncio.gather(*(

@@ -35,3 +35,9 @@ The source topics are their own changelog — compacted, small, re-read on every
 !!! note "Why Re-Reading Is Safe"
 
     Kafka Streams forbids transforming records on their way into a global store (KIP-813) because a checkpoint-based restore would bypass the transformation. Flechtwerk re-reads the topics through the same `enrich_config` path on every startup, so the enriched store cannot diverge.
+
+## When a Config Record Won't Decode
+
+Config records are usually written by hand or by ops tooling, which is exactly where a bad one comes from: a stray array, a Latin-1 key, a half-written value. Decoding is strict, and the policy is [`Stage.on_invalid_message`](invalid-messages.md) — by default it crashes the stage, at startup during the bootstrap or in the main loop during a drain. That is deliberate for a table every instance depends on: a config that silently read as `{}` would look like a missing key at the lookup site, far from the record that caused it.
+
+The same determinism argument as above applies to the hook itself: every boot re-reads the topics through it, so a handler whose substitution varies would build a store that diverges from what a fresh boot builds.

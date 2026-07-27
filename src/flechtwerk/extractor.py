@@ -7,6 +7,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import cached_property
 from typing import AsyncIterator, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
@@ -16,9 +17,9 @@ from reactor_di import lookup
 
 from flechtwerk.attribute import Attribute, BOOL
 from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_config_updates
-from .kafka import encode_json, datetime_to_millis, parse_message, restore_changelog
+from .kafka import encode_json, datetime_to_millis, restore_changelog
 from .observer import Observer
-from .stage import ExtractStateKeyFn, Stage
+from .stage import ExtractStateKeyFn, OnInvalidMessageFn, Stage, counting_on_invalid
 from .state import ChangelogStateStore, StateStore
 from .types import Config, IncomingMessage, Message, State
 
@@ -127,16 +128,19 @@ class Extractor(Stage, ABC):
             poll: PollFn,
             enrich_config: EnrichConfigFn | None = None,
             extract_state_key: ExtractStateKeyFn | None = None,
+            on_invalid_message: OnInvalidMessageFn | None = None,
     ) -> "Extractor":
         """Build an Extractor from a poll function and config topics.
 
-        ``enrich_config`` and ``extract_state_key`` are optional overrides; omit them
+        ``enrich_config``, ``extract_state_key``, and ``on_invalid_message`` are
+        optional overrides; omit them
         to use the defaults (no enrichment, ``extract_state_key`` returns the
-        Kafka message key).
+        Kafka message key, an undecodable config record raises).
 
         Patches the supplied callables in as instance attributes that
         shadow the class-level abstract method ``poll`` (and, when
-        provided, the default ``enrich_config`` / ``extract_state_key`` methods). The
+        provided, the default ``enrich_config`` / ``extract_state_key`` /
+        ``on_invalid_message`` methods). The
         ABC discipline still applies to every other construction path —
         ``Extractor()`` and any abstract subclass remain uninstantiable.
         """
@@ -147,6 +151,8 @@ class Extractor(Stage, ABC):
             instance.enrich_config = enrich_config
         if extract_state_key is not None:
             instance.extract_state_key = extract_state_key
+        if on_invalid_message is not None:
+            instance.on_invalid_message = on_invalid_message
         return instance
 
     async def on_active_configs(self, configs: dict[str, Config]) -> None:
@@ -227,6 +233,7 @@ def extractor(
         config_topics: list[str],
         enrich_config: EnrichConfigFn | None = None,
         extract_state_key: ExtractStateKeyFn | None = None,
+        on_invalid_message: OnInvalidMessageFn | None = None,
 ) -> Callable[[PollFn], Extractor]:
     """Decorator form of `Extractor.of` — bind a poll function to its config topics.
 
@@ -237,7 +244,8 @@ def extractor(
         async def stage(config: Config, state: State) -> AsyncIterator[Message | State]:
             ...
 
-    ``enrich_config`` and ``extract_state_key`` are the same optional overrides as on
+    ``enrich_config``, ``extract_state_key``, and ``on_invalid_message`` are the
+    same optional overrides as on
     `Extractor.of` — this is exactly that call with ``poll`` supplied by the
     decoration. Call `Extractor.of` directly when the poll function must stay
     callable under its own name, and subclass `Extractor` when you need
@@ -248,6 +256,7 @@ def extractor(
             config_topics=config_topics,
             enrich_config=enrich_config,
             extract_state_key=extract_state_key,
+            on_invalid_message=on_invalid_message,
             poll=poll,
         )
     return decorator
@@ -368,6 +377,18 @@ class ExtractorRunner:
         self.rebalance_lock = asyncio.Lock()
         self.tasks: dict[int, TokenTask] = {}
         self.tokens: frozenset[int] = frozenset()
+
+    @cached_property
+    def on_invalid(self) -> OnInvalidMessageFn:
+        """The stage's invalid-message policy, wrapped once in its counter.
+
+        Lazy rather than annotated: reactor-di wires annotated fields by
+        name, and this is derived from two of them. Built once per runner and
+        handed to the config machinery — the extractor's only decode site —
+        so each handler invocation is counted exactly once (see
+        `counting_on_invalid`).
+        """
+        return counting_on_invalid(self.extractor.on_invalid_message, self.observer)
 
     async def run(self) -> Never:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
@@ -636,22 +657,34 @@ class ExtractorRunner:
         log compaction — reads to the end offsets captured at entry, and
         enriches once per surviving entry. Every surviving entry becomes
         a config.
+
+        The machinery hands back records already decoded, so nothing is
+        re-parsed here: a record is decoded — and therefore
+        `Stage.on_invalid_message` consulted — exactly once.
         """
         latest = await bootstrap_config_store(
-            self.consumer, self.extractor.config_topics, self.config_store, self.extractor.enrich_config,
+            self.consumer, self.extractor.config_topics, self.config_store,
+            self.extractor.enrich_config, self.on_invalid,
         )
-        for raw_msg in latest.values():
-            await self.apply_config(parse_message(raw_msg))
+        for msg in latest.values():
+            await self.apply_config(msg)
         self.observer.config_store_restored(len(self.config_store))
         self.observer.config_store_entries(len(self.config_store))
         log.info("Loaded %d initial config(s)", len(self.entries))
 
     async def check_config_updates(self) -> None:
-        """Non-blocking check for config changes."""
-        records = await drain_config_updates(self.consumer, self.config_store, self.extractor.enrich_config)
-        for raw_msg in records:
-            self.observer.config_message_in(raw_msg.topic)
-            await self.apply_config(parse_message(raw_msg))
+        """Non-blocking check for config changes.
+
+        Only records the machinery actually APPLIED come back, already
+        decoded — a record `on_invalid_message` skipped changed nothing, so it
+        is neither counted nor applied here.
+        """
+        records = await drain_config_updates(
+            self.consumer, self.config_store, self.extractor.enrich_config, self.on_invalid,
+        )
+        for msg in records:
+            self.observer.config_message_in(msg.topic)
+            await self.apply_config(msg)
         if records:
             self.observer.config_store_entries(len(self.config_store))
 

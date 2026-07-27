@@ -49,6 +49,9 @@ class RecordingObserver(Observer):
     def message_in_bytes(self, topic: str, n: int) -> None:
         self.calls.append(("message_in_bytes", topic, n))
 
+    def message_invalid(self, topic: str, outcome: str) -> None:
+        self.calls.append(("message_invalid", topic, outcome))
+
     def message_out(self, topic: str) -> None:
         self.calls.append(("message_out", topic))
 

@@ -83,6 +83,11 @@ async def _identity(config):
     return config
 
 
+def _raising(error):
+    """The default `Stage.on_invalid_message` policy, as a bare handler."""
+    raise error
+
+
 async def test_bootstrap_reads_all_partitions_of_multiple_topics(
     kafka_bootstrap: str, unique_topic: str,
 ) -> None:
@@ -105,7 +110,7 @@ async def test_bootstrap_reads_all_partitions_of_multiple_topics(
     )
     await consumer.start()
     try:
-        latest = await bootstrap_config_store(consumer, [cfg_a, cfg_b], store, _identity)
+        latest = await bootstrap_config_store(consumer, [cfg_a, cfg_b], store, _identity, _raising)
     finally:
         await consumer.stop()
 
