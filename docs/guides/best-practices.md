@@ -154,7 +154,7 @@ Secret fields — API keys, tokens, passwords — are encrypted in place with th
 - **Encrypt only what is secret.** Wrap the secret field's codec with
   `ENCRYPTED(...)` (`Attribute("api_key", ENCRYPTED(STR))`); leave non-secret
   fields plaintext so the record stays browsable in a topic UI.
-- **Config and State, not Event.** Config is the primary home; `State` works
+- **Config and State, not Event.** `Config` is the primary home; `State` works
   too (a fresh nonce re-encrypts only on an explicit write, so carried-forward
   state stays byte-stable), but an `Event` stream re-encrypts per message and
   hits the AES-GCM nonce budget — and encrypted event fields are opaque to
