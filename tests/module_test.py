@@ -74,7 +74,16 @@ def test_poll_interval_optional_for_transformer_positive_for_extractor():
     validate_poll_interval(Extractor.of(config_topics=["cfg"], poll=noop_poll), timedelta(seconds=60))
 
 
-# -- ensure_topics (broker-side startup checks) --------------------------------
+def test_broker_config_is_keyword_only():
+    """Fields are alphabetical, so a new one lands mid-list — positional
+    construction would silently re-bind every argument after it. Keyword-only
+    turns that into a loud TypeError and makes field order a non-event."""
+    assert MqttBrokerConfig(broker="b", port=1883).session_expiry == timedelta(hours=24)
+    with pytest.raises(TypeError):
+        MqttBrokerConfig("b", 1883)  # noqa: the point of the test
+
+
+# -- ensure_topics (Kafka-broker-side startup checks) --------------------------------
 
 
 class _FakeCreateResponse:
@@ -164,31 +173,91 @@ def test_ensure_topics_rejects_unequal_input_partition_counts():
     asyncio.run(run())
 
 
-def test_ensure_topics_extractor_rejects_unequal_config_partition_counts():
+def test_ensure_topics_never_constrains_config_partition_counts():
+    """The equal-count rule belongs to `ExtractorRunner.count_tokens` — the only
+    code that defines a token space — so the container imposes nothing here,
+    and a broker-dispatched stage's differing counts cannot fail its startup.
+    The describe still runs, so a missing config topic fails as fast as ever."""
     async def run():
-        stage = Extractor.of(config_topics=["c1", "c2"], poll=noop_poll)
-        admin = _FakeAdmin({"c1": 2, "c2": 3})
-        with pytest.raises(ValueError, match="ownership-token space"):
-            await ensure_topics(admin, stage, "cl", "app")
+        for stage in (
+            Extractor.of(config_topics=["c1", "c2"], poll=noop_poll),
+            MqttExtractor.of(config_topics=["c1", "c2"], relay=noop_relay),
+        ):
+            await ensure_topics(_FakeAdmin({"c1": 2, "c2": 3}), stage, "cl", "app")
 
     asyncio.run(run())
 
 
-def test_ensure_topics_extractor_creates_changelog_without_partition_validation():
-    """An extractor's changelog uses the broker default and is never validated
-    against input topics (it has none)."""
+def test_ensure_topics_still_requires_config_topics_to_exist():
     async def run():
-        stage = Extractor.of(config_topics=["c1", "c2"], poll=noop_poll)
-        admin = _FakeAdmin({"c1": 2, "c2": 2}, changelog_exists=False)
-        await ensure_topics(admin, stage, "cl", "app")
-        assert admin.created == ["cl"]
+        stage = MqttExtractor.of(config_topics=["missing"], relay=noop_relay)
+        with pytest.raises(Exception, match="missing"):
+            await ensure_topics(_FakeAdmin({}), stage, "cl", "app")
+
+    asyncio.run(run())
+
+
+def test_ensure_topics_creates_no_extractor_changelog():
+    """An extractor's changelog is created by the loop that needs one
+    (``ExtractorRunner.run_sharded`` → ``ensure_changelog``), so a stateless
+    broker-dispatched stage gets none — no check, it simply never asks."""
+    async def run():
+        for stage in (
+            Extractor.of(config_topics=["c1"], poll=noop_poll),
+            MqttExtractor.of(config_topics=["c1"], relay=noop_relay),
+        ):
+            admin = _FakeAdmin({"c1": 2})
+            await ensure_topics(admin, stage, "cl", "app")
+            assert admin.created == []
+
+    asyncio.run(run())
+
+
+def test_ensure_changelog_creates_the_topic_and_closes_its_admin(monkeypatch):
+    """The factory ``run_sharded`` calls when it wants a changelog. Only that
+    loop calls it, which is the whole mechanism: a broker-dispatched stage is
+    stateless, so no changelog is created for it — nothing checks, it just
+    never asks."""
+    async def run():
+        admin = _FakeAdmin({})
+        monkeypatch.setattr("flechtwerk.module.AIOKafkaAdminClient", lambda **_: admin)
+
+        mod = _FlechtwerkModule()
+        mod.application_id = "app"
+        mod.bootstrap_servers = "localhost:9092"
+
+        await mod.ensure_changelog()
+
+        assert admin.created == ["app-changelog"]
+        assert admin.started and admin.closed
+
+    asyncio.run(run())
+
+
+def test_ensure_changelog_creates_the_topic_and_closes_its_admin(monkeypatch):
+    """The factory ``run_sharded`` calls when it wants a changelog. Only that
+    loop calls it, which is the whole mechanism: a stage sharded by an MQTT
+    broker is stateless, so no changelog is created for it — nothing checks,
+    it simply never asks."""
+    async def run():
+        admin = _FakeAdmin({})
+        monkeypatch.setattr("flechtwerk.module.AIOKafkaAdminClient", lambda **_: admin)
+
+        mod = _FlechtwerkModule()
+        mod.application_id = "app"
+        mod.bootstrap_servers = "localhost:9092"
+
+        await mod.ensure_changelog()
+
+        assert admin.created == ["app-changelog"]
+        assert admin.started and admin.closed
 
     asyncio.run(run())
 
 
 def test_aenter_calls_ensure_topics_under_admin_try_finally(monkeypatch):
     """__aenter__ runs ensure_topics against a started admin and closes it even
-    when a topic check fails (the failure propagates before broker startup)."""
+    when a topic check fails (the failure propagates before Kafka client startup)."""
     async def run():
         admin = _FakeAdmin({"a": 2, "b": 3})
         monkeypatch.setattr("flechtwerk.module.AIOKafkaAdminClient", lambda **_: admin)
@@ -199,6 +268,7 @@ def test_aenter_calls_ensure_topics_under_admin_try_finally(monkeypatch):
         mod.client_id = "pod-0"
         mod.keyring = None
         mod.metrics_port = 0
+        mod.mqtt = None
         mod.poll_interval = None
         mod.stage = Transformer.of(input_topics=["a", "b"], transform=noop_transform)
 
@@ -213,8 +283,9 @@ def test_aenter_calls_ensure_topics_under_admin_try_finally(monkeypatch):
 
 
 def test_membership_consumer_exists_only_for_extractors():
-    """Every extractor gets the lease-holding membership consumer; a
-    transformer's work is already partitioned by its input topics."""
+    """Every extractor gets one built lazily; a transformer's work is already
+    partitioned by its input topics. Only ``run_sharded`` ever starts it, so a
+    broker-dispatched stage never joins a group — no flag needed."""
     def make(stage):
         mod = _FlechtwerkModule()
         mod.application_id = "app"
@@ -305,6 +376,7 @@ def test_batch_size_buckets_follow_max_poll_records():
 
 def make_mqtt_module(stage, mqtt: MqttBrokerConfig | None) -> _FlechtwerkModule:
     mod = _FlechtwerkModule()
+    mod.application_id = "app"
     mod.client_id = "pod-0"
     mod.metrics_port = 0  # observer resolves to the no-op Observer
     mod.mqtt = mqtt
@@ -328,6 +400,7 @@ def test_configured_stage_injects_settings_verbatim():
 
     assert mod.configured_stage is stage
     assert stage.client_id == "pod-0"  # the container's client_id, not the class default
+    assert stage.group == "app"  # the share group IS the application_id
     assert stage.mqtt is mqtt
     assert stage.observer is mod.observer  # the container's observer, not the class default
 

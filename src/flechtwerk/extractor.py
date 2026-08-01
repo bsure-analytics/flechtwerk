@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
-from typing import AsyncIterator, Never
+from typing import AsyncIterator, Final, Never
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.abc import ConsumerRebalanceListener
@@ -20,12 +20,20 @@ from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_
 from .kafka import encode_json, datetime_to_millis, restore_changelog
 from .observer import Observer
 from .stage import ExtractStateKeyFn, OnInvalidMessageFn, Stage, counting_on_invalid
-from .state import ChangelogStateStore, StateStore
+from .state import ChangelogStateStore, StatelessStateStore, StateStore
 from .types import Config, IncomingMessage, Message, State
 
 log = logging.getLogger(__name__)
 
 __all__ = ["Extractor", "extractor"]
+
+CONFIG_DRAIN_INTERVAL: Final = timedelta(seconds=1)
+"""How often a broker-dispatched runner's main loop drains config updates.
+
+The sharded loop gets this cadence for free from the membership consumer's
+one-second ``getmany`` pump; a broker-dispatched runner has no membership
+consumer, so it paces itself here to the same figure.
+"""
 
 SUSPENDED = Attribute("suspended", BOOL, optional=True)
 
@@ -107,6 +115,15 @@ class Extractor(Stage, ABC):
     is invoked for. The caller sets the ``application_id`` used for
     changelog topic naming (and the membership group) on `Flechtwerk`;
     stages don't carry it.
+
+    A stage that overrides ``_run_in`` to take the broker-dispatched loop
+    opts out of all of that: an external MQTT broker already sharded its
+    work, so it takes no leases and polls every active config on every
+    replica — at the price of being stateless by contract. Nothing else
+    declares which model a stage uses: the Kafka resources each needs (a
+    membership consumer, a changelog topic, a pinned token space) are
+    acquired by the loop that needs them, so a stage that names no loop gets
+    none of them.
     """
 
     wakeup: asyncio.Event | None = None
@@ -162,10 +179,12 @@ class Extractor(Stage, ABC):
         never invoke it. The contract, guaranteed at every call:
 
         - ``configs`` is the complete active set, keyed by wire key: every
-          config this instance currently owns that is not suspended.
-          Tombstoned, suspended, disowned (rebalanced-away), and rewritten
-          configs simply disappear from the mapping — one idempotent
-          reconciliation covers every removal shape.
+          config this instance currently owns that is not suspended — for a
+          broker-dispatched stage, which owns nothing, simply every
+          non-suspended config. Tombstoned, suspended, rewritten, and (on
+          the token path) disowned configs simply disappear from the
+          mapping — one idempotent reconciliation covers every removal
+          shape.
         - No poll is in flight, and every page a completed poll produced
           has committed (the re-entry contract) — the hook may dispose
           per-config resources without racing ``poll()``.
@@ -173,7 +192,7 @@ class Extractor(Stage, ABC):
           fire when nothing changed — implementations must be idempotent.
         - It is NOT called on shutdown: end-of-life cleanup belongs in
           ``__aexit__``. (The MQTT template deliberately keeps its
-          persistent broker session across restarts.)
+          persistent MQTT broker session across restarts.)
 
         The mapping and its configs are the runner's cache — treat them as
         read-only. The default does nothing; the MQTT template overrides
@@ -216,6 +235,28 @@ class Extractor(Stage, ABC):
         it is silently discarded. Emit records by yielding a ``Message`` and
         persist your resume cursor by yielding a ``State``.
         """
+
+    async def _run_in(self, runner: "ExtractorRunner") -> Never:
+        """Run this stage under the ownership model it needs.
+
+        `ExtractorRunner` delegates here instead of inspecting the stage: a
+        stage KNOWS how its work is divided across replicas, so it names its
+        loop rather than describing itself and leaving the runner to branch.
+        The default is Kafka-leased token sharding. A stage whose work an
+        external broker already sharded overrides this with
+        ``runner.run_dispatched()`` — which is also what keeps
+        `ExtractorRunner` free of any import of `flechtwerk.mqtt`, and what
+        makes a third ownership model a new override rather than a third
+        branch.
+
+        Framework-internal, hence the underscore: this is a callback in the
+        runner↔stage protocol, not an application hook. The runner is the
+        SOLE caller and calls it exactly once, from inside the stage's own
+        ``__aenter__`` / ``__aexit__``; overriding it is reserved for
+        framework transport adapters (`MqttExtractor` is the only one).
+        Neither loop returns under normal operation.
+        """
+        return await runner.run_sharded()
 
 
 class _FunctionalExtractor(Extractor):
@@ -274,10 +315,15 @@ class TokenTask:
     extractor state is restore-all, not per-partition. The lock serializes
     polls within the token (one producer holds one open transaction at a
     time), so an instance's poll parallelism equals its held token count.
+
+    A broker-dispatched stage (MQTT) reuses this shape with ONE synthetic
+    token over the replica's single producer and a `StatelessStateStore` — hence
+    the port-typed ``store``: everything downstream of here (``poll_one``,
+    the commit boundaries, the re-entry contract) is identical either way.
     """
     lock: asyncio.Lock
     producer: AIOKafkaProducer
-    store: ChangelogStateStore
+    store: StateStore
 
 
 class TokenRebalanceListener(ConsumerRebalanceListener):
@@ -355,11 +401,21 @@ class ExtractorRunner:
     cursor to Kafka a re-readable pull source is exactly-once; only side
     effects outside Kafka (the external API read itself, an MQTT ACK)
     remain at-least-once by nature.
+
+    Which of the two loops runs is the STAGE's call, not a test the runner
+    makes: ``run()`` hands itself to `Extractor._run_in`, whose default takes
+    ``run_sharded`` and whose MQTT override takes ``run_dispatched`` — an
+    external MQTT broker already sharded that work, so there are no Kafka
+    leases to negotiate and none of the token machinery runs (the membership
+    consumer is never even touched). Everything below the ownership question
+    is shared verbatim by both; see ``run_dispatched``.
     """
 
     changelog_topic: str
     config_store: ConfigStore
     consumer: AIOKafkaConsumer
+    create_instance_producer: Callable[[], AIOKafkaProducer]
+    ensure_changelog: Callable[[], Awaitable[None]]
     create_restore_consumer: Callable[[], AIOKafkaConsumer]
     create_token_producer: Callable[[int], AIOKafkaProducer]
     extractor: lookup[Extractor, "configured_stage"]  # noqa: PyUnresolvedReferences
@@ -391,6 +447,99 @@ class ExtractorRunner:
         return counting_on_invalid(self.extractor.on_invalid_message, self.observer)
 
     async def run(self) -> Never:
+        """Enter the stage, then let it pick the loop it needs.
+
+        The `configs` store and the stage's ``__aenter__`` / ``__aexit__``
+        are common ground; which loop runs inside is the stage's call, made
+        by `Extractor._run_in` — Kafka-leased token sharding
+        (``run_sharded``) or MQTT-broker-side dispatch (``run_dispatched``).
+        Neither returns under normal operation.
+        """
+        self.extractor.configs = self.config_store
+        async with self.extractor:
+            return await self.extractor._run_in(self)  # noqa: PyProtectedMember — the runner↔stage protocol
+
+    async def run_dispatched(self) -> Never:
+        """Main event loop for a broker-dispatched stage.
+
+        An external MQTT broker already sharded the work across the replicas
+        of this ``application_id``, so there is no Kafka lease to take: no membership
+        consumer (never touched, so reactor-di never even builds one), no
+        rebalance listener, no token space, no hot-standby branch, and no
+        changelog restore. This replica polls every active config the store
+        holds; a config it must not poll simply receives no traffic.
+
+        All configs share ONE synthetic token over the replica's single
+        transactional producer, so ``poll_cycle`` / ``poll_one`` and the
+        re-entry contract carry over verbatim — ``owns`` is vacuously true
+        over a one-token space. What that costs is parallelism: one producer
+        may hold only one open transaction, so the task lock serializes this
+        replica's per-config polls. That is the deliberate trade at MQTT
+        volumes; a producer pool would multiply transactional IDs per
+        replica for no gain.
+
+        Pacing comes from `CONFIG_DRAIN_INTERVAL` rather than the sharded
+        loop's membership pump, so config updates land on the same cadence.
+        """
+        await self.load_initial_configs()
+        try:
+            await self.start_dispatch()
+            while True:
+                if self.cycle is not None and self.cycle.done():
+                    self.cycle.result()  # cycle_loop never returns — surface its error
+                await self.config_drain_wait()
+                await self.check_config_updates()
+        finally:
+            await self.stop_dispatch()
+
+    async def config_drain_wait(self) -> None:
+        """Pace the broker-dispatched main loop between config drains.
+
+        Its own method because the sharded loop takes its cadence from a
+        *collaborator* — the membership consumer's one-second ``getmany``
+        pump, which tests replace with a double. This branch has no such
+        collaborator, so the wait lives here, where a test can shorten it
+        the same way.
+        """
+        await asyncio.sleep(CONFIG_DRAIN_INTERVAL.total_seconds())
+
+    async def start_dispatch(self) -> None:
+        """Wire the single synthetic token and start cycling.
+
+        One transactional producer per replica, static ID
+        ``{application_id}-{client_id}``: per-page transactions stay atomic
+        exactly as on the token path, but nothing here fences anything —
+        two replicas hold two different Kafka transactional IDs by
+        construction. That is why the
+        store is the null `StatelessStateStore`: output messages are
+        per-message and commutative under at-least-once, state would not be.
+        """
+        producer = self.create_instance_producer()
+        await producer.start()
+        # A one-token space: token_for(any key, 1) == 0, so every active
+        # config maps onto this task and `owns` is vacuously true.
+        self.num_tokens = 1
+        self.tokens = frozenset({0})
+        self.tasks[0] = TokenTask(asyncio.Lock(), producer, StatelessStateStore())
+        self.cycle = asyncio.create_task(self.cycle_loop())
+
+    async def stop_dispatch(self) -> None:
+        """Stop cycling and close the replica's producer.
+
+        Deliberately not ``close_tasks``: there is no local store to wipe,
+        and reaching for ``inner_store`` would open a RocksDB this stage
+        never used. A cancelled poll aborted its open transaction on the way
+        out, so the producer stops with none. A no-op when ``start_dispatch``
+        never got as far as starting anything.
+        """
+        await self.cancel_cycle()
+        tasks, self.tasks = self.tasks, {}
+        for task in tasks.values():
+            await task.producer.stop()
+        self.tokens = frozenset()
+        self.observer.active_configs(0)
+
+    async def run_sharded(self) -> Never:
         """Main event loop. Runs until cancelled or an unrecoverable error occurs.
 
         Resource lifecycle (consumer/producer start/stop) is managed by
@@ -413,48 +562,65 @@ class ExtractorRunner:
         two live owners for one config until the next rebalance. Do not
         remove either side.
         """
-        self.extractor.configs = self.config_store
-        async with self.extractor:
-            if not self.num_tokens:  # tests may pre-set the token space
-                self.num_tokens = await self.count_tokens()
-            await self.load_initial_configs()
-            self.membership_consumer.subscribe(
-                self.extractor.config_topics, listener=TokenRebalanceListener(self),
-            )
-            try:
-                while True:
-                    if self.fatal is not None:
-                        raise self.fatal
-                    if self.cycle is not None and self.cycle.done():
-                        self.cycle.result()  # cycle_loop never returns — surface its error
-                    # Pump the membership consumer: group liveness + rebalance
-                    # processing. Records are discarded by design (see above).
-                    await self.membership_consumer.getmany(timeout_ms=1000)
-                    await self.check_config_updates()
-                    async with self.rebalance_lock:
-                        await self.start_pending_tokens()
-            finally:
-                # The rebalance listener is NOT invoked on consumer.stop() —
-                # tear down explicitly on the way out.
-                await self.suspend_tokens()
+        if not self.num_tokens:  # tests may pre-set the token space
+            self.num_tokens = await self.count_tokens()
+        # Acquire what THIS model needs, rather than having the container
+        # work out which model this is: the changelog topic (a stateless
+        # broker-dispatched stage never asks, so none is created for it) and
+        # the group membership that holds the ownership leases.
+        await self.ensure_changelog()
+        await self.load_initial_configs()
+        await self.membership_consumer.start()
+        self.membership_consumer.subscribe(
+            self.extractor.config_topics, listener=TokenRebalanceListener(self),
+        )
+        try:
+            while True:
+                if self.fatal is not None:
+                    raise self.fatal
+                if self.cycle is not None and self.cycle.done():
+                    self.cycle.result()  # cycle_loop never returns — surface its error
+                # Pump the membership consumer: group liveness + rebalance
+                # processing. Records are discarded by design (see above).
+                await self.membership_consumer.getmany(timeout_ms=1000)
+                await self.check_config_updates()
+                async with self.rebalance_lock:
+                    await self.start_pending_tokens()
+        finally:
+            # The rebalance listener is NOT invoked on consumer.stop() —
+            # tear down explicitly on the way out.
+            await self.suspend_tokens()
 
     async def count_tokens(self) -> int:
         """The token space: the config topics' common partition count.
 
-        Validated equal across a stage's config topics at startup
-        (`module.py`) and pinned here for the process lifetime — growing the
-        partition count takes a rolling restart, during which instances may
-        briefly disagree on ownership (absorbed by at-least-once). Primes
-        the main consumer's metadata the same way `bootstrap_config_store`
-        does (the one documented private-API coupling, locked down by the
-        integration tests).
+        Validated equal HERE rather than by the container: a token is a
+        partition NUMBER co-assigned across topics by the Range assignor, so
+        equal counts are what makes the token space well-defined — and this
+        is the only code that defines one. A broker-dispatched stage never
+        calls this, which is exactly why differing counts must not (and do
+        not) fail its startup.
+
+        Pinned for the process lifetime — growing the partition count takes
+        a rolling restart, during which instances may briefly disagree on
+        ownership (absorbed by at-least-once). Primes the main consumer's
+        metadata the same way `bootstrap_config_store` does (the one
+        documented private-API coupling, locked down by the integration
+        tests).
         """
         topics = self.extractor.config_topics
         await self.consumer._client.set_topics(list(topics))
-        partitions = self.consumer.partitions_for_topic(topics[0])
-        if not partitions:
-            raise RuntimeError(f"no partitions known for config topic {topics[0]}")
-        return len(partitions)
+        partitions = {topic: self.consumer.partitions_for_topic(topic) for topic in topics}
+        missing = sorted(topic for topic, p in partitions.items() if not p)
+        if missing:
+            raise RuntimeError(f"no partitions known for config topic(s) {missing}")
+        counts = {topic: len(p) for topic, p in partitions.items()}
+        if len(set(counts.values())) != 1:
+            raise ValueError(
+                "config topics of a token-sharded extractor must have equal partition "
+                f"counts — they form its ownership-token space — got {counts}"
+            )
+        return next(iter(counts.values()))
 
     async def cycle_loop(self) -> Never:
         """Poll cycles + idle pacing for the currently-held tokens.
@@ -625,7 +791,7 @@ class ExtractorRunner:
             # Suppress the CHILD's cancellation only. If a fresh cancellation
             # of THIS task arrived while awaiting the unwind, swallowing it
             # would make shutdown uncancellable — a later await (the barrier
-            # flush against an unreachable broker, say) could hang with no
+            # flush against an unreachable Kafka broker, say) could hang with no
             # way to interrupt. cancelling() counts requested cancellations,
             # so a delta means the CancelledError is (also) ours.
             if task is not None and task.cancelling() > before:

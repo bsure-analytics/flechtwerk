@@ -135,7 +135,7 @@ class ConfigJoin(Transformer):
 
 
 def make_runner(bootstrap: str, group_id: str, transformer: Transformer, changelog_topic: str) -> TransformerRunner:
-    """Wire a TransformerRunner against a real broker, mirroring Flechtwerk's DI."""
+    """Wire a TransformerRunner against a real Kafka broker, mirroring Flechtwerk's DI."""
     def make_producer(partition: int) -> AIOKafkaProducer:
         return AIOKafkaProducer(
             bootstrap_servers=bootstrap,
@@ -247,9 +247,9 @@ async def test_missing_config_topic_fails_startup(
     """A nonexistent config topic must crash startup — the assign-based
     bootstrap would otherwise yield a silently empty store forever.
 
-    The exact error depends on broker config: UnknownTopicOrPartitionError
+    The exact error depends on Kafka broker config: UnknownTopicOrPartitionError
     with auto-creation off (production), LeaderNotAvailableError when the
-    describe triggers auto-creation (this test broker). Either way the
+    describe triggers auto-creation (this test Kafka broker). Either way the
     existence check crashes the stage instead of letting it idle.
 
     Also pins that a passed ``keyring`` is installed early in ``__aenter__`` —

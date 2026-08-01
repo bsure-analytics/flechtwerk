@@ -1,7 +1,7 @@
-"""Integration test for `Stage.on_invalid_message` against a real broker.
+"""Integration test for `Stage.on_invalid_message` against a real Kafka broker.
 
 The unit tier covers the whole contract; the one thing it cannot show is that a
-SKIPPED record's offset really lands in the batch transaction on a broker. That
+SKIPPED record's offset really lands in the batch transaction on a Kafka broker. That
 is the subtle half of the skip semantics: skip without an offset commit would
 re-fetch the same undecodable record forever, turning "skip" into a crash-loop
 with extra steps.

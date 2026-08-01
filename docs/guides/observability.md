@@ -54,7 +54,7 @@ Emitted by both stage shapes unless noted.
 | `messages_in_total` | Counter | `topic` | Input messages consumed and dispatched to user code. |
 | `messages_invalid_total` | Counter | `outcome`, `topic` | Records whose key or value would not decode, by what [`on_invalid_message`](../concepts/invalid-messages.md) did with them: `raised`, `skipped`, or `substituted`. |
 | `messages_out_total` | Counter | `topic` | Output messages yielded by user code (produced to Kafka). |
-| `message_in_bytes` | Histogram | `topic` | Serialized size (key + value) of one consumed record — reported by the broker, so it costs no re-serialization. |
+| `message_in_bytes` | Histogram | `topic` | Serialized size (key + value) of one consumed record — reported by the Kafka broker, so it costs no re-serialization. |
 | `message_in_max_bytes` | Gauge | `topic` | Largest consumed record since process start (high-water mark). |
 | `message_out_bytes` | Histogram | `topic` | Serialized size (key + value) of one produced record. |
 | `message_out_max_bytes` | Gauge | `topic` | Largest produced record since process start (high-water mark). |
@@ -84,7 +84,7 @@ increase(flechtwerk_batch_size_bucket{le="500.0"}[5m])
 
 The three **byte** histograms — `message_in_bytes`, `message_out_bytes`, and
 `state_record_bytes` below — share one ladder, because a message and a state
-record face the same ceiling: aiokafka's `max_request_size` and the broker's
+record face the same ceiling: aiokafka's `max_request_size` and the Kafka broker's
 `max.message.bytes`, both 1 MiB by default. Cross a ceiling and the producer
 raises `MessageSizeTooLargeError` mid-transaction and the stage crashes. The
 ladder is fine at the bottom (typical messages run hundreds of bytes) and dense
@@ -127,7 +127,7 @@ work), tokens for extractors (config-partition ownership leases).
 | Metric | Type | Extra labels | Meaning |
 | --- | --- | --- | --- |
 | `tasks_assigned` | Gauge | — | Tasks (input partitions) currently owned and initialized by this instance. |
-| `tokens_assigned` | Gauge | — | Ownership tokens (config-partition leases) held by this extractor instance — 0 means hot standby. |
+| `tokens_assigned` | Gauge | — | Ownership tokens (config-partition leases) held by this extractor instance — 0 means hot standby. Never emitted by an [MQTT extractor](mqtt.md), which holds no Kafka leases: the MQTT broker shards its filters. |
 | `state_restored_entries_total` | Counter | `partition` | Changelog records replayed into the local state store on task initialization. |
 | `state_record_bytes` | Histogram | — | Serialized size of each state changelog record, observed at write. Restore is not counted (it bypasses the write path). |
 | `state_record_max_bytes` | Gauge | — | Largest state record since process start (high-water mark). |
@@ -139,8 +139,14 @@ ceiling?"* — which the high-water mark answers directly.
 ### MQTT
 
 Emitted by an [`MqttExtractor`](mqtt.md). The `topic` label is always the
-**subscription filter** from config — or the `(unmatched)` sentinel on `stale`
-drops — never the per-device publish topic, so cardinality stays bounded.
+**bare subscription filter** from config — never the `$share/…` wire form and
+never the per-device publish topic — or the `(unmatched)` sentinel on `stale`
+drops, so cardinality stays bounded.
+
+With shared subscriptions each replica sees only the filters the MQTT broker
+dispatched to *it*, so `mqtt_messages_in_total` per topic is a per-replica
+view: sum across instances for a stage's total, and read a topic that is flat
+on one replica and busy on another as normal sharding, not as a fault.
 
 | Metric | Type | Extra labels | Meaning |
 | --- | --- | --- | --- |
@@ -174,9 +180,11 @@ static declarations — empty string for an unscoped attribute).
   signal to add replicas — extractors shard config ownership across instances
   automatically (see [Extractors](extractor.md#scaling-out) and
   [Architecture](../concepts/architecture.md)).
-- **`tokens_assigned`** — an extractor's ownership-lease count per instance.
-  The sum across instances should equal the config topics' partition count; an
-  instance sitting at 0 is a hot standby.
+- **`tokens_assigned`** — a token-sharded extractor's ownership-lease count per
+  instance. The sum across instances should equal the config topics' partition
+  count; an instance sitting at 0 is a hot standby. An MQTT extractor never
+  emits it — its replicas hold no leases, so the equivalent question ("is this
+  replica getting work?") is answered by `mqtt_messages_in_total`.
 - **`state_record_max_bytes` (or `message_out_max_bytes`) approaching 1 MiB** —
   the single most valuable alert here. A state key's whole value is one Kafka
   record, and so is every message; crossing the ~1 MiB record ceiling crashes
@@ -226,7 +234,7 @@ static declarations — empty string for an unscoped attribute).
   (stop the publisher first to make it zero). **`reason="stale"` rising steadily** —
   an earlier deployment's filter is still subscribed in the persistent session and
   its publisher is still active; the traffic is discarded safely, but consider a
-  fresh `client_id` (a new broker session) to stop it at the source.
+  fresh `client_id` (a new MQTT broker session) to stop it at the source.
 - **`secret_plaintext_reads_total` nonzero** — a `read_plaintext` secret is still
   being read from legacy plaintext; it must reach zero (and a topic scan come
   back clean) before turning `read_plaintext` off. **`secret_decrypts_total`

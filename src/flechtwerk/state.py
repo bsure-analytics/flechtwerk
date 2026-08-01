@@ -216,11 +216,54 @@ class ChangelogStateStore(StateStore):
         )
 
 
+class StatelessStateStore(StateStore):
+    """Null store for broker-dispatched extractors — stateless by contract.
+
+    Framework-internal (not exported): `ExtractorRunner` gives it to the
+    single synthetic token of a stage whose work an external message broker
+    — an MQTT broker, not Kafka — shards across replicas (a stage that took
+    ``ExtractorRunner.run_dispatched``). ``get`` reports an
+    empty `State` — there is never anything to resume from — and any write
+    raises, so a ``State`` yield fails loudly instead of splitting one
+    entry's history across replicas that cannot fence each other.
+
+    The error is deliberately not a warning: MQTT-broker dispatch offers
+    neither a fenced handover (replicas hold *different* Kafka transactional
+    IDs, so both can commit for the same key) nor an assignment event at
+    which a newly picked replica could restore. Sticky dispatch narrows the
+    race but cannot close it — it is an MQTT-broker-side setting the
+    framework can neither set nor observe, and the framework must stay
+    correct under ``round_robin`` too.
+    """
+
+    async def get(self, key: str) -> State | None:
+        return State()
+
+    async def put_bytes(self, key: str, raw: bytes) -> None:
+        raise RuntimeError(self._refusal)
+
+    async def delete(self, key: str) -> None:
+        raise RuntimeError(self._refusal)
+
+    async def close(self) -> None:
+        pass
+
+    @property
+    def _refusal(self) -> str:
+        return (
+            "broker-dispatched stages are stateless by contract — an external message broker "
+            "(an MQTT broker, not Kafka) shards their work across replicas with no fenced handover "
+            "and no restore point, so a State yield would split one entry's history across "
+            "replicas. Subclass Extractor directly for a stateful source: Kafka-leased token "
+            "sharding gives it exclusive, fenced state."
+        )
+
+
 async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -1) -> bool:
     """Create the changelog topic if it doesn't exist.
 
     Uses the Kafka AdminClient API (CreateTopicsRequest), which works even
-    when auto.create.topics.enable=false on the broker.
+    when auto.create.topics.enable=false on the Kafka broker.
 
     Args:
         admin: An already-started AIOKafkaAdminClient.
@@ -228,12 +271,12 @@ async def ensure_changelog_topic(admin: Any, topic: str, num_partitions: int = -
         num_partitions: Partition count for a newly created topic.
             Transformers pass their (validated) input topic partition count
             so task p's explicit-partition state writes have somewhere to
-            land; -1 (extractors) uses the broker default.
+            land; -1 (extractors) uses the Kafka broker default.
 
     Returns:
         True if this call created the topic, False if it already existed.
         Callers use this to skip re-describing a topic they just created:
-        CreateTopics returns once the controller commits, but the broker's
+        CreateTopics returns once the controller commits, but the Kafka broker's
         metadata cache catches up asynchronously, so an immediate describe
         can still raise UnknownTopicOrPartitionError.
     """

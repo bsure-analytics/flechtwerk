@@ -1,10 +1,12 @@
 """Tests for Flechtwerk Extractor and ExtractorRunner."""
 import asyncio
 import json
+from abc import ABC
 from contextlib import suppress
 from datetime import timedelta
 from itertools import count
 from typing import AsyncIterator, Final
+from unittest.mock import patch
 
 import pytest
 from aiokafka import TopicPartition
@@ -16,7 +18,9 @@ from flechtwerk.extractor import ConfigEntry, Extractor, ExtractorRunner, TokenT
 from flechtwerk.module import _FlechtwerkModule
 from flechtwerk.observer import Observer
 from flechtwerk.state import ChangelogStateStore
-from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, make_record
+from flechtwerk.testing import (
+    FakeKafkaConsumer, FakeKafkaProducer, InMemoryStateStore, RecordingObserver, make_record,
+)
 from flechtwerk.types import Config, Event, InvalidMessageError, Message, State
 
 API_KEY: Final = Attribute("api_key", STR)
@@ -162,6 +166,7 @@ def make_module(extractor, consumer=None, producer=None, state_store=None, membe
     mod.consumer = consumer or FakeKafkaConsumer()
     mod.create_restore_consumer = lambda: FakeKafkaConsumer()
     mod.create_token_producer = lambda token: producer
+    mod.ensure_changelog = _noop  # no admin client / broker in unit tests
     mod.inner_store = state_store
     mod.membership_consumer = membership or AutoJoinMembershipConsumer()
     runner = mod.runner
@@ -1032,6 +1037,10 @@ class FakeMembershipConsumer(FakeKafkaConsumer):
         return {}
 
 
+async def _noop() -> None:
+    """Stand-in for the container's ``ensure_changelog`` factory."""
+
+
 def make_sharded_runner(stage, consumer=None, restore_records=None, observer=None, producer=None):
     """Wire an ExtractorRunner directly (no DI).
 
@@ -1046,10 +1055,41 @@ def make_sharded_runner(stage, consumer=None, restore_records=None, observer=Non
     runner.config_store = ConfigStore()
     runner.consumer = consumer or FakeKafkaConsumer()
     runner.create_restore_consumer = lambda: FakeKafkaConsumer(list(restore_records or []))
+    runner.ensure_changelog = _noop
     runner.create_token_producer = lambda token: producer
     runner.extractor = stage
     runner.inner_store = InMemoryStateStore()
     runner.membership_consumer = FakeMembershipConsumer()
+    runner.observer = observer or Observer()
+    runner.poll_interval = timedelta(0)
+    return runner
+
+
+class ExplodingMembershipConsumer(FakeKafkaConsumer):
+    """Membership double that fails loudly on ANY use — the broker-dispatched
+    branch must never reach for one."""
+
+    def subscribe(self, topics, listener=None) -> None:
+        raise AssertionError("a broker-dispatched runner must not touch the membership consumer")
+
+    async def getmany(self, *partitions: TopicPartition, timeout_ms: int = 0) -> dict:
+        raise AssertionError("a broker-dispatched runner must not touch the membership consumer")
+
+
+def make_dispatched_runner(stage, consumer=None, observer=None, producer=None):
+    """Wire an ExtractorRunner for a broker-dispatched stage (no DI).
+
+    Deliberately leaves ``create_token_producer``, ``changelog_topic`` and
+    ``inner_store`` unset: reaching for any of them is a bug on this branch.
+    The membership consumer is a double that raises on contact.
+    """
+    runner = ExtractorRunner()
+    runner.config_drain_wait = lambda: asyncio.sleep(0)  # the FakeMembershipConsumer equivalent
+    runner.config_store = ConfigStore()
+    runner.consumer = consumer or FakeKafkaConsumer()
+    runner.create_instance_producer = lambda: producer or FakeKafkaProducer()
+    runner.extractor = stage
+    runner.membership_consumer = ExplodingMembershipConsumer()
     runner.observer = observer or Observer()
     runner.poll_interval = timedelta(0)
     return runner
@@ -1362,7 +1402,7 @@ def test_cancel_cycle_reraises_fresh_cancellation_of_the_caller():
     """The suppress in cancel_cycle must swallow ONLY the child's
     cancellation: a fresh cancel of the caller while it awaits the cycle's
     unwind must propagate, or shutdown becomes uncancellable (a later await
-    — the barrier flush against an unreachable broker — would hang with no
+    — the barrier flush against an unreachable Kafka broker — would hang with no
     way to interrupt)."""
 
     async def run():
@@ -1554,7 +1594,7 @@ def test_empty_poll_opens_no_transaction():
 
 def test_delivery_failure_crashes_before_state_is_persisted():
     """aiokafka's flush() never retrieves delivery results — poll_one must
-    (before every commit), so a delivery-stage failure (broker-side
+    (before every commit), so a delivery-stage failure (Kafka-broker-side
     non-retriable produce error, batch TTL expiry) aborts the page before
     the advanced cursor is persisted or an MQTT pending is ACKed. Without
     the retrieval, the lost records would never be re-polled."""
@@ -1827,24 +1867,29 @@ def test_revoke_barrier_never_reconciles():
     asyncio.run(run())
 
 
+def make_mqtt_stage(relay=lambda config, topic, payload: None):
+    from flechtwerk.mqtt import MqttExtractor
+    from flechtwerk.testing import FakeMqttConnection
+
+    ext = MqttExtractor.of(config_topics=["test-config"], relay=relay)
+    ext.connection = FakeMqttConnection()
+    return ext
+
+
 def test_mqtt_extractor_unsubscribes_tombstoned_config_through_runner():
     """End-to-end wiring of the subscription lifecycle: a config tombstone
     reaches MqttExtractor.on_active_configs via the cycle-top reconcile,
-    which unsubscribes the topic and latches an empty desired set."""
+    which unsubscribes the topic and latches an empty desired set.
+
+    Rides the broker-dispatched branch — an MQTT stage takes no leases, so
+    there is no assignment to wait for: the cycle starts with the runner."""
 
     async def run():
-        from flechtwerk.mqtt import MqttExtractor
-        from flechtwerk.testing import FakeMqttConnection
-
-        ext = MqttExtractor.of(config_topics=["test-config"], relay=lambda config, topic, payload: None)
-        ext.connection = FakeMqttConnection()
+        ext = make_mqtt_stage()
         consumer = FakeKafkaConsumer([json_record(key="k", value={"topic": "t/+/events"})])
-        runner = make_sharded_runner(ext, consumer=consumer)
-        runner.num_tokens = 1
+        runner = make_dispatched_runner(ext, consumer=consumer)
         task = asyncio.create_task(runner.run())
         try:
-            await asyncio.wait_for(until(lambda: runner.membership_consumer.listener is not None), 5)
-            runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
             await asyncio.wait_for(until(lambda: "t/+/events" in ext.connection.subscriptions), 5)
             assert ext.connection.desired == {"t/+/events"}
 
@@ -1856,6 +1901,277 @@ def test_mqtt_extractor_unsubscribes_tombstoned_config_through_runner():
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+    asyncio.run(run())
+
+
+# -- the broker-dispatched branch ---------------------------------------------
+
+
+class DispatchedExtractor(Extractor, ABC):
+    """A stage whose work an external MQTT broker shards — MqttExtractor's shape
+    without paho. Concrete tests subclass it and supply ``poll``."""
+    config_topics = ["test-config"]
+
+    async def _run_in(self, runner):
+        return await runner.run_dispatched()
+
+
+def test_a_stage_names_its_own_loop():
+    """Tell, don't ask: the runner hands itself to the stage instead of
+    testing it, so the default picks token sharding and a broker-dispatched
+    stage picks its own loop — a third model would be a third override, not
+    a third branch."""
+
+    async def run():
+        chosen: list[str] = []
+
+        class RecordingRunner:
+            async def run_sharded(self):
+                chosen.append("sharded")
+
+            async def run_dispatched(self):
+                chosen.append("dispatched")
+
+        await SimpleExtractor()._run_in(RecordingRunner())
+        await make_mqtt_stage()._run_in(RecordingRunner())
+
+        assert chosen == ["sharded", "dispatched"]
+
+    asyncio.run(run())
+
+
+def test_count_tokens_owns_the_equal_partition_count_rule():
+    """The token space is defined here and nowhere else, so this is where
+    unequal config-topic partition counts are rejected — and why a
+    broker-dispatched stage, which never calls this, is unaffected by them."""
+
+    async def run():
+        def seed(*counts: int):
+            # FakeKafkaConsumer derives partitions_for_topic from its records.
+            return FakeKafkaConsumer([
+                json_record(topic=topic, partition=p, offset=p)
+                for topic, count in zip("ab", counts)
+                for p in range(count)
+            ])
+
+        stage = SimpleExtractor()
+        stage.config_topics = ["a", "b"]
+        runner = make_sharded_runner(stage, consumer=seed(2, 3))
+
+        with pytest.raises(ValueError, match="ownership-token space"):
+            await runner.count_tokens()
+
+        runner.consumer = seed(2, 2)
+        assert await runner.count_tokens() == 2
+
+    asyncio.run(run())
+
+
+def test_count_tokens_rejects_unknown_config_topics():
+    async def run():
+        stage = SimpleExtractor()
+        stage.config_topics = ["a", "gone"]
+        runner = make_sharded_runner(stage, consumer=FakeKafkaConsumer([json_record(topic="a")]))
+
+        with pytest.raises(RuntimeError, match="no partitions known.*gone"):
+            await runner.count_tokens()
+
+    asyncio.run(run())
+
+
+def test_config_drain_wait_defaults_to_one_second():
+    """The dispatched loop's own cadence matches what the sharded loop gets
+    from the membership consumer's 1000 ms getmany pump."""
+    from flechtwerk.extractor import CONFIG_DRAIN_INTERVAL
+
+    assert CONFIG_DRAIN_INTERVAL == timedelta(seconds=1)
+
+    async def run():
+        slept: list[float] = []
+
+        async def record(seconds):
+            slept.append(seconds)
+
+        with patch("flechtwerk.extractor.asyncio.sleep", record):
+            await ExtractorRunner().config_drain_wait()
+
+        assert slept == [1.0]
+
+    asyncio.run(run())
+
+
+def test_dispatched_runner_polls_every_active_config():
+    """No ownership filter: a broker-dispatched replica polls every active
+    config the store holds, whatever its state key hashes to."""
+
+    async def run():
+        polled: list[str] = []
+
+        class Dispatched(DispatchedExtractor):
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                polled.append(config[API_KEY])
+                yield Message(key=config[API_KEY], topic="out", value=Event.wrap({}))
+
+        stage = Dispatched()
+        records = [
+            json_record(key=f"k{i}", value={"api_key": f"key{i}"}, offset=i)
+            for i in range(5)
+        ]
+        producer = FakeKafkaProducer()
+        runner = make_dispatched_runner(
+            stage, consumer=FakeKafkaConsumer(records), producer=producer,
+        )
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: len(polled) >= 5), 5)
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        assert set(polled[:5]) == {f"key{i}" for i in range(5)}
+        assert runner.num_tokens == 1  # one synthetic token over one producer
+        assert producer.started
+
+    asyncio.run(run())
+
+
+def test_dispatched_runner_never_touches_the_membership_consumer():
+    """No lease to hold: the membership double raises on any contact, and a
+    completed poll proves the loop ran without it."""
+
+    async def run():
+        runner = make_dispatched_runner(
+            make_mqtt_stage(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"topic": "t/+/events"})]),
+        )
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: runner.tasks != {}), 5)
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_dispatched_runner_reports_all_active_but_no_tokens():
+    """`active_configs` counts every active config; `tokens_assigned` is not
+    emitted at all — there are no leases to gauge."""
+
+    async def run():
+        observer = RecordingObserver()
+        runner = make_dispatched_runner(
+            make_mqtt_stage(),
+            consumer=FakeKafkaConsumer([
+                json_record(key="a", value={"topic": "a/+/e"}, offset=0),
+                json_record(key="b", value={"topic": "b/+/e"}, offset=1),
+            ]),
+            observer=observer,
+        )
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: ("active_configs", 2) in observer.calls), 5)
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        assert not any(call[0] == "tokens_assigned" for call in observer.calls)
+
+    asyncio.run(run())
+
+
+def test_dispatched_state_yield_raises_a_teaching_error():
+    """Stateless by contract: MQTT-broker dispatch fences nothing and offers no
+    restore point, so persisting state would split one entry's history
+    across replicas. The refusal is an error, never a warning."""
+
+    async def run():
+        class Dispatched(DispatchedExtractor):
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                yield State.wrap({"cursor": 1})
+
+        runner = make_dispatched_runner(
+            Dispatched(), consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+        )
+
+        with pytest.raises(RuntimeError, match="stateless by contract"):
+            await asyncio.wait_for(runner.run(), 5)
+
+    asyncio.run(run())
+
+
+def test_dispatched_empty_state_read_is_always_empty():
+    """The null store reports no state rather than a missing key, so a poll
+    that reads its cursor sees an empty State instead of crashing."""
+
+    async def run():
+        from flechtwerk.state import StatelessStateStore
+
+        store = StatelessStateStore()
+        assert await store.get("anything") == State()
+        with pytest.raises(RuntimeError, match="stateless by contract"):
+            await store.put("k", State.wrap({"cursor": 1}))
+        with pytest.raises(RuntimeError, match="stateless by contract"):
+            await store.delete("k")
+        await store.close()  # nothing was ever opened — the port's no-op end
+
+    asyncio.run(run())
+
+
+def test_dispatched_runner_stops_its_producer_on_teardown():
+    async def run():
+        producer = FakeKafkaProducer()
+        runner = make_dispatched_runner(make_mqtt_stage(), producer=producer)
+        task = asyncio.create_task(runner.run())
+        await asyncio.wait_for(until(lambda: runner.tasks != {}), 5)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+        assert producer.stopped
+        assert runner.tasks == {}
+
+    asyncio.run(run())
+
+
+def test_dispatched_reentry_contract_commit_strictly_precedes_next_poll():
+    """The re-entry contract localizes to (this replica, this config) but is
+    otherwise unchanged: poll() is re-entered only after the previous
+    invocation's final transaction committed."""
+
+    async def run():
+        events: list[str] = []
+
+        class Dispatched(DispatchedExtractor):
+            async def poll(self, config, state) -> AsyncIterator[Message | State]:
+                events.append("poll")
+                yield Message(key="k", topic="out", value=Event.wrap({}))
+
+        class RecordingProducer(FakeKafkaProducer):
+            async def commit_transaction(self):
+                events.append("commit")
+                await super().commit_transaction()
+
+        runner = make_dispatched_runner(
+            Dispatched(),
+            consumer=FakeKafkaConsumer([json_record(key="k", value={"api_key": "a"})]),
+            producer=RecordingProducer(),
+        )
+        task = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(until(lambda: events.count("poll") >= 3), 5)
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        # Strict alternation: every poll after the first is preceded by the
+        # commit that closed the one before it.
+        assert events[:5] == ["poll", "commit", "poll", "commit", "poll"]
 
     asyncio.run(run())
 

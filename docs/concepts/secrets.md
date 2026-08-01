@@ -589,9 +589,10 @@ and independent-pyca interop vectors guard.
   destruction) becomes a requirement (mind the key-commitment caveat first).
 - **Keyring hot-reload.** The keyring loads at startup; rotation therefore
   implies a rolling restart — cheap for transformers and re-readable extractors,
-  but a multi-replica MQTT extractor pays its at-most-once handover window per
-  restart (schedule rotations during publisher quiet periods, or run one
-  replica). A file-watching reload could come later without API changes.
+  and cheap for an MQTT extractor too, whose persistent session holds its
+  backlog across the restart (see [Sizing the Outage
+  Budget](../guides/mqtt.md#sizing-the-outage-budget) for what bounds that).
+  A file-watching reload could come later without API changes.
 - **Nimbus (Java) interop vector.** The format is standard RFC 7516 dir+A256GCM,
   which Nimbus supports; a pinned Java-minted vector (like the panva one) is a
   follow-up once a JVM build exists in CI.

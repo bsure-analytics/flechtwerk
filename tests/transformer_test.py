@@ -1082,7 +1082,7 @@ def test_process_batch_weighs_messages_and_state_records():
         await runner.process_batch(records)
 
         calls = mod.observer.calls
-        # Inbound: exactly the key + value lengths the broker reported.
+        # Inbound: exactly the key + value lengths the Kafka broker reported.
         expected_in = record.serialized_key_size + record.serialized_value_size
         assert ("message_in_bytes", "input-topic", expected_in) in calls
         assert [c for c in calls if c[0] == "message_out_bytes" and c[1] == "output" and c[2] > 0]

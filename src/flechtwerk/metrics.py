@@ -24,7 +24,7 @@ _DURATION_BUCKETS: Final = (
 )
 
 # One ladder for every byte histogram: a state changelog record and a produced
-# message face the SAME ceiling — aiokafka's `max_request_size` and the broker's
+# message face the SAME ceiling — aiokafka's `max_request_size` and the Kafka broker's
 # `max.message.bytes`, both 1 MiB by default — so they deserve the same
 # boundaries and directly comparable panels.
 #

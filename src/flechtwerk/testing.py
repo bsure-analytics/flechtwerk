@@ -211,7 +211,7 @@ def make_record(
     remaining aiokafka-internal fields (``timestamp_type``, ``checksum``,
     ``headers``) get placeholder values. The ``serialized_*_size`` fields are
     filled from the real encoded lengths so the runners' byte metrics see
-    honest numbers, matching the broker's own convention of -1 for absent.
+    honest numbers, matching the Kafka broker's own convention of -1 for absent.
     """
     return ConsumerRecord(
         topic=topic,
@@ -450,14 +450,21 @@ class FakeMqttConnection:
     via the ``error`` attribute (surfaced by ``drain`` like the real one).
 
     Pre-set it on an ``MqttExtractor`` (``extractor.connection = fake``) —
-    the stage then skips the broker connect and the injected-settings
+    the stage then skips the MQTT broker connect and the injected-settings
     requirement entirely.
+
+    Every method takes the **bare** topic filter, exactly like the real
+    connection; ``group`` is the shared-subscription group and ``subscribed``
+    records the ``$share`` wire form of each SUBSCRIBE, for tests that care
+    what would have gone on the wire.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, group: str = "test-group") -> None:
         self.desired: set[str] | None = None
         self.error: Exception | None = None
+        self.group = group
         self.next_mid = 1
+        self.subscribed: list[str] = []
         self.subscriptions: dict[str, FakeMqttSubscription] = {}
         self.unsubscribed: list[str] = []
 
@@ -467,11 +474,17 @@ class FakeMqttConnection:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
+    def _shared(self, topic: str) -> str:
+        """The shared-subscription wire form of `topic` — private, mirroring
+        the real connection, whose public methods all speak bare filters."""
+        return f"$share/{self.group}/{topic}"
+
     def subscribe(self, topic: str) -> FakeMqttSubscription:
         sub = self.subscriptions.get(topic)
         if sub is None:
             sub = FakeMqttSubscription(connection=self, topic=topic)
             self.subscriptions[topic] = sub
+            self.subscribed.append(self._shared(topic))
         return sub
 
     def unsubscribe(self, topic: str) -> None:

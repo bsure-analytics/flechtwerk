@@ -1,30 +1,64 @@
 """MQTT→Kafka bridge machinery for push-driven extractors.
 
-One process, one connection: a stage talks to the platform broker with one
-stable ``client_id`` (one persistent session). ``MqttConnection`` owns the
-single paho client and the asyncio socket-loop integration; inbound messages
-are routed by topic to per-topic ``MqttSubscription`` views. Each view keeps
-its own buffer and pending-ACK list, so the manual-ACK "ack the previous
-batch" invariant holds per topic even when the runner polls several configs
-(topics) concurrently — provided each config owns a distinct topic (the
-config-key → topic model).
+One process, one connection: a stage talks to the platform's MQTT broker over
+**MQTT 5** with one stable ``client_id`` (one persistent session).
+``MqttConnection`` owns the single paho client and the asyncio socket-loop
+integration; inbound messages are routed by topic to per-topic
+``MqttSubscription`` views. Each view keeps its own buffer and pending-ACK
+list, so the manual-ACK "ack the previous batch" invariant holds per topic
+even when the runner polls several configs (topics) concurrently — provided
+each config owns a distinct topic (the config-key → topic model).
 
 paho-mqtt's I/O is driven entirely by the asyncio event loop via socket
 callbacks (``on_socket_open`` → ``add_reader``, ``on_socket_register_write``
 → ``add_writer``). No background threads — all callbacks run in the asyncio
 thread, so messages accumulate in plain lists without synchronization.
 
+The MQTT broker floor is MQTT 5 **with shared subscriptions** (EMQX 3.0+,
+Mosquitto 2.0+). There is no protocol fallback and no mode flag.
+
+Session-pinned shared subscriptions — how replicas divide the work:
+
+- Every replica subscribes ``$share/{group}/{filter}``, the group being the
+  stage's ``application_id``. The MQTT broker shards whole *filters* across the
+  live members, so one filter has one active consumer at a time (per-topic
+  ordering is preserved) and the unit of sharding is the topic filter:
+  split one wildcard into several config records to spread its throughput.
+- Ownership therefore never travels through Kafka. ``MqttExtractor``
+  overrides ``Extractor._run_in`` to take the runner's broker-dispatched
+  loop, which asks for no Kafka lease at all — no membership consumer, no
+  rebalance, no handover, no hot standby — and is stateless by contract:
+  a ``State`` yield raises, because MQTT-broker dispatch fences nothing and
+  offers no assignment event at which a newly picked replica could restore.
+- A replica drains only what the MQTT broker dispatched into ITS session.
+  When one goes away, that session stays alive and keeps ABSORBING its
+  share — a broker pins by publisher connection and re-picks only once the
+  member's session process dies, not when it merely disconnects (verified,
+  EMQX 5.8.9 sticky). So both the un-drained tail and the traffic that
+  arrives meanwhile wait for the same ``client_id`` to return (StatefulSet
+  pod identity); nothing is lost, but nothing fails over either.
+  ``MqttBrokerConfig.session_expiry`` bounds the wait, and the broker's
+  queue depth bounds how much survives it.
+- The share form is confined to the SUBSCRIBE/UNSUBSCRIBE wire calls. The
+  ``subscriptions`` dict, inbound routing, every public method, and the
+  metric ``topic`` label all keep the **bare** filter.
+
 At-least-once delivery:
 
-- QoS comes from the broker config; ``clean_session=False`` + a stable
-  ``client_id`` make the broker buffer messages while disconnected and replay
-  on reconnect.
+- QoS comes from the MQTT broker config; ``clean_start=False`` + a stable
+  ``client_id`` + a non-zero ``SessionExpiryInterval`` make the MQTT broker
+  queue messages for a disconnected session and replay them on resume.
 - paho runs in ``manual_ack`` mode: messages are NOT ACKed on receipt. The
   template ``poll()`` ACKs a batch only once it is provably durable
   downstream: ``ExtractorRunner`` re-enters ``poll()`` strictly after the
-  previous batch's ``send_batch()`` + flush succeeded (the contract is
-  documented on the runner), so ACKing the previous batch at the top of the
-  next poll never ACKs anything Kafka hasn't stored.
+  previous batch's transaction committed (the contract is documented on the
+  runner), so ACKing the previous batch at the top of the next poll never
+  ACKs anything Kafka hasn't stored.
+- DISCONNECT is sent plain — never with ``SessionExpiryInterval=0``. Ending
+  the session discards its un-ACKed inflight messages *silently*: an MQTT
+  broker does not redispatch them to the surviving members of the share group
+  (verified on EMQX 5.8.9). Recovery is "the same ``client_id`` comes back",
+  not "someone else picks it up".
 - No auto-reconnect in this integration (paho only auto-reconnects in
   ``loop_forever``/``loop_start``), so an unexpected disconnect is surfaced
   as a ``ConnectionError`` by ``drain()`` → the stage crashes → the platform
@@ -44,35 +78,44 @@ Applications implement ``relay(config, topic, payload) -> Message | None``
 
 Subscription lifecycle — config-driven, reconciled before every poll cycle:
 
-- The runner hands ``MqttExtractor.on_active_configs`` the owned,
-  non-suspended config set at quiescent points; the stage reconciles the
-  broker session against it. Topics no active config declares (tombstoned,
-  suspended, rewritten, or disowned at a rebalance) are UNSUBSCRIBEd and
-  their views disposed: pending ACKs are sent — provably Kafka-durable at a
-  quiescent point — and buffered messages that never reached Kafka are
-  ACK-dropped with a warning and counter (MQTT 3.1.1 has no NACK and cannot
-  requeue for another consumer; holding them un-ACKed would pin
-  inflight-window slots until the whole shared session stalls). Stop the
-  publisher before removing a config and the dropped tail is empty.
+- The runner hands ``MqttExtractor.on_active_configs`` the full active
+  (non-suspended) config set at quiescent points; the stage reconciles the
+  MQTT broker session against it, on every replica, each against its own
+  session. Topics no active config declares (tombstoned, suspended, or
+  rewritten — never "disowned", since nothing is owned any more) are
+  UNSUBSCRIBEd and their views disposed: pending ACKs are sent — provably
+  Kafka-durable at a quiescent point — and buffered messages that never
+  reached Kafka are ACK-dropped with a warning and counter (MQTT still has
+  no NACK and cannot requeue for another consumer; holding them un-ACKed
+  would pin inflight-window slots until the whole shared session stalls).
+  Stop the publisher before removing a config and the dropped tail is empty.
 - The first reconciliation latches the desired-filter set as authoritative:
   from then on, unmatched QoS >= 1 messages are ACK-dropped on receipt
   (reason ``stale``) instead of held — mopping up post-UNSUBSCRIBE
   stragglers and traffic replayed for filters an earlier deployment left in
-  the persistent session, which 3.1.1 can neither enumerate nor selectively
-  remove. Before the latch — the startup window — unmatched messages are
-  still held un-ACKed, protecting the backlog ``clean_session=False`` exists
+  the persistent session, which v5 can no more *enumerate* than 3.1.1
+  could. Before the latch — the startup window — unmatched messages are
+  still held un-ACKed, protecting the backlog the persistent session exists
   to protect.
+- Every SUBSCRIBE of the share form is paired with an UNSUBSCRIBE of the
+  BARE filter: a session resumed from a pre-0.9 (unshared) deployment would
+  otherwise keep its direct subscription forever and double-deliver every
+  message. v5 answers "No subscription existed" when there is nothing to
+  remove, so the pairing is idempotent and cheap — keep it permanently.
 - Shutdown never unsubscribes: the persistent session keeps buffering for
   the next incarnation. Removal is config-driven, not lifecycle-driven.
 
 Sources that don't fit this shape (stateful, 1:N fan-out, non-JSON payloads)
 override ``poll()`` wholesale — the connection/subscription layer works
-without the template.
+without the template. A stateful one must subclass ``Extractor`` directly:
+state needs the fenced, exclusive ownership only Kafka-leased token
+sharding provides.
 
 Configuration is injected, never read from the environment: the application
 passes a fully resolved ``mqtt=MqttBrokerConfig(...)`` to ``Flechtwerk.of(...)``,
-whose module-wide ``client_id`` doubles as the persistent session's identity —
-the container places both on the stage verbatim before startup.
+whose module-wide ``client_id`` doubles as the persistent session's identity
+and whose ``application_id`` is the share group — the container places all
+three on the stage verbatim before startup.
 """
 import asyncio
 import json
@@ -80,14 +123,16 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
-from typing import TYPE_CHECKING, AsyncIterator, Final, Self
+from typing import TYPE_CHECKING, AsyncIterator, Final, Never, Self
 
-from paho.mqtt.client import CallbackAPIVersion, Client, MQTTMessage, topic_matches_sub
+from paho.mqtt.client import CallbackAPIVersion, Client, MQTTMessage, MQTTv5, topic_matches_sub
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
 from paho.mqtt.reasoncodes import ReasonCode
 
 from .attribute import Attribute, Record, STR
 from .configs import EnrichConfigFn
-from .extractor import Extractor
+from .extractor import Extractor, ExtractorRunner
 from .module import MqttBrokerConfig
 from .observer import Observer
 from .stage import ExtractStateKeyFn, OnInvalidMessageFn
@@ -108,7 +153,13 @@ Read by the template ``poll()`` (subscribe) and the reconciliation hook
 each becoming a per-topic subscription over the shared connection.
 Two configs must never declare the same (or an overlapping) topic filter:
 they would share one subscription view and ACK each other's batches before
-the other's messages reached Kafka.
+the other's messages reached Kafka — and at the MQTT broker, two
+overlapping shared subscriptions are two independent queues, so every
+matching message would be delivered twice.
+
+The filter is also the unit of MQTT-broker sharding: one filter goes to one
+replica at a time. Split a broad wildcard into several config records to
+spread its throughput across replicas.
 """
 
 UNMATCHED: Final = "(unmatched)"
@@ -126,11 +177,17 @@ RelayFn = Callable[[Config, str, Record], Message | None]
 class MqttConnection:
     """One paho MQTT client shared by per-topic ``MqttSubscription`` views.
 
-    Owns the asyncio socket-loop integration and the single broker session.
+    Owns the asyncio socket-loop integration and the single MQTT broker session.
     Inbound messages are routed by topic (``on_message``) to the matching
     subscription; a connection-level failure (failed connect / unexpected
     disconnect) is recorded once and surfaced by every subscription's
     ``drain``.
+
+    ``group`` is the shared-subscription group every SUBSCRIBE joins
+    (``$share/{group}/{filter}``) — the stage's ``application_id``, so all
+    replicas of one deployment share one queue per filter. It is required
+    rather than optional: an unshared subscription would give every replica
+    every message.
     """
 
     def __init__(
@@ -138,12 +195,14 @@ class MqttConnection:
             *,
             broker: MqttBrokerConfig,
             client_id: str,
+            group: str,
             loop: asyncio.AbstractEventLoop,
             observer: Observer | None = None,
             wakeup: asyncio.Event | None = None,
     ) -> None:
         self.broker = broker
         self.client_id = client_id
+        self.group = group
         self.loop = loop
         self.observer = observer or Observer()
         self.wakeup = wakeup
@@ -153,10 +212,13 @@ class MqttConnection:
         self.error: Exception | None = None
         self.misc_task: asyncio.Task[None] | None = None
 
+        # No clean_session: paho rejects it under MQTTv5, where session
+        # continuation is CONNECT's clean_start flag plus the session-expiry
+        # property instead (see __aenter__).
         self.client = Client(
             CallbackAPIVersion.VERSION2,
             client_id=client_id,
-            clean_session=False,
+            protocol=MQTTv5,
             manual_ack=True,
         )
         self.client.on_connect = self.on_connect
@@ -172,13 +234,22 @@ class MqttConnection:
 
     async def __aenter__(self) -> Self:
         log.info(
-            "Connecting to MQTT %s:%d as %s",
-            self.broker.broker, self.broker.port, self.client_id,
+            "Connecting to MQTT %s:%d as %s (group %s, session expiry %s)",
+            self.broker.broker, self.broker.port, self.client_id, self.group, self.broker.session_expiry,
         )
+        # clean_start=False resumes the existing session; the expiry property
+        # is what keeps that session — and everything queued into it while
+        # this replica is away — alive between incarnations. An MQTT
+        # broker's own default applies only to clients that don't ask, and a requested
+        # value above it is honored, so this is the single source of truth.
+        properties = Properties(PacketTypes.CONNECT)
+        properties.SessionExpiryInterval = int(self.broker.session_expiry.total_seconds())
         # Blocking TCP handshake + MQTT CONNECT packet queued. The socket
         # callbacks (on_socket_open, on_socket_register_write) fire during this
         # call, registering the socket with the event loop.
-        self.client.connect(self.broker.broker, self.broker.port)
+        self.client.connect(
+            self.broker.broker, self.broker.port, clean_start=False, properties=properties,
+        )
         # Switch to non-blocking so asyncio can drive I/O from here.
         sock = self.client.socket()
         assert sock is not None
@@ -186,20 +257,60 @@ class MqttConnection:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
+        # Plain DISCONNECT — deliberately WITHOUT SessionExpiryInterval=0.
+        # Ending the session here would discard its un-ACKed inflight
+        # messages silently: an MQTT broker does not redispatch them to the
+        # other members of the share group (verified on EMQX 5.8.9). Keeping the
+        # session is the whole recovery mechanism — this client_id comes
+        # back and drains its own tail.
         # disconnect() triggers on_socket_close which removes reader/writer
         # and cancels the misc task.
         self.client.disconnect()
 
+    def _shared(self, topic: str) -> str:
+        """The wire form of `topic`: its shared-subscription filter.
+
+        Private: the ``$share`` prefix is a wire detail, and this is the
+        only place it exists — every public method, plus routing, the
+        ``subscriptions`` dict and the metric labels, speaks bare filters.
+        """
+        return f"$share/{self.group}/{topic}"
+
+    def _send_subscribe(self, topic: str) -> None:
+        """SUBSCRIBE the share form of `topic`, and UNSUBSCRIBE the bare one — wire-level, private.
+
+        Belt and braces for the 0.8→0.9 upgrade: a session resumed from a
+        pre-shared-subscription deployment still carries a direct
+        subscription to the bare filter, which would double-deliver every
+        message for the rest of that session's life — and MQTT gives no way
+        to enumerate a session's subscriptions to detect it. Removing one
+        that isn't there costs a single UNSUBSCRIBE and a "No subscription
+        existed" reason code, so this stays permanently rather than being an
+        upgrade-only step.
+
+        The share form and the bare form are distinct topic filters at the
+        MQTT broker, so removing one leaves the other alone — verified on both
+        EMQX 5.8.9 and Mosquitto 2.x (the integration suite subscribes this
+        way and still receives).
+        """
+        shared = self._shared(topic)
+        log.info("Subscribing to %s (QoS %d)", shared, self.broker.qos)
+        self.client.subscribe(shared, qos=self.broker.qos)
+        self.client.unsubscribe(topic)
+
     def subscribe(self, topic: str) -> "MqttSubscription":
         """Return the per-topic subscription for `topic`, creating it (and
-        telling the broker to subscribe) on first use. Idempotent."""
+        telling the MQTT broker to subscribe) on first use. Idempotent.
+
+        `topic` is the BARE filter, here and in every other public method;
+        the ``$share`` wire form is applied by ``_send_subscribe``.
+        """
         sub = self.subscriptions.get(topic)
         if sub is None:
             sub = MqttSubscription(connection=self, topic=topic)
             self.subscriptions[topic] = sub
             if self.client.is_connected():
-                log.info("Subscribing to %s (QoS %d)", topic, self.broker.qos)
-                self.client.subscribe(topic, qos=self.broker.qos)
+                self._send_subscribe(topic)
             # Otherwise on_connect (re)subscribes every topic once connected.
             if matching := [m for m in self.unrouted if topic_matches_sub(topic, m.topic)]:
                 # Messages the persistent session replayed before this
@@ -211,24 +322,25 @@ class MqttConnection:
         return sub
 
     def unsubscribe(self, topic: str) -> None:
-        """Unsubscribe `topic` at the broker and dispose its view.
+        """Unsubscribe `topic` at the MQTT broker and dispose its view.
 
         Disposal is the deliberate at-most-once tail of config removal:
         pending ACKs are sent — the runner reconciles only at quiescent
         points, where everything pending is committed to Kafka by the
         re-entry contract — and buffered messages that never reached Kafka
-        are ACK-dropped with a warning and counter. MQTT 3.1.1 has no NACK
-        and cannot requeue for another consumer, so the alternatives are
-        silent loss or pinning inflight-window slots until the shared
-        session stalls; stop the publisher before removing a config to make
-        the dropped tail empty. Unknown topics are a no-op.
+        are ACK-dropped with a warning and counter. MQTT has no NACK and
+        cannot requeue for another consumer, so the alternatives are silent
+        loss or pinning inflight-window slots until the shared session
+        stalls; stop the publisher before removing a config to make the
+        dropped tail empty. Unknown topics are a no-op.
         """
         sub = self.subscriptions.pop(topic, None)
         if sub is None:
             return
-        log.info("Unsubscribing from %s", topic)
+        shared = self._shared(topic)
+        log.info("Unsubscribing from %s", shared)
         if self.client.is_connected():
-            self.client.unsubscribe(topic)
+            self.client.unsubscribe(shared)
         sub.ack_all_pending()
         if sub.items:
             log.warning(
@@ -248,11 +360,15 @@ class MqttConnection:
         latches ``desired`` as the authoritative filter set: held unrouted
         messages matching none of it are ACK-dropped now, and later
         unmatched arrivals are ACK-dropped on receipt (``on_message``).
-        MQTT 3.1.1 can neither enumerate a session's subscriptions nor say
-        which filter matched a delivery, so a broker-side unsubscribe of a
-        stale filter is impossible — dropping its traffic is what keeps a
-        leftover subscription from wedging the shared inflight window.
-        Subscribing is the template ``poll()``'s job, not this method's.
+        MQTT can neither enumerate a session's subscriptions nor say which
+        filter matched a delivery — v5 changes neither — so an MQTT-broker-side
+        unsubscribe of a filter this process never declared is impossible;
+        dropping its traffic is what keeps a leftover subscription from
+        wedging the shared inflight window. Subscribing is the template
+        ``poll()``'s job, not this method's.
+
+        Every replica runs this against its own session, from the same full
+        active config set — there is no ownership to differ over.
         """
         for topic in [t for t in self.subscriptions if t not in desired]:
             self.unsubscribe(topic)
@@ -283,9 +399,9 @@ class MqttConnection:
         try:
             rc = self.client.ack(msg.mid, msg.qos)
             if rc != 0:
-                log.warning("MQTT ACK failed for mid %d: rc=%d (broker will redeliver)", msg.mid, rc)
+                log.warning("MQTT ACK failed for mid %d: rc=%d (MQTT broker will redeliver)", msg.mid, rc)
         except Exception:
-            log.warning("MQTT ACK raised for mid %d (broker will redeliver)", msg.mid, exc_info=True)
+            log.warning("MQTT ACK raised for mid %d (MQTT broker will redeliver)", msg.mid, exc_info=True)
 
     # -- Socket callbacks: drive paho I/O from the asyncio event loop ---------
 
@@ -316,7 +432,7 @@ class MqttConnection:
 
     def on_connect(
             self,
-            client: Client,
+            _client: Client,
             _userdata: object,
             _flags: object,
             reason_code: ReasonCode,
@@ -327,7 +443,7 @@ class MqttConnection:
             self.wake()
             return
         # Successful (re)connect: clear any prior error and re-subscribe every
-        # topic. The broker redelivers unACKed messages with fresh mids, so old
+        # topic. The MQTT broker redelivers unACKed messages with fresh mids, so old
         # pending_acks — and held unrouted messages — reference stale mids;
         # clear them too.
         self.error = None
@@ -335,8 +451,7 @@ class MqttConnection:
         self.unrouted.clear()
         for topic, sub in self.subscriptions.items():
             sub.pending_acks.clear()
-            log.info("Subscribing to %s (QoS %d)", topic, self.broker.qos)
-            client.subscribe(topic, qos=self.broker.qos)
+            self._send_subscribe(topic)
 
     def on_disconnect(
             self,
@@ -382,8 +497,9 @@ class MqttConnection:
         if not self._matches_desired(msg.topic):
             # The reconciled session says no active config wants this: a
             # straggler behind an UNSUBSCRIBE, or replay for a filter some
-            # earlier deployment left in the persistent session (3.1.1 gives
-            # no way to unsubscribe those). ACK-drop — held un-ACKed it would
+            # earlier deployment left in the persistent session (which no
+            # MQTT version lets us enumerate, hence not unsubscribe).
+            # ACK-drop — held un-ACKed it would
             # pin an inflight-window slot forever and eventually stall every
             # topic of this client.
             log.warning(
@@ -400,7 +516,7 @@ class MqttConnection:
         # path — the persistent session replays its backlog right after
         # CONNACK, before the Kafka config bootstrap has registered any
         # subscription — so ACKing here would permanently drop the very
-        # backlog clean_session=False exists to protect.
+        # backlog clean_start=False exists to protect.
         log.warning("No subscription matches MQTT topic %s yet — holding un-ACKed", msg.topic)
         self.unrouted.append(msg)
 
@@ -453,21 +569,33 @@ class MqttExtractor(Extractor, ABC):
     """Extractor that owns one shared ``MqttConnection`` for its whole lifetime.
 
     Opens the connection eagerly in ``__aenter__`` — so it is connected (and
-    visible in the broker dashboard) even before any config arrives — and
+    visible in the MQTT broker dashboard) even before any config arrives — and
     closes it in ``__aexit__``. Concrete stages declare ``config_topics`` and
     implement ``relay()`` (or pass one to ``of`` / the ``@mqtt_extractor``
     decorator); the template ``poll()`` owns subscription, draining, JSON
     decoding, and the manual-ACK protocol.
     One config per topic: the connection routes inbound by topic and each
     per-topic view owns its buffer + pending-ACK list.
+
+    Work is sharded by the MQTT BROKER, not by Kafka leases (see the
+    ``_run_in`` override): every replica subscribes every active config's
+    filter under one ``$share`` group, and the MQTT broker picks which
+    replica each filter's traffic goes to. That is what makes membership changes
+    lossless — nothing is ever unsubscribed on a handover because there are
+    no handovers — and what makes the stage stateless: nothing fences a
+    stale writer, and no event tells a newly picked replica to restore.
+    Stateful push-driven sources subclass `Extractor` directly.
     """
 
     client_id: str = ""
-    """The persistent MQTT session's identity (``clean_session=False``) —
-    must be unique per instance and stable across restarts. Set on the
-    caller's stage by ``Flechtwerk.configured_stage`` from the module-wide
-    ``client_id``; ``__aenter__`` rejects an empty value, since MQTT 3.1.1
-    forbids an empty client id with a persistent session."""
+    """The persistent MQTT session's identity — must be unique per instance
+    and stable across restarts. Set on the caller's stage by
+    ``Flechtwerk.configured_stage`` from the module-wide ``client_id``;
+    ``__aenter__`` rejects an empty value. MQTT 5 technically permits an
+    empty client id (the MQTT broker assigns one), but a generated identity
+    changes on every reconnect, and identity is the entire recovery path
+    here: only the same ``client_id`` resumes the session holding this
+    replica's un-drained tail."""
 
     connection: MqttConnection | None = None
     """Built in ``__aenter__`` from the injected settings — pre-set only by
@@ -475,6 +603,12 @@ class MqttExtractor(Extractor, ABC):
 
     drain_limit: int = 1000
     """Max messages drained per poll() invocation and topic."""
+
+    group: str = ""
+    """The shared-subscription group — the module-wide ``application_id``,
+    injected by ``Flechtwerk.configured_stage`` and validated in
+    ``__aenter__``. All replicas of one deployment share it, which is what
+    makes them one shared-subscription group at the MQTT broker."""
 
     mqtt: MqttBrokerConfig
     """Broker settings. The stage is application-constructed — never created
@@ -527,13 +661,26 @@ class MqttExtractor(Extractor, ABC):
                 raise RuntimeError("no MQTT broker configured — pass mqtt=MqttBrokerConfig(...) to Flechtwerk.of")
             if not self.client_id:
                 raise RuntimeError(
-                    "no MQTT client_id configured — the persistent session (clean_session=False) "
-                    "needs a stable, per-instance-unique identity"
+                    "no MQTT client_id configured — the persistent session needs a stable, "
+                    "per-instance-unique identity: only the same client_id resumes the session "
+                    "holding this replica's un-drained messages"
+                )
+            if not self.group or any(c in self.group for c in "/+#"):
+                # The group is the module-wide application_id, and it becomes
+                # one level of an MQTT topic name in `$share/{group}/{filter}`:
+                # empty, or carrying a separator or wildcard, it would either
+                # be rejected by the MQTT broker or silently reshape the filter
+                # into one that matches the wrong traffic.
+                raise RuntimeError(
+                    f"MQTT shared-subscription group {self.group!r} is not usable — it is the "
+                    f"application_id, and $share/<group>/<filter> needs it non-empty and free "
+                    f"of '/', '+' and '#'"
                 )
             self.wakeup = asyncio.Event()
             self.connection = MqttConnection(
                 broker=self.mqtt,
                 client_id=self.client_id,
+                group=self.group,
                 loop=asyncio.get_running_loop(),
                 observer=self.observer,
                 wakeup=self.wakeup,
@@ -544,18 +691,34 @@ class MqttExtractor(Extractor, ABC):
     async def __aexit__(self, *exc_info: object) -> None:
         await self.connection.__aexit__(*exc_info)
 
+    async def _run_in(self, runner: ExtractorRunner) -> Never:
+        """Take the broker-dispatched loop.
+
+        This stage's replicas are sharded by the MQTT broker's shared
+        subscriptions, so there is no Kafka lease to negotiate — see
+        `Extractor._run_in` for why the stage names its loop instead of the
+        runner testing for one, and ``ExtractorRunner.run_dispatched`` for
+        the Kafka resources this model does without.
+        """
+        return await runner.run_dispatched()
+
     def subscribe(self, topic: str) -> MqttSubscription:
         """The per-topic subscription for `topic` over the shared connection."""
         return self.connection.subscribe(topic)
 
     async def on_active_configs(self, configs: dict[str, Config]) -> None:
-        """Reconcile the broker session with the active config set.
+        """Reconcile the MQTT broker session with the active config set.
 
         Unsubscribes every topic filter no active config declares and
         latches the declared set as authoritative for the stale-message
         policy (`MqttConnection.reconcile`). Subscribing is not this hook's
         job: the template ``poll()`` (re)subscribes idempotently, so a
         resumed or re-added config reconnects its topic on its next poll.
+
+        ``configs`` is the FULL active set on every replica — a
+        broker-dispatched stage owns nothing, so removal is only ever
+        config-driven (tombstoned, suspended, or rewritten), never a
+        consequence of membership changing.
         """
         self.connection.reconcile({config[TOPIC] for config in configs.values()})
 
@@ -630,9 +793,12 @@ class MqttExtractor(Extractor, ABC):
                 sub.mark_pending(msg)
         except BaseException:
             # Interrupted at a yield — GeneratorExit from the runner closing
-            # this generator when a poll cycle is cancelled (a token handover
-            # mid-batch). Nothing yielded by THIS invocation reached Kafka:
-            # the runner sends only after the generator completes. So ACKing
+            # this generator when a poll cycle is cancelled mid-batch (a
+            # shutdown, or a token handover for the stateful subclasses that
+            # still ride tokens). Nothing yielded by THIS invocation is
+            # durable in Kafka: whatever the producer already accepted sits in
+            # the page the runner aborts right after this close, invisible
+            # under read_committed. So ACKing
             # any of it at the next entry would silently drop data, and
             # leaving the tail out of the buffer would strand it un-ACKed
             # until the next session restart. Un-mark and restore everything

@@ -563,7 +563,7 @@ def test_restore_changelog_restricted_to_explicit_partitions():
 def test_restore_changelog_survives_empty_polls_until_end_offset():
     """Empty getmany() results don't terminate the restore — only the fetch
     position reaching the end offset captured at entry does. The previous
-    empty-poll heuristic silently truncated restores on any broker stall."""
+    empty-poll heuristic silently truncated restores on any Kafka broker stall."""
     async def run():
         tp = aiokafka.TopicPartition("cl", 0)
         record = _make_record(key=b"k", value=serialize(State.wrap({"n": 1})))

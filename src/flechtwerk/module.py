@@ -16,6 +16,11 @@ membership consumer's partition leases distribute config ownership across
 replicas (one replica simply owns every lease), and each held token owns a
 transactional producer — ``{application_id}-{token}`` — whose per-page
 transactions make cursor and output atomic (see ``flechtwerk.extractor``).
+A broker-dispatched extractor (MQTT shared subscriptions) skips the Kafka leases
+entirely and holds ONE producer for the whole replica —
+``{application_id}-{client_id}``. That ID fences nothing, which is exactly
+why such a stage is stateless by contract; its per-page transactions are
+otherwise identical.
 """
 import logging
 import tempfile
@@ -48,9 +53,16 @@ CompressionType = Literal["gzip", "snappy", "lz4", "zstd"]
 """Kafka producer compression codec — closed set matching aiokafka's accepted values."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MqttBrokerConfig:
-    """Shared MQTT connection settings — one broker serves the whole platform.
+    """Shared MQTT connection settings — one MQTT broker serves the whole platform.
+
+    Keyword-only by construction. The fields are kept alphabetical (this
+    repo's convention), so any future one lands in the MIDDLE of the list —
+    which under positional construction would silently re-bind a caller's
+    arguments to the wrong fields. ``kw_only`` makes field order a
+    non-event: a stale call fails loudly at construction instead of
+    producing a config whose ``session_expiry`` is somebody's username.
 
     Defined here rather than in ``flechtwerk/mqtt.py`` so the container can
     annotate its ``mqtt`` slot without importing paho: reactor-di evaluates
@@ -58,19 +70,46 @@ class MqttBrokerConfig:
     import confined to ``flechtwerk/mqtt.py`` (what makes the ``flechtwerk[mqtt]``
     optional extra work).
 
-    Deliberately broker-only: the identity of the instance's persistent MQTT
-    session is the module-wide ``client_id`` (see ``Flechtwerk.of``), which
-    ``configured_stage`` injects onto the stage alongside these settings.
+    Deliberately MQTT-broker-only: the identity of the instance's persistent MQTT
+    session is the module-wide ``client_id`` (see ``Flechtwerk.of``), and
+    the shared-subscription group is the ``application_id`` — both injected
+    onto the stage by ``configured_stage`` alongside these settings.
+
+    ``session_expiry`` is the MQTT 5 ``Session Expiry Interval`` sent in
+    CONNECT: how long the MQTT broker keeps an offline session — and the
+    QoS ≥ 1 messages queued into it — alive after a disconnect. At a single
+    replica it IS the data-protection window: if it lapses while the stage is
+    away, the session's subscription goes with it and everything published in
+    the gap is lost for good.
+
+    It is always sent, and cannot be delegated to the broker. A v5 CONNECT
+    that omits the property gets **0** — session discarded at disconnect, no
+    backlog at all; a broker's own ``session_expiry_interval`` applies only
+    to MQTT 3.1.1 clients, which have no way to ask (both verified on EMQX
+    5.8.9). So the framework has to pick a number, and 24 hours is that pick:
+    long enough to ride out an outage nobody is awake for, and nearly free,
+    because how much an offline session may hold is capped by the broker's
+    per-session queue limit rather than by this value. The two error
+    directions are not symmetric — too short loses data silently and
+    permanently, too long only leaves a session lingering that an operator
+    can kick.
+
+    Treat it as an upper bound rather than a promise: the real budget is
+    ``min(session_expiry, queue limit / message rate)`` and the queue usually
+    binds first. Shorten it deliberately when running more than one replica,
+    where a lingering session withholds traffic from its survivors — see the
+    MQTT guide's "Sizing the Outage Budget".
     """
     broker: str
     port: int
     password: str = ""
     qos: int = 1
+    session_expiry: timedelta = timedelta(hours=24)
     username: str = ""
 
 
 def validate_topics(stage: Extractor | Transformer) -> None:
-    """Structural checks on a stage's topic declarations — broker-free.
+    """Structural checks on a stage's topic declarations — no Kafka broker needed.
 
     A transformer's task model hangs off its partitioned input topics, so at
     least one is required; an extractor consumes only config topics. A topic
@@ -87,7 +126,7 @@ def validate_topics(stage: Extractor | Transformer) -> None:
 
 
 def validate_poll_interval(stage: Extractor | Transformer, poll_interval: timedelta | None) -> None:
-    """An extractor needs a positive poll cadence — broker-free.
+    """An extractor needs a positive poll cadence — no Kafka broker needed.
 
     ``poll_interval`` defaults to ``None`` ("unset") and only extractors consume
     it (the runner's idle / wakeup wait), so a transformer may leave it unset
@@ -98,9 +137,9 @@ def validate_poll_interval(stage: Extractor | Transformer, poll_interval: timede
 
 
 async def partition_counts(admin: Any, topics: list[str]) -> dict[str, int]:
-    """Partition count per topic, from broker metadata.
+    """Partition count per topic, from Kafka broker metadata.
 
-    Raises the broker's error (e.g. UnknownTopicOrPartitionError) when a
+    Raises the Kafka broker's error (e.g. UnknownTopicOrPartitionError) when a
     topic doesn't exist — transformer input topics must exist before the
     stage starts, since the changelog partition count derives from them.
 
@@ -118,47 +157,47 @@ async def partition_counts(admin: Any, topics: list[str]) -> dict[str, int]:
 
 
 async def ensure_topics(admin: Any, stage: Extractor | Transformer, changelog_topic: str, application_id: str) -> None:
-    """Broker-side topic checks and changelog creation — the counterpart to the broker-free ``validate_topics``.
+    """Kafka-broker-side topic checks and changelog creation — the counterpart to the offline ``validate_topics``.
 
     Config topics are existence-checked (a missing one must fail fast: the
     assign-based bootstrap would otherwise yield a silently empty store and
     never discover a topic created later). A transformer's input topics must
     share one partition count, and the compacted changelog is created with
-    that count; an extractor's changelog uses the broker default (-1). A
-    pre-existing changelog is re-described and validated; a just-created one
-    is not — see ``ensure_changelog_topic``.
+    that count; a pre-existing changelog is re-described and validated, a
+    just-created one is not — see ``ensure_changelog_topic``.
+
+    Nothing here is extractor-specific, deliberately: an extractor has two
+    ownership models, and the resources each needs are acquired by the loop
+    that needs them (``ExtractorRunner.count_tokens`` validates the token
+    space; ``ensure_changelog`` creates the changelog) rather than by the
+    container working out which model it is looking at.
     """
     if stage.config_topics:
-        # Partition counts are unconstrained for a transformer's config topics
-        # (exempt from co-partitioning) — but an extractor's config topics form
-        # its ownership-token space: a token is a partition NUMBER co-assigned
-        # across topics by the Range assignor, so the counts must match exactly.
-        counts = await partition_counts(admin, stage.config_topics)
-        if isinstance(stage, Extractor) and len(set(counts.values())) != 1:
-            raise ValueError(
-                f"config topics of the extractor {application_id} must have equal "
-                f"partition counts — they form its ownership-token space — got {counts}"
-            )
-    num_partitions = -1
-    if isinstance(stage, Transformer):
-        # Tasks are identified by partition number across all input topics, and
-        # a task's explicit-partition changelog write must have somewhere to
-        # land — so all input topics must share one partition count (Range only
-        # co-assigns same-numbered partitions when counts match) and the
-        # changelog must match it.
-        counts = await partition_counts(admin, stage.input_topics)
-        if len(set(counts.values())) != 1:
-            raise ValueError(f"input topics of {application_id} must have equal partition counts, got {counts}")
-        num_partitions = next(iter(counts.values()))
+        # Existence check only. Partition counts on config topics are
+        # unconstrained here for every stage shape — a token-sharded extractor
+        # needs them equal, but that is its token space, so `count_tokens`
+        # owns the rule.
+        await partition_counts(admin, stage.config_topics)
+    if not isinstance(stage, Transformer):
+        return
+    # Tasks are identified by partition number across all input topics, and
+    # a task's explicit-partition changelog write must have somewhere to
+    # land — so all input topics must share one partition count (Range only
+    # co-assigns same-numbered partitions when counts match) and the
+    # changelog must match it.
+    counts = await partition_counts(admin, stage.input_topics)
+    if len(set(counts.values())) != 1:
+        raise ValueError(f"input topics of {application_id} must have equal partition counts, got {counts}")
+    num_partitions = next(iter(counts.values()))
     created = await ensure_changelog_topic(admin, changelog_topic, num_partitions)
-    if isinstance(stage, Transformer) and not created:
+    if not created:
         # Only validate a changelog we did NOT just create: a pre-existing one
         # may carry a partition count from an earlier topology that no longer
         # matches the input topics (repartitioning needs a state migration). A
         # just-created changelog was made with num_partitions, so re-describing
-        # it here is redundant — and races the broker's metadata cache, which
-        # lags CreateTopics and would raise a spurious UnknownTopicOrPartitionError
-        # on a cold broker.
+        # it here is redundant — and races the Kafka broker's metadata cache,
+        # which lags CreateTopics and would raise a spurious
+        # UnknownTopicOrPartitionError on a cold broker.
         changelog_count = (await partition_counts(admin, [changelog_topic]))[changelog_topic]
         if changelog_count != num_partitions:
             raise ValueError(
@@ -219,9 +258,12 @@ class Flechtwerk(ABC):
         Use this when running Flechtwerk as the program's entry point.
         ``client_id`` is the process identity: every Kafka client this
         module opens derives its ID from it, and for an MQTT-sourced stage
-        it also names the persistent MQTT session — so it must be unique
-        per instance and stable across restarts (production K8s passes the
-        pod name). ``compression_type`` defaults to ``"zstd"`` because
+        it also names the persistent MQTT session and completes that
+        stage's transactional ID (``{application_id}-{client_id}``) — so it
+        must be unique per instance and stable across restarts (production
+        K8s passes the pod name; a StatefulSet's ordinal identity is what
+        lets a restarted replica resume its own session and its own
+        undelivered tail). ``compression_type`` defaults to ``"zstd"`` because
         Flechtwerk outputs JSON everywhere (encode_json) and JSON
         compresses ~13×; pass ``None`` to disable. ``keyring`` carries the
         process keyring for ``flechtwerk.secrets`` encrypted attributes — it is
@@ -241,7 +283,7 @@ class Flechtwerk(ABC):
         eviction. ``metrics_labels``
         defaults to an empty dict and ``metrics_port`` defaults to 0
         (Prometheus disabled). ``mqtt`` carries the platform's shared MQTT
-        broker settings; it is used only by MQTT-sourced stages and ignored
+        MQTT broker settings; it is used only by MQTT-sourced stages and ignored
         everywhere else, so the caller may pass it unconditionally.
         ``poll_interval`` is likewise consumed only by extractors — the poll
         cadence (the runner's idle / wakeup wait). It defaults to ``None``
@@ -352,21 +394,25 @@ class _FlechtwerkModule(Flechtwerk):
     def configured_stage(self) -> Extractor | Transformer:
         """The caller's stage, completed with its module-owned collaborators.
 
-        An MQTT-sourced stage receives the broker settings verbatim, the
+        An MQTT-sourced stage receives the MQTT broker settings verbatim, the
         module-wide ``client_id`` (identity resolution is the caller's job —
-        see ``Flechtwerk.of``), and the observer; the runners consume the
+        see ``Flechtwerk.of``), the shared-subscription group (the
+        ``application_id``, which the stage validates in its own
+        ``__aenter__``),
+        and the observer; the runners consume the
         stage through this factory, so
         completion strictly precedes the stage's ``__aenter__``. Lazy import:
         flechtwerk.mqtt is the only framework module importing paho, so an
         application that never configures MQTT never loads it (the seam for
-        a ``flechtwerk[mqtt]`` extra at extraction time). A configured broker
-        on a non-MQTT stage is ignored — the caller passes platform-wide
+        a ``flechtwerk[mqtt]`` extra at extraction time). Configured MQTT
+        broker settings on a non-MQTT stage are ignored — the caller passes platform-wide
         settings for every stage, MQTT-sourced or not.
         """
         if self.mqtt is not None:
             from .mqtt import MqttExtractor
             if isinstance(self.stage, MqttExtractor):
                 self.stage.client_id = self.client_id
+                self.stage.group = self.application_id
                 self.stage.mqtt = self.mqtt
                 self.stage.observer = self.observer
         return self.stage
@@ -391,6 +437,52 @@ class _FlechtwerkModule(Flechtwerk):
             max_poll_records=self.max_poll_records,
             partition_assignment_strategy=(RangePartitionAssignor,),  # noqa: aiokafka's docstring says list, but its own default is a tuple
         )
+
+    async def ensure_changelog(self) -> None:
+        """Create the extractor's compacted changelog topic, on demand.
+
+        Called by ``ExtractorRunner.run_sharded`` and by nobody else. That
+        is the whole mechanism: a broker-dispatched stage is stateless, so
+        no changelog is created for it — not because anything checked, but
+        because that loop never asks. A transformer's changelog is different
+        in kind (its partition count must match the input topics) and is
+        created by ``ensure_topics`` at startup instead.
+
+        The admin client is opened and closed here: resource lifecycle is
+        the container's, and one short-lived connection once per process is
+        cheaper than holding an admin client open for the run.
+        """
+        admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
+        await admin.start()
+        try:
+            await ensure_changelog_topic(admin, self.changelog_topic)
+        finally:
+            await admin.close()
+
+    def create_instance_producer(self) -> AIOKafkaProducer:
+        """Builds the one transactional producer of a broker-dispatched extractor.
+
+        The transactional ID is ``{application_id}-{client_id}``: work is
+        sharded by an external MQTT broker rather than by Kafka leases, so there
+        is no token to key it on — and, unlike a token ID, it fences
+        nothing. Two replicas hold two distinct IDs by construction, which is
+        exactly why such a stage is stateless (see
+        ``ExtractorRunner.run_dispatched``); for per-message output that is
+        harmless, since at-least-once relay is commutative. The IDs are
+        client-supplied, so scaling the deployment needs no Kafka-broker-side
+        change. The 10-minute transaction timeout matches
+        ``create_token_producer`` — same page semantics, same coordinator
+        headroom.
+        """
+        kwargs: dict = {
+            "bootstrap_servers": self.bootstrap_servers,
+            "client_id": self.client_id,
+            "transaction_timeout_ms": 600_000,
+            "transactional_id": f"{self.application_id}-{self.client_id}",
+        }
+        if self.compression_type:
+            kwargs["compression_type"] = self.compression_type
+        return AIOKafkaProducer(**kwargs)
 
     def create_restore_consumer(self) -> AIOKafkaConsumer:
         """Builds throwaway consumers for per-task changelog restore.
@@ -448,7 +540,7 @@ class _FlechtwerkModule(Flechtwerk):
         transaction timeout is raised to 10 minutes: an extractor page (the
         span between two ``State`` yields) may legitimately run far longer
         than the 60s default, and the coordinator aborts any transaction
-        that outlives the timeout. 10 minutes stays under the broker's
+        that outlives the timeout. 10 minutes stays under the Kafka broker's
         default ``transaction.max.timeout.ms`` cap of 15.
         """
         kwargs: dict = {
@@ -464,6 +556,10 @@ class _FlechtwerkModule(Flechtwerk):
     @cached_property
     def membership_consumer(self) -> AIOKafkaConsumer | None:
         """Consumer holding an extractor's group membership (None for transformers).
+
+        Built lazily and STARTED by ``run_sharded``, not by ``__aenter__``:
+        the broker-dispatched loop never reaches for one, so a stage sharded
+        by an MQTT broker silently never joins a group — no flag, no check.
 
         Joins the ``application_id`` consumer group on the stage's config
         topics purely for the partition leases (ownership tokens): it never
@@ -552,14 +648,10 @@ class _FlechtwerkModule(Flechtwerk):
             await self.consumer.start()
             if self.config_consumer is not None:
                 await self.config_consumer.start()
-            if self.membership_consumer is not None:
-                await self.membership_consumer.start()
         except BaseException:
             await self.consumer.stop()
             if self.config_consumer is not None:
                 await self.config_consumer.stop()
-            if self.membership_consumer is not None:
-                await self.membership_consumer.stop()
             raise
         return self
 
@@ -569,9 +661,14 @@ class _FlechtwerkModule(Flechtwerk):
             await self.config_consumer.stop()
         if self.__dict__.get("membership_consumer") is not None:
             await self.membership_consumer.stop()
-        if isinstance(self.stage, Extractor):
-            # Token producers are runner-owned (stopped in its teardown);
-            # the shared inner store just needs its final wipe.
+        if self.__dict__.get("inner_store") is not None:
+            # Token producers are runner-owned (stopped in its teardown); the
+            # shared inner store just needs its final wipe. Close what was
+            # actually opened rather than asking what kind of stage this is:
+            # a broker-dispatched (stateless) extractor never touches
+            # ``inner_store``, so reactor-di never builds one, and reaching
+            # for it here would mint a temp directory for a store nothing
+            # ever wrote.
             await self.inner_store.close()
         # Stop the scrape server last so a final scrape can land mid-shutdown.
         # Access via __dict__ to avoid triggering the cached_property if the

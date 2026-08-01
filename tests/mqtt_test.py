@@ -1,9 +1,11 @@
 """Tests for flechtwerk.mqtt — connection machinery and the relay template."""
 import asyncio
 import json
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from paho.mqtt.client import MQTTv5
 
 from flechtwerk import Config, Event, Message, State
 from flechtwerk.attribute import Record
@@ -17,15 +19,26 @@ def make_mqtt_message(topic: str, payload: dict, qos: int = 1, mid: int = 42):
     return make_message(topic=topic, payload=json.dumps(payload).encode(), mid=mid, qos=qos)
 
 
+GROUP = "app"
+
+
+def shared(topic: str, group: str = GROUP) -> str:
+    """The wire form of a subscription — bare filters stay bare everywhere else."""
+    return f"$share/{group}/{topic}"
+
+
 def make_connection(
     loop: asyncio.AbstractEventLoop,
     *,
     broker: MqttBrokerConfig = DEFAULT_BROKER,
     client_id: str = "c-0",
+    group: str = GROUP,
     observer: RecordingObserver | None = None,
     wakeup: asyncio.Event | None = None,
 ) -> MqttConnection:
-    return MqttConnection(broker=broker, client_id=client_id, loop=loop, observer=observer, wakeup=wakeup)
+    return MqttConnection(
+        broker=broker, client_id=client_id, group=group, loop=loop, observer=observer, wakeup=wakeup,
+    )
 
 
 @pytest.fixture
@@ -43,15 +56,20 @@ def mock_client():
 
 @pytest.mark.asyncio
 async def test_connects_with_at_least_once_params(mock_client):
-    """Client constructed with manual_ack=True, clean_session=False, the client_id."""
+    """Client constructed for MQTT 5 with manual_ack=True and the client_id.
+
+    ``clean_session`` must NOT be passed: paho raises ``ValueError`` for it
+    under MQTTv5, where session continuation is CONNECT's ``clean_start``
+    flag plus the session-expiry property instead."""
     MockClient, client = mock_client
     conn = make_connection(asyncio.get_running_loop(), client_id="pod-0")
     await conn.__aenter__()
 
     _, kwargs = MockClient.call_args
     assert kwargs["client_id"] == "pod-0"
-    assert kwargs["clean_session"] is False
+    assert kwargs["protocol"] is MQTTv5
     assert kwargs["manual_ack"] is True
+    assert "clean_session" not in kwargs
     client.connect.assert_called_once()
     client.socket().setblocking.assert_called_once_with(False)
     await conn.__aexit__(None, None, None)
@@ -66,8 +84,41 @@ async def test_uses_broker_and_port_from_config(mock_client):
     )
     await conn.__aenter__()
 
-    client.connect.assert_called_once_with("broker.example", 8883)
+    args, kwargs = client.connect.call_args
+    assert args == ("broker.example", 8883)
     await conn.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_connect_resumes_session_with_configured_expiry(mock_client):
+    """CONNECT carries clean_start=False plus the configured
+    SessionExpiryInterval: resuming the session is what keeps a replica's
+    un-drained tail (and the messages queued while it was away) alive, and
+    the client-requested expiry wins over a lower MQTT broker default."""
+    _, client = mock_client
+    conn = make_connection(
+        asyncio.get_running_loop(),
+        broker=MqttBrokerConfig(broker="b", port=1883, session_expiry=timedelta(days=7)),
+    )
+    await conn.__aenter__()
+
+    _, kwargs = client.connect.call_args
+    assert kwargs["clean_start"] is False
+    assert kwargs["properties"].SessionExpiryInterval == 7 * 24 * 3600
+    await conn.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_is_plain(mock_client):
+    """No SessionExpiryInterval=0 on the way out: ending the session discards
+    its un-ACKed inflight messages silently — the MQTT broker does not redispatch
+    them to the share group's surviving members."""
+    _, client = mock_client
+    conn = make_connection(asyncio.get_running_loop())
+
+    await conn.__aexit__(None, None, None)
+
+    client.disconnect.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -114,14 +165,33 @@ async def test_subscribe_is_idempotent_per_topic(mock_client):
 
 
 @pytest.mark.asyncio
-async def test_subscribe_when_connected_subscribes_immediately(mock_client):
+async def test_subscribe_when_connected_subscribes_shared_immediately(mock_client):
+    """The wire form is the share group; the view keeps the bare filter."""
     _, client = mock_client
     client.is_connected.return_value = True
     conn = make_connection(asyncio.get_running_loop())
 
     conn.subscribe("t/+/events")
 
-    client.subscribe.assert_called_once_with("t/+/events", qos=1)
+    client.subscribe.assert_called_once_with(shared("t/+/events"), qos=1)
+    assert list(conn.subscriptions) == ["t/+/events"]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_also_unsubscribes_the_bare_filter(mock_client):
+    """Belt and braces for the 0.8→0.9 upgrade: a session resumed from a
+    pre-shared deployment still carries a DIRECT subscription to the bare
+    filter, which would double-deliver forever — and MQTT offers no way to
+    enumerate a session's subscriptions to detect it. Removing one that
+    isn't there is answered with 'No subscription existed' and costs
+    nothing, so the pairing stays permanently."""
+    _, client = mock_client
+    client.is_connected.return_value = True
+    conn = make_connection(asyncio.get_running_loop())
+
+    conn.subscribe("t/+/events")
+
+    client.unsubscribe.assert_called_once_with("t/+/events")
 
 
 @pytest.mark.asyncio
@@ -137,8 +207,11 @@ async def test_subscribe_when_disconnected_defers_to_on_connect(mock_client):
     conn.on_connect(client, None, None, 0, None)
 
     assert client.subscribe.call_count == 2
-    client.subscribe.assert_any_call("a/+/events", qos=1)
-    client.subscribe.assert_any_call("b/+/events", qos=1)
+    client.subscribe.assert_any_call(shared("a/+/events"), qos=1)
+    client.subscribe.assert_any_call(shared("b/+/events"), qos=1)
+    # …and the belt-and-braces bare unsubscribe rides along on every resubscribe.
+    client.unsubscribe.assert_any_call("a/+/events")
+    client.unsubscribe.assert_any_call("b/+/events")
 
 
 @pytest.mark.asyncio
@@ -157,7 +230,7 @@ async def test_on_message_routes_to_matching_subscription(mock_client):
 @pytest.mark.asyncio
 async def test_on_message_holds_unmatched_qos1_without_ack(mock_client):
     """An unmatched QoS 1 message is held un-ACKed — ACKing (or dropping)
-    would permanently lose the persistent session's backlog, which the broker
+    would permanently lose the persistent session's backlog, which the MQTT broker
     replays right after CONNACK, before the config bootstrap has registered
     any subscription."""
     _, client = mock_client
@@ -207,7 +280,7 @@ async def test_subscribe_routes_held_messages_into_new_subscription(mock_client)
 
 @pytest.mark.asyncio
 async def test_reconnect_clears_held_unrouted_messages(mock_client):
-    """On reconnect the broker redelivers with fresh mids — held messages
+    """On reconnect the MQTT broker redelivers with fresh mids — held messages
     reference stale mids and must be cleared like pending_acks."""
     _, client = mock_client
     conn = make_connection(asyncio.get_running_loop())
@@ -292,7 +365,7 @@ async def test_unsubscribe_sends_broker_unsubscribe_and_disposes_view(mock_clien
 
     conn.unsubscribe("t/+/events")
 
-    client.unsubscribe.assert_called_once_with("t/+/events")
+    client.unsubscribe.assert_any_call(shared("t/+/events"))
     assert conn.subscriptions == {}
 
 
@@ -339,7 +412,7 @@ async def test_unsubscribed_topic_not_resubscribed_on_connect(mock_client):
 
     conn.on_connect(client, None, None, 0, None)
 
-    client.subscribe.assert_called_once_with("keep/+/events", qos=1)
+    client.subscribe.assert_called_once_with(shared("keep/+/events"), qos=1)
 
 
 @pytest.mark.asyncio
@@ -352,17 +425,18 @@ async def test_reconcile_unsubscribes_topics_outside_desired(mock_client):
 
     conn.reconcile({"keep/+/events"})
 
-    client.unsubscribe.assert_called_once_with("gone/+/events")
+    client.unsubscribe.assert_any_call(shared("gone/+/events"))
     assert list(conn.subscriptions) == ["keep/+/events"]
-    assert conn.desired == {"keep/+/events"}
+    assert conn.desired == {"keep/+/events"}  # the latch is bare filters, like everything but the wire
 
 
 @pytest.mark.asyncio
 async def test_reconcile_sweeps_stale_unrouted_and_keeps_matching(mock_client):
     """The latch: held messages for a filter some earlier deployment left in
     the persistent session are ACK-dropped at the first reconciliation —
-    MQTT 3.1.1 can neither enumerate nor selectively unsubscribe those
-    filters, so dropping their traffic is what un-wedges the session.
+    MQTT (v5 included) can neither enumerate a session's subscriptions nor
+    say which filter matched a delivery, so dropping their traffic is what
+    un-wedges the session.
     Messages matching a desired-but-not-yet-subscribed filter stay held for
     the poll that will subscribe it."""
     _, client = mock_client
@@ -385,7 +459,7 @@ async def test_reconcile_sweeps_stale_unrouted_and_keeps_matching(mock_client):
 async def test_unmatched_qos1_dropped_on_receipt_after_latch(mock_client):
     """Post-latch arrivals for undesired topics — UNSUBSCRIBE stragglers,
     stale-session replay — are ACK-dropped on receipt instead of held, so a
-    leftover broker-side subscription can no longer stall the inflight
+    leftover MQTT-broker-side subscription can no longer stall the inflight
     window. The metric label is the '(unmatched)' sentinel: the concrete
     publish topic would have unbounded cardinality."""
     _, client = mock_client
@@ -609,8 +683,10 @@ async def test_extractor_aenter_without_settings_raises():
 
 @pytest.mark.asyncio
 async def test_extractor_aenter_without_client_id_raises():
-    """An empty client_id would collide-or-be-rejected at the broker (MQTT
-    3.1.1 forbids it with clean_session=False) — fail fast instead."""
+    """MQTT 5 lets the MQTT broker assign a client id, but a generated one changes
+    on every reconnect — and identity is the whole recovery path: only the
+    same client_id resumes the session holding this replica's un-drained
+    tail. Fail fast instead."""
     ext = MqttExtractor.of(config_topics=["cfg"], relay=forward_relay)
     ext.mqtt = MqttBrokerConfig(broker="b", port=1883)
     with pytest.raises(RuntimeError, match="no MQTT client_id configured"):
@@ -622,12 +698,14 @@ async def test_extractor_aenter_builds_connection_from_injected_settings(mock_cl
     MockClient, client = mock_client
     ext = MqttExtractor.of(config_topics=["cfg"], relay=forward_relay)
     ext.client_id = "pod-0"
+    ext.group = "my-app"
     ext.mqtt = MqttBrokerConfig(broker="broker.example", port=8883)
 
     async with ext:
         _, kwargs = MockClient.call_args
         assert kwargs["client_id"] == "pod-0"
-        client.connect.assert_called_once_with("broker.example", 8883)
+        assert client.connect.call_args.args == ("broker.example", 8883)
+        assert ext.connection.group == "my-app"  # the injected share group
         assert isinstance(ext.wakeup, asyncio.Event)
         assert ext.connection.wakeup is ext.wakeup
         assert ext.connection.observer is ext.observer
@@ -635,9 +713,25 @@ async def test_extractor_aenter_builds_connection_from_injected_settings(mock_cl
 
 
 @pytest.mark.asyncio
+async def test_extractor_aenter_rejects_an_unusable_share_group():
+    """The group is the application_id and becomes one level of
+    `$share/<group>/<filter>`: empty, or carrying a separator or wildcard, it
+    would be rejected by the MQTT broker or silently reshape the filter. The
+    stage validates its own configuration rather than the container doing it
+    on its behalf."""
+    for group in ("", "a/b", "a+b", "a#b"):
+        ext = MqttExtractor.of(config_topics=["cfg"], relay=forward_relay)
+        ext.client_id = "pod-0"
+        ext.group = group
+        ext.mqtt = MqttBrokerConfig(broker="b", port=1883)
+        with pytest.raises(RuntimeError, match="shared-subscription group"):
+            await ext.__aenter__()
+
+
+@pytest.mark.asyncio
 async def test_extractor_aenter_skips_connect_when_connection_preset():
     """The test seam: a pre-set connection (e.g. FakeMqttConnection) bypasses
-    both the broker connect and the injected-settings requirement."""
+    both the MQTT broker connect and the injected-settings requirement."""
     ext = MqttExtractor.of(config_topics=["cfg"], relay=forward_relay)
     ext.connection = FakeMqttConnection()
 

@@ -213,21 +213,18 @@ Two things to know when sizing a deployment:
   handovers neither lose nor duplicate records (see the exactly-once note
   above).
 
-MQTT extractors scale out too — a token handover unsubscribes the topics
-the old owner loses (the [subscription
-lifecycle](mqtt.md#subscription-lifecycle)) — but each handover carries a
-bounded at-most-once window, since a broker ACK cannot join a Kafka
-transaction. Run one replica when that loss is unacceptable; see [Replicas
-and the Handover Window](mqtt.md#replicas-and-the-handover-window). A
-single replica is fully lossless — handovers back to itself roll drained-
-but-unconfirmed messages back into the buffer instead of ACKing them
-unsent. See [the architecture notes](../concepts/architecture.md#extractor)
-for the full model.
+**MQTT extractors are exempt from all of this** — and scale differently.
+They join no consumer group and negotiate no handover: an MQTT broker
+divides their work, and the guidance is to run **one replica** and do the
+scaling downstream in transformers, because MQTT has no rebalancing to lean
+on. See [Replicas and Scaling](mqtt.md#replicas-and-scaling).
+See [the architecture notes](../concepts/architecture.md#extractor) for the
+full model.
 
 ## Next Steps
 
 - **[MQTT Extractors](mqtt.md)** — a push-driven extractor: instead of polling on a
-  timer, messages arrive over MQTT and wake the poll loop, ACKed to the broker
+  timer, messages arrive over MQTT and wake the poll loop, ACKed to the MQTT broker
   only once a batch is durable in Kafka.
 - **[Best Practices](best-practices.md)** — pair this extractor with a transformer
   so you can reprocess and adapt to schema changes without re-ingesting.

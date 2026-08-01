@@ -91,7 +91,7 @@ The [documentation](https://bsure-analytics.github.io/flechtwerk/) has the full 
 
 - **[Getting Started](https://bsure-analytics.github.io/flechtwerk/guides/getting-started/)** — install, a minimal transformer and extractor, and running a stage.
 - **[Extractors](https://bsure-analytics.github.io/flechtwerk/guides/extractor/)** — poll an external source into Kafka, with `State` as the resume cursor.
-- **[MQTT Extractors](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — a push-driven MQTT source that ACKs to the broker only once a batch is durable in Kafka.
+- **[MQTT Extractors](https://bsure-analytics.github.io/flechtwerk/guides/mqtt/)** — a push-driven MQTT 5 source that ACKs to the MQTT broker only once a batch is durable in Kafka.
 - **[Transformers](https://bsure-analytics.github.io/flechtwerk/guides/transformer/)** — stream-to-stream processing with partitioned, exactly-once tasks.
 - **[Best Practices](https://bsure-analytics.github.io/flechtwerk/guides/best-practices/)** — co-partitioning, the let-it-crash error strategy, secret-handling rules, and the operational rules that keep a multi-instance deployment correct.
 - **[Observability](https://bsure-analytics.github.io/flechtwerk/guides/observability/)** — the Prometheus metrics the runners emit.

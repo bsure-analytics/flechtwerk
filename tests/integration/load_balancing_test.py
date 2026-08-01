@@ -1,7 +1,7 @@
 """Integration tests for multi-instance exactly-once (EOS-v1 task model).
 
 Verifies the three properties mocks fundamentally cannot validate against a
-real broker:
+real Kafka broker:
 
 1. Zombie fencing — a new owner's InitProducerId (same static transactional
    ID) fences the previous owner's producer and aborts its in-flight
@@ -157,7 +157,7 @@ async def test_restore_reads_exactly_to_last_stable_offset(
 
 
 def _make_runner(bootstrap: str, group_id: str, input_topic: str, changelog_topic: str, transform) -> TransformerRunner:
-    """Wire a TransformerRunner against a real broker, mirroring Flechtwerk's DI."""
+    """Wire a TransformerRunner against a real Kafka broker, mirroring Flechtwerk's DI."""
     def make_producer(partition: int) -> AIOKafkaProducer:
         return AIOKafkaProducer(
             bootstrap_servers=bootstrap,

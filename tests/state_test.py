@@ -455,7 +455,7 @@ def test_ensure_changelog_topic_returns_false_when_already_exists():
 
 
 def test_ensure_changelog_topic_raises_on_other_error():
-    """Any non-zero, non-already-exists code propagates as its broker error."""
+    """Any non-zero, non-already-exists code propagates as its Kafka broker error."""
     async def run():
         from aiokafka.errors import NotControllerError
 

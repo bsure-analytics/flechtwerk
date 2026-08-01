@@ -429,7 +429,7 @@ class TransformerRunner:
             for raw_msg in records[tp]:
                 # Inbound bytes are weighed HERE and not beside the
                 # `message_in` count in `_process_key_bucket`: the sizes ride
-                # free on the broker's `ConsumerRecord`, which `parse_message`
+                # free on the Kafka broker's `ConsumerRecord`, which `parse_message`
                 # collapses into an `IncomingMessage`, and re-serializing to
                 # recover them would defeat the point. Kafka reports -1 for an
                 # absent key or value, which must not subtract from the

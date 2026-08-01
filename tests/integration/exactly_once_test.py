@@ -1,6 +1,6 @@
 """Integration tests for TransformerRunner exactly-once semantics.
 
-Verifies transactional atomicity against a real broker — the one thing mocks
+Verifies transactional atomicity against a real Kafka broker — the one thing mocks
 fundamentally cannot validate. A successful transaction materializes output +
 state-changelog + offset commit together; an aborted transaction materializes
 none of them.

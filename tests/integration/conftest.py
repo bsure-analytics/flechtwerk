@@ -1,7 +1,7 @@
 """Session-scoped Kafka fixture for integration tests.
 
 Uses testcontainers-python to spin up an ephemeral Kafka broker in Docker.
-The broker is started once per test session and shared across all integration
+The Kafka broker is started once per test session and shared across all integration
 tests in this directory; per-test isolation is achieved via unique topic names.
 
 Run with:
@@ -27,10 +27,10 @@ def _docker_available() -> bool:
 def kafka_bootstrap() -> str:
     """Start a Kafka container for the whole test session.
 
-    Returns the bootstrap server address (host:port). The broker is tuned for
+    Returns the bootstrap server address (host:port). The Kafka broker is tuned for
     single-broker transactional tests: `__transaction_state`, `__consumer_offsets`,
     and related internal topics default to replication-factor 3, which fails with
-    one broker. We override them to 1 to match the ephemeral test setup.
+    one Kafka broker. We override them to 1 to match the ephemeral test setup.
     """
     if not _docker_available():
         pytest.skip("Docker not available — skipping integration tests")

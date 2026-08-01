@@ -1,7 +1,7 @@
 """Integration tests for restore_changelog against a real Kafka broker.
 
 Verifies behavior that unit tests with mocks cannot: the `_client.set_topics()`
-metadata-priming call actually populating partition info against a live broker,
+metadata-priming call actually populating partition info against a live Kafka broker,
 real Kafka compaction semantics, and round-tripping JSON-serialized state
 entries through the wire format.
 """
@@ -143,7 +143,7 @@ async def test_restore_returns_zero_for_empty_topic(
     """An empty (but existing) compacted topic restores to zero entries.
 
     Exercises the metadata-priming call (`consumer._client.set_topics([topic])`)
-    against a real broker — verifying it actually makes the topic visible to
+    against a real Kafka broker — verifying it actually makes the topic visible to
     `partitions_for_topic()`. The public `consumer.topics()` is insufficient
     because it returns a separate ClusterMetadata object without updating the
     consumer's internal cache.

@@ -269,7 +269,7 @@ async def read_to_end(
             for msg in msgs:
                 await apply(msg)
                 count += 1
-        # An empty poll is not end-of-log — broker stalls and fetch backoff
+        # An empty poll is not end-of-log — Kafka broker stalls and fetch backoff
         # yield empty results too. Only the fetch position reaching the end
         # offset captured at entry terminates a partition's read.
         pending = {tp for tp in pending if await consumer.position(tp) < end_offsets[tp]}

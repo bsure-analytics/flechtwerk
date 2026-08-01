@@ -1,7 +1,7 @@
 """Integration tests for sharded extractors (token-leased config ownership).
 
 Verifies the properties mocks fundamentally cannot validate against a real
-broker and a real consumer group:
+Kafka broker and a real consumer group:
 
 1. Placement independence — every config record is written to partition 0
    (the Kafka-UI scenario), yet ownership still splits across instances,
@@ -86,8 +86,26 @@ def _make_stage(config_topic: str, output_topic: str, owner: str, polled: set[st
     return Extractor.of(config_topics=[config_topic], poll=poll)
 
 
+def _ensure_changelog(bootstrap: str, changelog_topic: str):
+    """The container's ``ensure_changelog`` factory, wired for the test broker:
+    ``run_sharded`` asks for the changelog it is about to restore from."""
+    async def ensure() -> None:
+        from aiokafka.admin import AIOKafkaAdminClient
+
+        from flechtwerk.state import ensure_changelog_topic
+
+        admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
+        await admin.start()
+        try:
+            await ensure_changelog_topic(admin, changelog_topic)
+        finally:
+            await admin.close()
+
+    return ensure
+
+
 def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Extractor, state_path) -> ExtractorRunner:
-    """Wire a sharded ExtractorRunner against a real broker, mirroring Flechtwerk's DI."""
+    """Wire a sharded ExtractorRunner against a real Kafka broker, mirroring Flechtwerk's DI."""
     inner = RocksDBStateStore()
     inner.path = state_path
 
@@ -114,6 +132,7 @@ def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Ext
         isolation_level="read_committed",
     )
     runner.create_token_producer = make_token_producer
+    runner.ensure_changelog = _ensure_changelog(bootstrap, changelog_topic)
     runner.extractor = stage
     runner.inner_store = inner
     runner.membership_consumer = AIOKafkaConsumer(
@@ -131,7 +150,8 @@ def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Ext
 
 async def _start_runner(runner: ExtractorRunner) -> asyncio.Task:
     await runner.consumer.start()
-    await runner.membership_consumer.start()
+    # NOT the membership consumer: `run_sharded` starts it itself, because it
+    # is the only loop that needs a group at all.
     return asyncio.create_task(runner.run())
 
 
@@ -280,7 +300,12 @@ async def test_sharded_extractor_rejects_unequal_config_partition_counts(
     unique_topic: str,
 ) -> None:
     """The token space is the config topics' common partition count — a
-    sharded stage with mismatched counts must fail fast at startup."""
+    sharded stage with mismatched counts must fail fast at startup.
+
+    The rule lives in ``ExtractorRunner.count_tokens``, the only code that
+    defines a token space, so it fires from ``run()`` rather than from the
+    container's topic checks — and a broker-dispatched stage, which never
+    calls it, is unaffected by the same topics."""
     cfg_two = f"cfg-two-{unique_topic}"
     cfg_three = f"cfg-three-{unique_topic}"
     await _create_topics(kafka_bootstrap, cfg_two, num_partitions=2, compacted=(cfg_two,))
@@ -299,4 +324,4 @@ async def test_sharded_extractor_rejects_unequal_config_partition_counts(
     )
     with pytest.raises(ValueError, match="equal partition counts"):
         async with flechtwerk:
-            pass  # pragma: no cover
+            await asyncio.wait_for(flechtwerk.runner.run(), 30)
