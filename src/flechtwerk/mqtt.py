@@ -738,7 +738,12 @@ class MqttExtractor(Extractor, ABC):
         mutating either in place has no effect and is silently discarded.
         """
 
-    async def poll(self, config: Config, _: State) -> AsyncIterator[Message | State]:
+    async def poll(self, config: Config, state: State) -> AsyncIterator[Message | State]:
+        # ``state`` is always empty and is never yielded back: this stage takes
+        # the broker-dispatched loop (see ``_run_in``), which is stateless by
+        # contract. It keeps the base method's parameter NAME so the signatures
+        # stay keyword-compatible — an `Extractor` caller passing ``state=``
+        # must not break on this one override.
         sub = self.subscribe(config[TOPIC])
 
         # ACK the previous batch. ExtractorRunner marks nothing pending that

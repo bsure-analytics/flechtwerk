@@ -294,8 +294,25 @@ filling somewhere.
 - **`MqttBrokerConfig` is now keyword-only**, and gains `session_expiry`.
   If you built one with positional arguments, name them:
   `MqttBrokerConfig(broker=..., port=...)`.
+- **Code that builds a stage by hand must set `group`** — typically tests. In
+  production `Flechtwerk.of(...)` injects the `application_id` there, but a
+  test that constructs a stage and enters it directly has to supply it
+  itself, exactly as it already supplies `client_id`. An empty group is
+  rejected at `__aenter__`, since it would subscribe the malformed
+  `$share//<filter>`:
+
+    ```python
+    extractor = MqttExtractor.of(config_topics=["my-config"], relay=relay)
+    extractor.client_id = "my-stage-0"   # per-instance identity
+    extractor.group = "my-stage"         # shared-subscription group  ← new in 0.9
+    extractor.mqtt = MqttBrokerConfig(broker="localhost", port=1883)
+    ```
+
+    Tests that pre-set `FakeMqttConnection` are unaffected — they bypass the
+    connect entirely.
 - **No other application changes** for a stage built from
-  `MqttExtractor.of(...)` or `@mqtt_extractor(...)`. A stage that overrides `poll()` and yields
+  `MqttExtractor.of(...)` or `@mqtt_extractor(...)` and run through
+  `Flechtwerk.of(...)`. A stage that overrides `poll()` and yields
   `State` must move to a plain `Extractor` subclass — see [MQTT Stages Are
   Stateless by Contract](#mqtt-stages-are-stateless-by-contract).
 - **Behaviour at one replica is unchanged.** A sole group member still
