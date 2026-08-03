@@ -322,6 +322,6 @@ filling somewhere.
 ## Next Steps
 
 - **[Extractors](extractor.md)** — the poll-based base model an `MqttExtractor` specializes.
-- **[Best Practices](best-practices.md)** — back the pushed data up to a raw topic and refine it with a transformer, so you can reprocess without losing what the devices sent.
+- **[Best Practices](best-practices.md)** — why [MQTT routes and Kafka remembers](best-practices.md#let-mqtt-route-and-kafka-remember), then how to back the pushed data up to a raw topic and refine it with a transformer, so you can reprocess without losing what the devices sent.
 - **[Observability](observability.md)** — the `mqtt_*` Prometheus metrics for connection health, drops, and buffering.
 - **[Getting Started](getting-started.md)** — the install, the two-yield contract, and how any stage is run.

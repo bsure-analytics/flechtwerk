@@ -1,5 +1,68 @@
 # Best Practices
 
+## Let MQTT Route and Kafka Remember
+
+Two pieces of infrastructure in a push-driven pipeline carry messages by topic
+from many producers to many consumers, and from a distance they look
+interchangeable. They are not, and the division of labour between them is the
+first design decision worth getting right: **MQTT for distribution and routing,
+Kafka for persistence and replayability.**
+
+```mermaid
+flowchart LR
+    s1([sensor]) --> mq
+    s2([sensor]) --> mq
+    s3([gateway]) --> mq
+    mq[MQTT broker<br><small>routing, fan-in,<br>QoS, sessions</small>] --> br[MqttExtractor<br><small>ACK after commit</small>]
+    br --> log[(Kafka log<br><small>retention, offsets,<br>transactions</small>)]
+    log --> c1[transformers]
+    log --> c2[analytics]
+    log --> c3[a reader added later<br><small>starts at the beginning</small>]
+```
+
+- **MQTT owns the last mile.** Thousands of intermittently connected publishers,
+  wildcard filters that route by topic with no registry to maintain, QoS and a
+  persistent session that survive a link dropping mid-message. What it does not
+  own is memory: an MQTT broker hands each message to whoever is subscribed
+  *now*, and what it holds for an absent subscriber is a bounded queue, not a
+  history.
+- **Kafka owns the history.** An append-only log where retention is a policy you
+  set rather than a side effect of who happened to be listening, and where the
+  read position belongs to the **consumer** — any number of readers consume the
+  same records independently, at their own pace, and one added a year from now
+  still starts at the beginning. Every guarantee the rest of this page leans on
+  (replay, exactly-once, reprocessing without re-ingesting) is a property of that
+  log, and none of them can be built on a transport that forgets.
+- **The bridge between them stays narrow.** An [`MqttExtractor`](mqtt.md)
+  subscribes, relays each payload, and ACKs the MQTT broker only once the Kafka
+  transaction carrying it has committed — nothing leaves the MQTT session until
+  Kafka owns it. Keep that hop boring: no enrichment, no aggregation, no
+  filtering you might regret, because it is the one hop you cannot replay.
+
+!!! warning "An MQTT Session Is a Delivery Window, Not a Safety Net"
+
+    Persistent sessions and QoS 1 read like durability, which makes it tempting
+    to treat the MQTT broker as a buffer the bridge can be away from for a
+    while. That queue is bounded, it belongs to the MQTT broker rather than to
+    you, and when it fills the overflow is discarded silently. So keep the
+    bridge always-on and prompt, and let "we can always go back" mean Kafka's
+    retention — never the MQTT broker's queue. The budget is one number and
+    worth computing: see
+    [Sizing the Outage Budget](mqtt.md#sizing-the-outage-budget).
+
+!!! tip "Point Applications at the Log, Not at the MQTT Broker"
+
+    Once records are in Kafka, resist letting a dashboard or a downstream
+    service subscribe to MQTT for "the live version". A second MQTT subscriber
+    gets no offsets, no replay and no consumer-group scaling, and it accumulates
+    a different history than the pipeline has — two sources of truth that drift
+    apart from the first dropped connection. Give the MQTT broker exactly one
+    consumer, the bridge, and let everything else read the log.
+
+The same division applies to whatever your last mile turns out to be — an HTTP
+API, webhooks, a vendor's push feed, a serial gateway. The transport's job is to
+get each record to you once; the log's job is to let you use it more than once.
+
 ## Split Ingestion From Transformation
 
 For any external datasource, run **two** stages, not one: an
@@ -189,6 +252,7 @@ Secret fields — API keys, tokens, passwords — are encrypted in place with th
 ## Next Steps
 
 - **[Extractors](extractor.md)** — build the ingestion half that writes the raw topic.
+- **[MQTT Extractors](mqtt.md)** — the push-driven bridge: subscription lifecycle, replica count, and how to size its outage budget.
 - **[Transformers](transformer.md)** — build the refinement half that reads it back.
 - **[Exactly-once delivery](../concepts/exactly-once.md)** — why a transformer replay is safe to run to completion.
 - **[Typed Attributes & Records](../concepts/typed-attributes.md)** — the model behind the wire-boundary rules above.
