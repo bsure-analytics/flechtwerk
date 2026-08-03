@@ -6,10 +6,13 @@ For any external datasource, run **two** stages, not one: an
 [Extractor](extractor.md) that captures the source data and a
 [Transformer](transformer.md) that shapes it for your applications.
 
-```
-external source ──▶ [Extractor] ──▶ raw topic ──▶ [Transformer] ──▶ refined topic ──▶ your apps
-                    exactly-once    (faithful     exactly-once      (query model)
-                                     backup)
+```mermaid
+flowchart LR
+    src([external source]) --> ext[Extractor<br><small>exactly-once</small>]
+    ext --> raw[(raw topic<br><small>faithful backup</small>)]
+    raw --> tr[Transformer<br><small>exactly-once</small>]
+    tr --> ref[(refined topic<br><small>query model</small>)]
+    ref --> apps([your apps])
 ```
 
 - The **extractor** writes the source data to a **raw topic** as faithfully as
@@ -83,10 +86,11 @@ the question is asked — **windowed aggregations, running totals, rankings,
 rollups** — leave out of the transformer and let your OLAP query engine (e.g.
 [Apache Druid](https://druid.apache.org/)) compute it at query time.
 
-```
-… ──▶ refined topic  ──▶  [ OLAP query engine ] ──▶ your apps
-      clean, granular,    aggregates, windows,
-      not pre-aggregated  ranks — at query time
+```mermaid
+flowchart LR
+    tr[Transformer] --> ref[(refined topic<br><small>clean, granular,<br>not pre-aggregated</small>)]
+    ref --> olap[OLAP query engine<br><small>aggregates, windows, ranks<br>— at query time</small>]
+    olap --> apps([your apps])
 ```
 
 The payoff is the replayability argument taken to its limit: a query is

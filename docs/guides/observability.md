@@ -17,7 +17,7 @@ await Flechtwerk.of(
     application_id="my-stage",
     bootstrap_servers="localhost:9092",
     client_id="my-stage-0",
-    metrics_port=9000,                                # >0 starts the scrape server; 0 disables
+    metrics_port=9000,  # >0 starts the scrape server; 0 disables
     metrics_labels={"service": "my-stage", "env": "prod"},
     stage=stage,
 ).run()

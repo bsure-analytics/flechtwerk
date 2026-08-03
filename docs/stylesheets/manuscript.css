@@ -178,6 +178,58 @@
   .ms-frame::after { display: none; }
 }
 
+/* ---- mermaid diagrams: click to enlarge --------------------------------- */
+/* A wide left-to-right diagram is downscaled by `max-width: 100%` to fit the
+   text column, which shrinks its labels well below body size. So make the
+   diagram a plate the reader can open: javascripts/mermaid-zoom.js moves the
+   host into .ms-plate and scales it to the viewport.
+
+   The rendered SVG lives in a CLOSED shadow root (Material calls
+   attachShadow({mode: "closed"})), so it is unreachable from both this
+   stylesheet and any script — the host div is the only handle there is, and
+   `transform` on it is the only way to enlarge what it holds. */
+
+.md-typeset .mermaid {
+  cursor: zoom-in;
+  /* the diagram is a figure, so give it a figure's breathing room */
+  margin-block: 1.2em;
+}
+
+.md-typeset .mermaid:focus-visible {
+  outline: .1rem solid var(--ms-gold);
+  outline-offset: .4rem;
+}
+
+/* stand-in that holds the diagram's place in the flow while it is lifted out,
+   so the prose behind the plate doesn't reflow */
+.ms-plate-gap { margin-block: 1.2em; }
+
+.ms-plate {
+  position: fixed;
+  inset: 0;
+  z-index: 10;   /* over the content, under Material's header (z-index 11) */
+  padding: .8rem;
+  cursor: zoom-out;
+  /* the parchment ground, dimmed — a plate laid over the page, not a void */
+  background: color-mix(in srgb, var(--md-default-bg-color) 82%, #000);
+  /* a diagram too wide to fit legibly (a phone in portrait) is enlarged past
+     the viewport and panned instead of shrunk to nothing */
+  overflow: auto;
+  display: grid;
+  /* `safe` degrades to start alignment when the diagram overflows — centred
+     overflow would push its left edge out of reach of the scroller */
+  place-content: safe center;
+}
+
+.ms-plate > .mermaid {
+  cursor: zoom-out;
+  margin: 0;
+  /* `zoom`, not `transform: scale()`: the enlargement has to affect layout, or
+     the plate has nothing to scroll when the diagram outgrows the viewport.
+     The factor is computed by the script. */
+  zoom: var(--ms-plate-zoom, 1);
+}
+
 /* ---- nested ordered lists render as a., b., c. --------------------------- */
 /* Book convention: a second-level ordered list uses lower-alpha markers, so a
    sub-point under a numbered item (e.g. the Scope & Caveats caveats) cites as
