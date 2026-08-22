@@ -54,6 +54,11 @@ At-least-once delivery:
   previous batch's transaction committed (the contract is documented on the
   runner), so ACKing the previous batch at the top of the next poll never
   ACKs anything Kafka hasn't stored.
+- An ACK that does not leave keeps its message pending, to be retried at the
+  top of the poll after. "Pending" therefore means *unconfirmed*, not
+  *unconfirmed as of the last attempt* — dropping it would leave the broker
+  holding a message nothing expects, redelivered whenever the session next
+  resumes rather than with the batch it belongs to.
 - DISCONNECT is sent plain — never with ``SessionExpiryInterval=0``. Ending
   the session discards its un-ACKed inflight messages *silently*: an MQTT
   broker does not redispatch them to the surviving members of the share group
@@ -392,16 +397,26 @@ class MqttConnection:
         replayed backlog)."""
         return self.desired is None or any(topic_matches_sub(f, topic) for f in self.desired)
 
-    def ack(self, msg: MQTTMessage) -> None:
-        """Send PUBACK for a QoS 1 message. Logs but doesn't raise on failure."""
+    def ack(self, msg: MQTTMessage) -> bool:
+        """Send PUBACK for a QoS 1 message; True if it left, False if it did not.
+
+        Never raises — a broken ACK is not a reason to abandon a batch that is
+        already durable in Kafka. It IS a reason for the caller to keep the
+        message pending: the broker still holds it and will redeliver it, so
+        forgetting it here would let it come back with nothing expecting it.
+        QoS 0 has no PUBACK, so it is trivially done.
+        """
         if msg.qos == 0:
-            return
+            return True
         try:
             rc = self.client.ack(msg.mid, msg.qos)
             if rc != 0:
                 log.warning("MQTT ACK failed for mid %d: rc=%d (MQTT broker will redeliver)", msg.mid, rc)
+                return False
         except Exception:
             log.warning("MQTT ACK raised for mid %d (MQTT broker will redeliver)", msg.mid, exc_info=True)
+            return False
+        return True
 
     # -- Socket callbacks: drive paho I/O from the asyncio event loop ---------
 
@@ -552,14 +567,27 @@ class MqttSubscription:
         return batch
 
     def ack_all_pending(self) -> None:
-        """ACK everything in pending_acks. Called after confirming Kafka durability."""
-        for msg in self.pending_acks:
-            self.ack(msg)
-        self.pending_acks.clear()
+        """ACK everything in pending_acks. Called after confirming Kafka durability.
 
-    def ack(self, msg: MQTTMessage) -> None:
-        """Send PUBACK for a QoS 1 message. Logs but doesn't raise on failure."""
-        self.connection.ack(msg)
+        **A message whose ACK did not leave stays pending**, and is retried at the
+        top of the next poll. Clearing unconditionally drops it while the broker
+        still holds it un-ACKed, so it is redelivered at whatever later moment the
+        session resumes — arbitrarily far from the batch it belonged to, and with
+        nothing left that knows it was already durable. Keeping it is what makes
+        "pending" mean "unconfirmed" rather than "unconfirmed as of the last
+        attempt".
+
+        The list cannot grow without bound: `Connection.ack` fails when paho has no
+        connection, and `drain` raises the stored `ConnectionError` as soon as the
+        buffer empties, which crashes the stage into a fresh session. `on_connect`
+        clears the list for the other half of that — after a reconnect every mid
+        here is stale, so a retry would ACK the wrong message.
+        """
+        self.pending_acks = [msg for msg in self.pending_acks if not self.ack(msg)]
+
+    def ack(self, msg: MQTTMessage) -> bool:
+        """Send PUBACK for a QoS 1 message; True if it left."""
+        return self.connection.ack(msg)
 
     def mark_pending(self, msg: MQTTMessage) -> None:
         self.pending_acks.append(msg)

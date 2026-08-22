@@ -47,6 +47,9 @@ def mock_client():
         client = MagicMock()
         client._client_id = b"test-client"
         client.socket.return_value = MagicMock()
+        # paho returns an int rc from ack(); a bare MagicMock is truthy and would
+        # read as MQTT_ERR_* failure now that the caller keeps failures pending.
+        client.ack.return_value = 0
         MockClient.return_value = client
         yield MockClient, client
 
@@ -608,6 +611,62 @@ async def test_ack_all_pending_acks_qos_1_messages(mock_client):
     assert client.ack.call_count == 2
     client.ack.assert_any_call(1, 1)
     client.ack.assert_any_call(2, 1)
+    assert sub.pending_acks == []
+
+
+@pytest.mark.asyncio
+async def test_ack_all_pending_keeps_what_it_could_not_ack(mock_client):
+    """A non-zero rc means the PUBACK never left, so the broker still holds the
+    message. Forgetting it here would let it come back long after the batch it
+    belonged to, with nothing left that knows it was already durable in Kafka."""
+    _, client = mock_client
+    client.ack.side_effect = [0, 1]
+    conn = make_connection(asyncio.get_running_loop())
+    sub = conn.subscribe("t/+/events")
+    acked = make_mqtt_message("t/aa/events", {}, qos=1, mid=1)
+    failed = make_mqtt_message("t/aa/events", {}, qos=1, mid=2)
+    sub.pending_acks = [acked, failed]
+
+    sub.ack_all_pending()
+
+    assert sub.pending_acks == [failed]
+
+
+@pytest.mark.asyncio
+async def test_ack_all_pending_keeps_what_raised(mock_client):
+    _, client = mock_client
+    client.ack.side_effect = RuntimeError("socket gone")
+    conn = make_connection(asyncio.get_running_loop())
+    sub = conn.subscribe("t/+/events")
+    msg = make_mqtt_message("t/aa/events", {}, qos=1, mid=1)
+    sub.pending_acks = [msg]
+
+    sub.ack_all_pending()
+
+    assert sub.pending_acks == [msg]
+
+
+@pytest.mark.asyncio
+async def test_ack_all_pending_retries_only_the_failure(mock_client):
+    """The retry is the whole point of keeping it: the next poll ACKs it and
+    nothing else, so a transient failure costs one redelivery window and not a
+    duplicate."""
+    _, client = mock_client
+    client.ack.side_effect = [0, 1]
+    conn = make_connection(asyncio.get_running_loop())
+    sub = conn.subscribe("t/+/events")
+    sub.pending_acks = [
+        make_mqtt_message("t/aa/events", {}, qos=1, mid=1),
+        make_mqtt_message("t/aa/events", {}, qos=1, mid=2),
+    ]
+
+    sub.ack_all_pending()
+    client.ack.reset_mock()
+    client.ack.side_effect = None
+    client.ack.return_value = 0
+    sub.ack_all_pending()
+
+    client.ack.assert_called_once_with(2, 1)
     assert sub.pending_acks == []
 
 
