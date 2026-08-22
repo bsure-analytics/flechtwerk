@@ -8,8 +8,11 @@ caller — the framework reads nothing from the environment.
 Flechtwerk has exactly two stage shapes, both built on the same contract:
 
 - an **[Extractor](extractor.md)** brings an external source into Kafka — polling
-  it on a timer, or receiving pushed messages with the
-  **[MQTT Extractor](mqtt.md)** — exactly-once from its resume cursor to Kafka;
+  it on a timer, exactly-once from its resume cursor to Kafka, or receiving pushed
+  messages with the **[MQTT Extractor](mqtt.md)**, which is exactly-once within a
+  process lifetime and at-least-once across a crash: an MQTT ACK cannot join a
+  Kafka transaction, so a batch committed but not yet ACKed is redelivered and
+  written again. Carry a payload identity and dedupe downstream if that matters;
 - a **[Transformer](transformer.md)** consumes Kafka topics and publishes derived
   records, with exactly-once delivery.
 
