@@ -1,7 +1,11 @@
+import base64
+import json
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from flechtwerk.attribute import ANY, DATE, DATETIME, TIME
+import pytest
+
+from flechtwerk.attribute import ANY, BYTES, DATE, DATETIME, DICT, LIST, TIME, Attribute, Record
 
 
 def test_datetime_from_iso_utc_round_trip():
@@ -164,3 +168,100 @@ def test_any_rejects_timedelta():
 
     with pytest.raises(TypeError, match="no encoder for timedelta"):
         ANY.encode(timedelta(hours=13, minutes=30))
+
+
+def test_bytes_round_trip():
+    original = "SGVsbG8sIEZsZWNodHdlcms="
+    decoded = BYTES.decode(original)
+    assert decoded == b"Hello, Flechtwerk"
+    assert BYTES.encode(decoded) == original
+
+
+def test_bytes_empty_round_trip():
+    """b"" is a legal value, not an absence — the empty string is its wire form."""
+    assert BYTES.decode("") == b""
+    assert BYTES.encode(b"") == ""
+
+
+def test_bytes_covers_the_full_octet_range():
+    """The whole 0..255 range survives, including the bytes no UTF-8 decoder
+    would accept — that is the point of the codec."""
+    blob = bytes(range(256))
+    assert BYTES.decode(BYTES.encode(blob)) == blob
+
+
+def test_bytes_encodes_standard_alphabet_with_padding():
+    """RFC 4648 §4, not §5: `+` and `/`, and the padding stays. A urlsafe
+    variant would be a different codec, not a lenient reading of this one."""
+    blob = bytes([0xFB, 0xEF, 0xFF])
+    assert BYTES.encode(blob) == "++//"
+    assert BYTES.encode(b"A") == "QQ=="
+    with pytest.raises(ValueError):
+        BYTES.decode("--__")
+
+
+def test_bytes_rejects_whitespace_and_non_alphabet():
+    """`validate=True`: the stdlib default would discard these characters and
+    hand back a plausible value — repairing the input, which the framework's
+    decoders never do."""
+    for wire in ("SGVs bG8=", "SGVsbG8=\n", "*"):
+        with pytest.raises(ValueError):
+            BYTES.decode(wire)
+
+
+def test_bytes_rejects_non_canonical_trailing_bits():
+    """`"QR=="` decodes to `b"A"` under the stdlib just like `"QQ=="` does.
+    Accepting it would make the decoder non-injective, so a decode/re-encode
+    cycle would silently rewrite the wire form."""
+    assert base64.b64decode("QR==", validate=True) == b"A"
+    with pytest.raises(ValueError, match="non-canonical base64"):
+        BYTES.decode("QR==")
+
+
+def test_bytes_rejects_excess_padding_and_trailing_data():
+    for wire in ("QUJD=", "QUJDRA==extra"):
+        with pytest.raises(ValueError):
+            BYTES.decode(wire)
+
+
+def test_bytes_rejects_non_str_wire_value():
+    """JSON only ever yields `str` here; a raw `bytes` would slip past
+    `b64decode` itself, so the codec names the type instead."""
+    with pytest.raises(TypeError, match="expected a base64 str, got bytes"):
+        BYTES.decode(b"QUJD")
+
+
+def test_bytes_encode_rejects_bytearray_and_memoryview():
+    """Exact-type discipline (the int/bool precedent): both encode happily but
+    read back as `bytes`, so the codec would not round-trip its own values."""
+    for value in (bytearray(b"AB"), memoryview(b"AB")):
+        with pytest.raises(AssertionError, match="expected bytes"):
+            BYTES.encode(value)  # type: ignore[arg-type]
+
+
+def test_bytes_encode_rejects_str():
+    with pytest.raises(AssertionError, match="expected bytes, got str"):
+        BYTES.encode("AB")  # type: ignore[arg-type]
+
+
+def test_any_rejects_bytes():
+    """BYTES is deliberately not wired into the ANY walker: an ANY field would
+    encode binary to a base64 string and read it back as that string, with
+    nothing on the wire to tell it from text. Binary in a record is an explicit
+    `Attribute(name, BYTES)`."""
+    with pytest.raises(TypeError, match="no encoder for bytes"):
+        ANY.encode(b"AB")
+
+
+def test_bytes_attribute_round_trips_through_a_record():
+    THUMBNAIL = Attribute("thumbnail", BYTES)
+    record = Record({THUMBNAIL: b"\x89PNG\r\n\x1a\n"})
+    assert record.raw == {"thumbnail": "iVBORw0KGgo="}
+    assert json.loads(json.dumps(record.raw)) == record.raw
+    assert Record.wrap(record.raw)[THUMBNAIL] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_bytes_composes_with_the_container_constructors():
+    assert LIST(BYTES).encode([b"AB", b"CD"]) == ["QUI=", "Q0Q="]
+    assert LIST(BYTES).decode(["QUI=", "Q0Q="]) == [b"AB", b"CD"]
+    assert DICT(BYTES).encode({"k": b"AB"}) == {"k": "QUI="}

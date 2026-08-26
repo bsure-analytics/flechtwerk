@@ -7,6 +7,7 @@ from .attribute import (
 from .codec import Codec, Decoder, Encoder
 from .codecs import (
     BOOL,
+    BYTES,
     DATE,
     DATETIME,
     DICT,
@@ -29,6 +30,7 @@ __all__ = [
     "ANY",
     "Attribute",
     "BOOL",
+    "BYTES",
     "Codec",
     "DATE",
     "DATETIME",

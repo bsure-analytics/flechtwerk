@@ -202,6 +202,11 @@ site. A few rules keep that boundary honest:
   `LIST(...)`, `RECORD` validate on every write and document the shape; `ANY` is
   the escape hatch for genuinely heterogeneous edges, not the default. The more
   precise the codec, the earlier a bad value fails.
+- **Binary goes through `BYTES`, never `ANY`.** `BYTES` carries a `bytes`
+  field as strict base64; `ANY` refuses binary outright, so the choice is
+  explicit rather than inferred. Weigh the 4/3 base64 inflation against
+  Kafka's 1 MiB record ceiling — for a message that *is* a blob, send it as a
+  `bytes` `Payload` and skip the field framing entirely.
 - **Required by default; `optional=True` only when absence is meaningful.** A
   required attribute rejects `None` at the write site so a missing value can't
   land silently as JSON `null`.

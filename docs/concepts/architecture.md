@@ -26,7 +26,7 @@ Everything ships under `src/flechtwerk/`.
 
 | Module | Responsibility |
 | --- | --- |
-| `attribute/` | `Attribute[V]` — a single, type-safe handle on a dict key carrying an explicit `Codec[V]`. Composable codec atoms (`STR`, `INT`, `BOOL`, `DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`) and constructors (`LIST`, `SET`, `TUPLE`, `DICT`). `Record` wraps a JSON-native `dict[str, Any]` (`.raw`) and runs a codec on every write. |
+| `attribute/` | `Attribute[V]` — a single, type-safe handle on a dict key carrying an explicit `Codec[V]`. Composable codec atoms (`STR`, `INT`, `BOOL`, `BYTES`, `DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`) and constructors (`LIST`, `SET`, `TUPLE`, `DICT`). `Record` wraps a JSON-native `dict[str, Any]` (`.raw`) and runs a codec on every write. |
 | `types.py` | `Config`, `Event`, `State` (`Record` subclasses) plus the `IncomingMessage` / `Message` dataclass envelopes (timestamps are real `datetime`, not millis), the `Payload` union (`bytes` / `str` / `Event`) that `Message` accepts — and validates at construction — for outgoing keys and values, and `InvalidMessageError`. |
 | `stage.py` | The non-exported `Stage` base shared by both stage kinds: the `config_topics` declaration, the global `configs` store handle, the `enrich_config` / `extract_state_key` / `on_invalid_message` hooks, and the default no-op async context-manager lifecycle. |
 | `extractor.py` | `Extractor` (ABC; `poll` is abstract), `ExtractorRunner`, `TokenRebalanceListener`, and `token_for`. Async polling with `asyncio.gather` for concurrent config processing; config ownership is token-sharded across replicas, except for broker-dispatched (MQTT) stages, whose work an external broker divides instead. |

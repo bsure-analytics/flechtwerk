@@ -1,7 +1,7 @@
 """Built-in codec atoms and constructors.
 
-The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `DATE`, `FLOAT`,
-`DATETIME`, `TIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
+The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `BYTES`, `DATE`,
+`FLOAT`, `DATETIME`, `TIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
 `DICT`) take an inner codec and return a parameterized container codec.
 Element validation is uniform — `LIST(STR).encode([1, 2, 3])` rejects
 non-strings (each element runs through `STR.encode`).
@@ -12,6 +12,7 @@ class and the recursive `_encode_any` walker, respectively.
 Naming convention: all atoms and constructors use uppercase identifiers
 matching the ALL_CAPS style of the typed-attribute call sites.
 """
+import base64
 from datetime import date, datetime, time
 from typing import Any, Final
 
@@ -33,6 +34,49 @@ def _encode_datetime(dt: datetime) -> str:
     """
     encoded = dt.isoformat()
     return encoded.replace("+00:00", "Z") if dt.tzname() == "UTC" else encoded
+
+
+def _decode_bytes(v: Any) -> bytes:
+    """Decoder for `BYTES` — strict, canonical RFC 4648 §4 base64.
+
+    Two strictness steps beyond the stdlib default, both deliberate:
+
+    `validate=True` rejects whitespace and any non-alphabet character
+    instead of silently discarding it — `b64decode("QU JD")` returning
+    `b"ABC"` is exactly the repair-the-input behaviour this codebase
+    refuses (the `decode_key` argument).
+
+    The re-encode comparison then rejects a token whose trailing bits are
+    non-zero (`"QR=="` decodes to `b"A"`, same as `"QQ=="`), which
+    `validate=True` still lets through. Without it the decoder is not
+    injective: two distinct wire strings would decode to one value and
+    a decode/re-encode cycle would rewrite the wire form underneath a
+    `State` dedup or a value-equality check. This is the opposite call to
+    `DATETIME`, which accepts a 3-digit fraction and normalizes on write —
+    a millisecond timestamp is a legitimate alternative spelling that other
+    systems emit, whereas no correct base64 encoder emits stray trailing
+    bits.
+
+    Neither error names the value: a blob attribute is large by nature and
+    a megabyte in an exception message helps nobody.
+    """
+    if type(v) is not str:
+        raise TypeError(f"expected a base64 str, got {type(v).__name__}")
+    decoded = base64.b64decode(v, validate=True)
+    if base64.b64encode(decoded).decode("ascii") != v:
+        raise ValueError(f"non-canonical base64 ({len(v)} chars): re-encoding does not reproduce the input")
+    return decoded
+
+
+def _encode_bytes(b: bytes) -> str:
+    """Encoder for `BYTES` — standard alphabet, padded, ASCII output.
+
+    Exact-type check (the `_validate` discipline): `bytearray` and
+    `memoryview` encode just as happily but read back as `bytes`, so
+    accepting them would make the codec silently non-round-tripping.
+    """
+    assert type(b) is bytes, f"expected bytes, got {type(b).__name__}"
+    return base64.b64encode(b).decode("ascii")
 
 
 def _validate[T](t: type[T]) -> Decoder[T]:
@@ -57,6 +101,24 @@ def _validate[T](t: type[T]) -> Decoder[T]:
 STR: Final = Codec[str](_validate(str), _validate(str))
 INT: Final = Codec[int](_validate(int), _validate(int))
 BOOL: Final = Codec[bool](_validate(bool), _validate(bool))
+BYTES: Final = Codec[bytes](_decode_bytes, _encode_bytes)
+"""Codec for `bytes` — RFC 4648 §4 base64 (standard alphabet, padded) as a JSON string.
+
+The one atom whose Python type is not JSON-native, so the wire form is a
+lossy-looking `str` that only this codec knows how to read back. Two
+consequences worth declaring:
+
+`bytes` is deliberately absent from the `ANY` walker — an `ANY` field
+holding binary would encode to a base64 string and decode back as that
+string, indistinguishable from text, and `Record.wrap` would start
+committing raw dicts to a base64 wire form nobody declared. Binary in a
+record is an explicit `Attribute(name, BYTES)` or a `TypeError`.
+
+Base64 costs 4/3 of the payload before JSON escaping, against Kafka's
+1 MiB record ceiling (see `state_record_bytes`). For a whole message that
+*is* a blob, `Payload`'s `bytes` member ships it pre-encoded with no
+framing at all — `BYTES` is for a binary *field* beside other typed ones.
+"""
 DATE: Final = Codec[date](date.fromisoformat, date.isoformat)
 FLOAT: Final = Codec[float](_validate(float), _validate(float))
 DATETIME: Final = Codec[datetime](datetime.fromisoformat, _encode_datetime)
@@ -128,6 +190,7 @@ fully-qualified import for the framework internals that need it.
 
 __all__ = [
     "BOOL",
+    "BYTES",
     "DATETIME",
     "DICT",
     "FLOAT",

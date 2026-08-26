@@ -49,10 +49,12 @@ The read distinction is carried by the **method**, not the declaration:
 
 Codecs are built from atoms and constructors:
 
-- **Atoms:** `STR`, `INT`, `BOOL`, `DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`.
+- **Atoms:** `STR`, `INT`, `BOOL`, `BYTES`, `DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`.
 - **Constructors:** `LIST(V)`, `SET(V)`, `TUPLE(V)`, `DICT(V)`.
 
 Nest them freely — `DICT(LIST(INT))`, `LIST(RECORD)`, and so on — and the whole tree is validated on every write.
+
+`BYTES` is the one atom whose Python type is not JSON-native: it carries binary as RFC 4648 base64 (standard alphabet, padded), strictly — whitespace, stray characters and non-canonical trailing bits are all rejected rather than repaired, so the wire form and the value stay in step. Binary is never *inferred*: `ANY` still refuses `bytes`, so a blob reaches the wire through an explicit `Attribute(name, BYTES)` or not at all. Base64 costs 4/3 of the payload against Kafka's 1 MiB record ceiling — for a message that *is* a blob, send it as a `bytes` `Payload` instead and skip the framing.
 
 ## Spreading: Enrich Without Mutating
 
