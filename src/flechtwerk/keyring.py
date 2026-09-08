@@ -24,6 +24,7 @@ silently last-writer-wins into wrong-key encryption.
 import base64
 import json
 import logging
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
 from .observer import Observer
@@ -171,10 +172,10 @@ class Keyring:
         return sorted(self.keys)
 
 
-# --- process-global secret runtime ---
+# --- secret runtime: process-global keyring, context-scoped observer ---
 
 _keyring: Keyring | None = None
-_observer: Observer = Observer()
+_observer: ContextVar[Observer] = ContextVar("flechtwerk_secret_observer", default=Observer())
 
 
 def install_keyring(keyring: Keyring) -> None:
@@ -219,58 +220,52 @@ def active_keyring() -> Keyring:
     return _keyring
 
 
-def set_secret_observer(observer: Observer) -> None:
-    """Install the observer the codec emits secret events through — first wins.
+def set_secret_observer(observer: Observer) -> Token[Observer]:
+    """Bind the observer the codec emits secret events through — in THIS context.
 
-    Set by the module runner at startup so `secret_plaintext_read` /
-    `secret_decrypted`, fired deep in a lazy `ConfigStore.get()` where no
-    observer is in scope, still reach Prometheus. Defaults to the no-op
-    `Observer`; tooling that only encrypts never needs it.
+    A stage binds its own observer in `__aenter__` and resets it with the
+    returned token in `__aexit__` (`token.var.reset(token)`, same task). The
+    binding lives in the asyncio context, and every task the runner spawns
+    afterwards — poll cycles, gathered buckets, token tasks, the paho socket
+    callbacks — inherits a copy, so a `secret_decrypted` /
+    `secret_plaintext_read` fired deep in a lazy `ConfigStore.get()`, where
+    no observer is in scope, reaches THIS stage's observer and carries its
+    `metrics_labels`. Several stages in one process are several tasks with
+    several contexts, so each stage's secret metrics are its own — nothing is
+    shared, nothing is first-wins. (Fanning one event out to every stage's
+    observer would count each decrypt once per stage.) Outside any stage —
+    ops tooling that only encrypts — the default is the no-op `Observer`.
 
-    The secret observer is process-global (like the keyring), but per-stage
-    observers differ (each carries its own `metrics_labels`). Unlike the
-    keyring — where a conflicting install is a *correctness* bug and raises —
-    a second, different observer is only a metrics-labelling concern, so it is
-    not fatal: the first *real* (non-default) observer wins and a differing
-    later real one logs a WARNING and is ignored. The no-op default `Observer`
-    is freely replaceable (a metrics-enabled stage entered after a
-    metrics-disabled one still installs its observer). That keeps two embedded
-    stages' secret metrics attributed to one consistent observer instead of
-    silently flipping to the last one entered.
+    Unlike the keyring, which stays process-global: co-hosted stages reading
+    one config topic must agree on key material anyway.
     """
-    global _observer
-    if _observer is observer:
-        return
-    if type(_observer) is not Observer:
-        # A real (non-default) observer is already installed and this one differs.
-        log.warning(
-            "A secret observer is already installed; keeping the first. Secret metrics are "
-            "process-global, so multiple stages in one process share one observer's labels."
-        )
-        return
-    _observer = observer
+    return _observer.set(observer)
 
 
 def active_observer() -> Observer:
-    """The installed secret observer (no-op `Observer` until one is set)."""
-    return _observer
+    """The secret observer bound in the current context (no-op `Observer` by default)."""
+    return _observer.get()
 
 
-def _override_secret_runtime(keyring: Keyring | None, observer: Observer | None) -> tuple[Keyring | None, Observer]:
+def _override_secret_runtime(
+    keyring: Keyring | None, observer: Observer | None,
+) -> tuple[Keyring | None, Token[Observer]]:
     """Test-only: force the runtime and return the previous state for restore.
 
     Not public API — the sanctioned test entry point is
     `flechtwerk.testing.installed_keyring`, which pairs this with
     `_restore_secret_runtime` so suites cannot leak keyrings across tests.
+    The observer half is a context binding, so both halves must run in the
+    same context (a fixture's setup and teardown do).
     """
-    global _keyring, _observer
-    previous = (_keyring, _observer)
+    global _keyring
+    previous = (_keyring, _observer.set(observer if observer is not None else Observer()))
     _keyring = keyring
-    _observer = observer if observer is not None else Observer()
     return previous
 
 
-def _restore_secret_runtime(previous: tuple[Keyring | None, Observer]) -> None:
+def _restore_secret_runtime(previous: tuple[Keyring | None, Token[Observer]]) -> None:
     """Test-only: restore a runtime snapshot taken by `_override_secret_runtime`."""
-    global _keyring, _observer
-    _keyring, _observer = previous
+    global _keyring
+    _keyring, token = previous
+    _observer.reset(token)

@@ -19,7 +19,7 @@ KEY_A = bytes(range(32))
 KEY_B = bytes(range(32, 64))
 
 # The autouse `_clean_secret_runtime` fixture (tests/conftest.py) isolates the
-# process-global keyring/observer per test.
+# secret runtime (process-global keyring, context-bound observer) per test.
 
 
 # --- construction & validation ---

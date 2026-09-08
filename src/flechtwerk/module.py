@@ -40,7 +40,7 @@ from reactor_di import CachingStrategy, module, lookup
 from .configs import ConfigStore
 from .extractor import Extractor, ExtractorRunner
 from .keyring import Keyring, install_keyring, set_secret_observer
-from .metrics import Metrics
+from .metrics import Exporter, Metrics, acquire_exporter, release_exporter
 from .observer import Observer, PrometheusObserver
 from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
@@ -235,6 +235,14 @@ class Flechtwerk(ABC):
     the concrete container directly — declare ``make[Flechtwerk,
     _FlechtwerkModule]`` and let the parent module fill every ``lookup``
     field by attribute name.
+
+    Several stages may share one process: build one handle per stage and
+    run them as sibling tasks (``asyncio.TaskGroup``, so one stage's crash
+    takes the process down), each with its own ``application_id`` and
+    ``client_id``. A ``metrics_port`` they share is ONE scrape endpoint —
+    the stages are told apart by their ``metrics_labels`` values — and a
+    ``keyring`` they pass must be the same one. See the getting-started
+    guide, "Several Stages in One Process".
     """
 
     @classmethod
@@ -359,7 +367,6 @@ class _FlechtwerkModule(Flechtwerk):
     metrics_port: lookup[int]
     mqtt: lookup[MqttBrokerConfig | None]
     poll_interval: lookup[timedelta | None]
-    prometheus_observer: PrometheusObserver
     registry: CollectorRegistry = REGISTRY
     stage: lookup[Extractor | Transformer]
     transformer_runner: TransformerRunner
@@ -554,6 +561,22 @@ class _FlechtwerkModule(Flechtwerk):
         return AIOKafkaProducer(**kwargs)
 
     @cached_property
+    def exporter(self) -> Exporter | None:
+        """This stage's seat at the process's scrape endpoint (None when disabled).
+
+        Stages naming the same ``metrics_port`` share ONE server and ONE set
+        of metric families — the first stage's ``metrics`` is adopted for the
+        port, later ones are told apart by their ``metrics_labels`` values;
+        ``flechtwerk.metrics.acquire_exporter`` has the compatibility rules. A
+        port held by a foreign process raises OSError — let it crash so K8s
+        surfaces the problem in pod logs and CrashLoopBackOff makes it
+        impossible to ignore.
+        """
+        if self.metrics_port <= 0:
+            return None
+        return acquire_exporter(self.metrics_port, self.metrics, self.metrics_labels)
+
+    @cached_property
     def membership_consumer(self) -> AIOKafkaConsumer | None:
         """Consumer holding an extractor's group membership (None for transformers).
 
@@ -585,19 +608,6 @@ class _FlechtwerkModule(Flechtwerk):
         )
 
     @cached_property
-    def metrics_server(self) -> tuple[Any, Any] | None:
-        """The Prometheus scrape HTTP server (None when disabled).
-
-        Port collisions raise OSError — let it crash so K8s surfaces the
-        problem in pod logs and CrashLoopBackOff makes it impossible to
-        ignore.
-        """
-        if self.metrics_port <= 0:
-            return None
-        from prometheus_client import start_http_server
-        return start_http_server(addr="0.0.0.0", port=self.metrics_port, registry=self.registry)
-
-    @cached_property
     def observer(self) -> Observer:
         """No-op when metrics are disabled, PrometheusObserver otherwise."""
         return self.prometheus_observer if self.metrics_port > 0 else Observer()
@@ -605,6 +615,21 @@ class _FlechtwerkModule(Flechtwerk):
     @cached_property
     def path(self) -> Path:
         return Path(tempfile.mkdtemp()) / "state"
+
+    @cached_property
+    def prometheus_observer(self) -> PrometheusObserver:
+        """Emits through the PORT's metric families, labelled with this stage's values.
+
+        Built by hand rather than DI-wired: reactor-di would wire ``metrics``
+        to this container's own instance, but the families live on the
+        exporter — adopted from whichever stage named the port first.
+        """
+        exporter = self.exporter
+        assert exporter is not None, "prometheus_observer is reached only while metrics_port > 0"
+        observer = PrometheusObserver()
+        observer.metrics = exporter.metrics
+        observer.metrics_labels = self.metrics_labels
+        return observer
 
     @cached_property
     def runner(self) -> ExtractorRunner | TransformerRunner:
@@ -617,17 +642,22 @@ class _FlechtwerkModule(Flechtwerk):
 
     async def __aenter__(self) -> Self:
         # Bring up the scrape endpoint first so health probes see it as
-        # soon as the process is up.
-        _ = self.metrics_server
+        # soon as the process is up — or join the one another stage in this
+        # process already serves on the same port.
+        _ = self.exporter
 
-        # Install the process keyring (idempotent if of() already did; this
-        # also covers the embedded-module path). Wire the observer so the
-        # ENCRYPTED codec's plaintext/decrypt events — fired deep in a lazy
-        # config read, with no observer in scope — still reach Prometheus, and
-        # publish the startup keyring gauge.
+        # Bind this stage's observer for the ENCRYPTED codec's plaintext /
+        # decrypt events, which fire deep in a lazy config read with no
+        # observer in scope. The binding is context-scoped: every task the
+        # runner spawns inherits it, so co-hosted stages each keep their own
+        # labels. Reset by token in __aexit__ — the same task, by run()'s
+        # construction.
+        self._secret_observer_token = set_secret_observer(self.observer)
+
+        # Install the process keyring (idempotent if another stage in this
+        # process already did) and publish the startup keyring gauge.
         if self.keyring is not None:
             install_keyring(self.keyring)
-            set_secret_observer(self.observer)
             for kid in self.keyring.kids():
                 self.observer.keyring_key_loaded(kid)
 
@@ -670,13 +700,17 @@ class _FlechtwerkModule(Flechtwerk):
             # for it here would mint a temp directory for a store nothing
             # ever wrote.
             await self.inner_store.close()
-        # Stop the scrape server last so a final scrape can land mid-shutdown.
-        # Access via __dict__ to avoid triggering the cached_property if the
-        # endpoint was never started.
-        server_tuple = self.__dict__.get("metrics_server")
-        if server_tuple is not None:
-            server, _thread = server_tuple
-            server.shutdown()
+        # Unbind the secret observer (a token reset needs the task that set
+        # it, which run() guarantees), then leave the scrape endpoint last so
+        # a final scrape can land mid-shutdown — the last stage out stops the
+        # server. Both via __dict__: neither may be minted for a startup that
+        # never got that far.
+        token = self.__dict__.get("_secret_observer_token")
+        if token is not None:
+            token.var.reset(token)
+        exporter = self.__dict__.get("exporter")
+        if exporter is not None:
+            release_exporter(exporter, self.metrics_labels)
 
     async def run(self) -> Never:  # noqa: return type — PyCharm misreads await of Never inside async with
         """Run the configured stage (see ``Flechtwerk.run`` for the contract).

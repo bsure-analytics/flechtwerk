@@ -18,7 +18,7 @@ Wiring is done through **reactor-di**. `Flechtwerk.of(...)` returns a private `_
 !!! note "When a Transport Belongs in the Framework"
     A transport adapter earns a place in the framework only when its correctness depends on runner delivery semantics. MQTT qualifies because its manual-ACK protocol (ACK only after Kafka durability) leans on the extractor runner's re-entry contract; a plain HTTP poller does not, and stays in application code.
 
-The framework has no CLI, no module-level `os.getenv`, no `load_dotenv`, and no opinions about how applications are packaged or deployed. All configuration is injected by the caller.
+The framework has no CLI, no module-level `os.getenv`, no `load_dotenv`, and no opinions about how applications are packaged or deployed — one stage per process or [several](../guides/getting-started.md#several-stages-in-one-process). All configuration is injected by the caller.
 
 ## Module Map
 
@@ -36,7 +36,7 @@ Everything ships under `src/flechtwerk/`.
 | `state.py` | The `StateStore` port and its `RocksDBStateStore` / `ChangelogStateStore` adapters. `rocksdict` is imported lazily on first RocksDB open. |
 | `module.py` | `Flechtwerk` — the narrow application-facing handle — plus the private `_FlechtwerkModule` reactor-di container that lazily creates and shares all Kafka resources. Also hosts `MqttBrokerConfig`. |
 | `mqtt.py` | The MQTT→Kafka bridge: `MqttConnection`, `MqttSubscription`, and `MqttExtractor`. The only framework module importing paho-mqtt eagerly (shipped as the `flechtwerk[mqtt]` extra). |
-| `metrics.py` / `observer.py` | The `Observer` port and its `PrometheusObserver` adapter. Runners emit observer events; label *names* are caller-provided via `metrics_labels`. |
+| `metrics.py` / `observer.py` | The `Observer` port and its `PrometheusObserver` adapter. Runners emit observer events; label *names* are caller-provided via `metrics_labels`. One scrape endpoint per `metrics_port`, shared by every stage in the process that names it. |
 | `testing.py` | Duck-typed test doubles (`FakeKafkaConsumer` / `FakeKafkaProducer`, `make_record()`, `RecordingObserver`, `InMemoryStateStore`, and MQTT doubles). Imports no paho. |
 
 ## The Two Stage Engines
@@ -73,4 +73,4 @@ A transformer may additionally declare `config_topics` and look entries up via `
 
 ## Application Lifecycle
 
-`Flechtwerk` is an async context manager. On entry the Prometheus scrape server starts (outermost layer), then `validate_topics` runs (a transformer needs at least one input topic, an extractor at least one config topic, and the two lists must be disjoint), input and changelog partition counts are validated for transformers (config topics are exempt — except an extractor's own, which must share one count: the token space), and config topics are existence-checked so a missing one fails fast. `compression_type` defaults to `"zstd"` — JSON compresses roughly 13x, which is why the package depends on `aiokafka[zstd]`.
+`Flechtwerk` is an async context manager. On entry the stage takes its seat at the process's Prometheus scrape endpoint — started if it is the first stage on that `metrics_port`, joined otherwise; the outermost layer — binds its secret observer into its task context and installs the process keyring, then `validate_topics` runs (a transformer needs at least one input topic, an extractor at least one config topic, and the two lists must be disjoint), input and changelog partition counts are validated for transformers (config topics are exempt — except an extractor's own, which must share one count: the token space), and config topics are existence-checked so a missing one fails fast. `compression_type` defaults to `"zstd"` — JSON compresses roughly 13x, which is why the package depends on `aiokafka[zstd]`.

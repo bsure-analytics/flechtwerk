@@ -325,18 +325,24 @@ installed at startup:
   freely.
 - Standalone producers and ops tooling call `install_keyring(...)` directly (no
   Flechtwerk handle needed).
-- The secret **observer** is process-global too, but per-stage observers carry
-  different labels, so a differing second install is not fatal (unlike the
-  keyring): the first observer wins and a later one logs a warning. Run one
-  stage per process for unambiguous secret metrics.
+- The secret **observer** is bound per stage, not per process: each stage's
+  `__aenter__` binds its own into its task context, and asyncio hands that
+  binding to every task the runner spawns, so `secret_decrypts_total` and
+  `secret_plaintext_reads_total` carry the `metrics_labels` of the stage whose
+  config read fired them — [several stages in one
+  process](../guides/getting-started.md#several-stages-in-one-process)
+  included. Outside any stage (ops tooling that only encrypts) the observer is
+  the no-op default.
 - `flechtwerk.testing.installed_keyring` is a context manager that installs a
   keyring and **restores the previous state on exit**, so test suites cannot
   leak keyrings across tests.
 
-This is process-global mutable state — the price of module-level `Attribute`
-constants, distinct from `Stage.configs` (per-instance, injected by its own
-runner). A contextvar or codec-level binding is the seam that could replace it
-if multi-keyring processes are ever needed.
+The keyring is process-global mutable state — the price of module-level
+`Attribute` constants, distinct from `Stage.configs` (per-instance, injected by
+its own runner) — and deliberately so: co-hosted stages reading one config
+topic must agree on key material anyway. The observer already rides the
+contextvar seam that could carry a per-stage keyring, should multi-keyring
+processes ever be needed.
 
 ### Kid Hygiene
 

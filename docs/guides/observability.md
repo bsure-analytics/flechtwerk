@@ -9,7 +9,7 @@ essentially zero cost.
 
 ## Enabling Metrics
 
-Metrics are off by default. Turn them on per instance through
+Metrics are off by default. Turn them on per stage through
 [`Flechtwerk.of(...)`](getting-started.md#running-a-stage):
 
 ```python
@@ -38,6 +38,26 @@ await Flechtwerk.of(
     types; it knows nothing about your labels. Each metric's label set is *your*
     `metrics_labels` keys plus, on some metrics, a framework-owned extra (`topic`,
     `partition`, or `reason`) noted below.
+
+### Several Stages, One Endpoint
+
+A process is one scrape target, however many stages it runs. Stages that pass
+the same `metrics_port` share one HTTP server and one set of metric families:
+the first stage to start brings the endpoint up, the others join it, and the
+`process_*` / `python_*` series appear once. What tells the stages apart is
+their `metrics_labels` **values** — `{"stage": "rekey"}` against
+`{"stage": "memo"}` — so the framework refuses, at startup, anything that
+would make one port ambiguous:
+
+- **identical `metrics_labels`** on two stages — their series would merge
+  indistinguishably (the default `{}` on both counts);
+- **different `metrics_labels` names** — a Prometheus metric family has one
+  label set;
+- **a different `max_poll_records`** — the `batch_size` ladder derives from it.
+
+A port held by another process is still a deployment error and crashes the
+stage. The rest of the co-hosting rules are in
+[Several Stages in One Process](getting-started.md#several-stages-in-one-process).
 
 ## The Metric Catalog
 

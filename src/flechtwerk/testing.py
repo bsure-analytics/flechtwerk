@@ -175,8 +175,9 @@ def installed_keyring(keyring: Keyring | None = None, observer: Observer | None 
     """Install a keyring for the duration of the block, restoring the prior state on exit.
 
     The sanctioned way to exercise ``flechtwerk.secrets`` in tests: it saves
-    and restores the process-global secret runtime (keyring + observer) so
-    suites cannot leak keyrings across tests. Defaults to `fixture_keyring()`.
+    and restores the secret runtime (the process-global keyring and the
+    context-bound observer) so suites cannot leak keyrings across tests.
+    Defaults to `fixture_keyring()`.
     Doubles as the basis for a pytest fixture::
 
         @pytest.fixture

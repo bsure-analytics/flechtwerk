@@ -4,7 +4,7 @@ An `MqttExtractor` is a push-driven [`Extractor`](extractor.md): instead of poll
 
 `flechtwerk.mqtt` bridges a push-driven MQTT source into the extractor model out of the box. The framework owns everything protocol-shaped:
 
-- one shared paho connection per process driven by the asyncio event loop (no threads);
+- one paho connection per stage driven by the asyncio event loop (no threads);
 - persistent MQTT 5 sessions with a stable client id and a configurable session expiry;
 - shared subscriptions, so the rare deployment that needs a second replica divides the traffic without any Kafka-side coordination (see [Replicas and Scaling](#replicas-and-scaling));
 - manual ACKs — a batch is ACKed to the MQTT broker only once its transaction committed in Kafka (at the top of the next poll, per the runner's re-entry contract); an ACK that does not leave keeps its message pending and is retried at the top of the poll after, so "pending" means unconfirmed rather than unconfirmed-as-of-the-last-attempt. Within a process lifetime that makes delivery into Kafka exactly-once — an aborted page is rolled back, never ACKed. Across a crash it is at-least-once: the MQTT broker ACK cannot join a Kafka transaction, so messages committed but not yet ACKed are redelivered and written again — carry a payload identity and dedupe downstream if that matters;
@@ -140,8 +140,13 @@ actually bite:
   stages deliberately instead of changing a replica count — and a deliberate
   retirement is the one time you need the session cleanup described below.
 
-What the multi-replica shape buys you is one deployment instead of several.
-Take it when that genuinely matters, and read the next section first.
+Several stages need not mean several deployments, either: single-replica
+stages can share one process, one `Flechtwerk` handle each — see
+[Several Stages in One
+Process](getting-started.md#several-stages-in-one-process). What the
+multi-replica shape still buys you is one `application_id` and one config topic
+to manage. Take it when that genuinely matters, and read the next section
+first.
 
 ### If You Must Run More Than One
 

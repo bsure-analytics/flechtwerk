@@ -158,6 +158,8 @@ No `configs`, no bridge, no `enrich_config`. The default `extract_state_key` is 
 
 What you give up is real, so weigh it: an extra topic and hop (one more transaction boundary, and its latency), the original key has to travel in the value because the repartition replaced it, the [size ceiling moves](exactly-once.md#constraints) from the table to the individual record (one `State` is one changelog record, capped near 1 MiB), and the table stops being globally readable — a task answers only for the partitions it owns, which is precisely what a config topic was buying. The hop's input partition count is also frozen once its state exists.
 
+The two hops need not be two deployments: they can share a process, one `Flechtwerk` handle each, run as sibling tasks — see [Several Stages in One Process](../guides/getting-started.md#several-stages-in-one-process).
+
 !!! note "Why the Store Is Not RocksDB-Backed"
 
     Kafka Streams materializes a GlobalKTable into RocksDB with a checkpoint, so a restart resumes from the checkpointed offset. Flechtwerk's pods are ephemeral and hold no persistent volume, so every boot reads the topic in full whatever the store is made of — RocksDB would only move the bytes onto a disk that dies with the pod, and put an LSM read in the path of every lookup. The checkpoint is the part that would pay off, and it is exactly what the [enrichment contract](#enrichment-on-the-way-in) rules out: a restore that skipped `enrich_config` is the divergence KIP-813 forbids. The framework does have a RocksDB store with a changelog and no size contract — it is task state, and the hop above is how you reach it.

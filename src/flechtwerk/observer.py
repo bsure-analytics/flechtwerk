@@ -55,8 +55,8 @@ class Observer:
 
     # Secret / keyring events (flechtwerk.secrets). `keyring_key_loaded` fires
     # once per key at startup; the other two fire from the `ENCRYPTED` codec
-    # deep in a lazy config read, through the process-global observer installed
-    # alongside the keyring.
+    # deep in a lazy config read, through the observer the stage bound into
+    # its asyncio context (`flechtwerk.keyring.set_secret_observer`).
     def keyring_key_loaded(self, kid: str) -> None: pass
     def secret_plaintext_read(self, scope: str) -> None: pass
     def secret_decrypted(self, scope: str, kid: str) -> None: pass

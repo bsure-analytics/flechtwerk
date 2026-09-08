@@ -125,6 +125,68 @@ See the [API reference](../api/index.md) for the full signature.
     across restarts (in Kubernetes, the pod name works well). It anchors the
     transactional producer's fencing and the MQTT session identity.
 
+### Several Stages in One Process
+
+A `Flechtwerk` handle runs one stage, and that is deliberate: everything a
+stage owns — its consumer group, transactional IDs, changelog topic, state
+store, MQTT session — is keyed by its `application_id` and `client_id`. Several
+stages therefore share a process the way they share a cluster: one handle each,
+run as sibling tasks. Here, the two hops of the [repartition
+example](../concepts/config-topics.md#graduating-to-a-repartition-hop):
+
+```python
+async def main() -> None:
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(Flechtwerk.of(
+            application_id="my-rekey",
+            bootstrap_servers="localhost:9092",
+            client_id="my-pipeline-0-rekey",    # one instance, distinct per stage
+            metrics_labels={"stage": "rekey"},
+            metrics_port=9464,
+            stage=Rekey(),
+        ).run())
+        tg.create_task(Flechtwerk.of(
+            application_id="my-memo",
+            bootstrap_servers="localhost:9092",
+            client_id="my-pipeline-0-memo",
+            metrics_labels={"stage": "memo"},
+            metrics_port=9464,                  # the same port: ONE scrape endpoint
+            stage=Memo(),
+        ).run())
+```
+
+Four rules, three of which the framework checks at startup:
+
+- **One `application_id` per stage.** It is the stage's identity — a
+  transformer's consumer group, the changelog topic, every transactional ID, an
+  MQTT extractor's `$share` group. Two stages under one `application_id` would
+  fence each other's producers and fight over one changelog.
+- **One `client_id` per stage** — `f"{pod}-{stage}"`, say. It names every Kafka
+  client the stage opens and, for an MQTT extractor, the persistent session:
+  two stages connecting with one `client_id` steal the session back and forth
+  forever, each disconnect crashing the other.
+- **One scrape endpoint per process.** Stages that pass the same `metrics_port`
+  share one HTTP server and one set of metric families, told apart by their
+  `metrics_labels` values — so give each stage a distinguishing value.
+  Identical labels, different label names, or a different `max_poll_records`
+  between them fail at startup
+  ([Observability](observability.md#several-stages-one-endpoint)).
+- **One keyring per process.** Stages with encrypted attributes must pass the
+  same `Keyring`; a different one raises at startup
+  ([Encrypted Secrets](../concepts/secrets.md)).
+
+Use a `TaskGroup` rather than a bare `asyncio.gather`: when one stage crashes,
+the group cancels its siblings, so the process exits and the orchestrator
+restarts it — *let it crash* applies to the process, not to a stage. A `gather`
+would leave the survivor running in a half-dead process.
+
+Co-host stages that form one pipeline and scale together — the two hops of a
+[repartition](../concepts/config-topics.md#graduating-to-a-repartition-hop), or
+several single-replica [MQTT bridges](mqtt.md#replicas-and-scaling). Stages you
+scale independently want separate deployments: a replica count is per process,
+so an extractor that needs one replica and a transformer that needs eight
+cannot share one.
+
 ## Next Steps
 
 - **[Extractors](extractor.md)** — bring an external source into Kafka on a timer.

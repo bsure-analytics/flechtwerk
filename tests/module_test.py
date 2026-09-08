@@ -15,6 +15,7 @@ from flechtwerk.module import (
     validate_topics,
 )
 from flechtwerk.mqtt import MqttExtractor
+from flechtwerk.observer import Observer
 from flechtwerk.transformer import Transformer
 from flechtwerk.types import Message, State
 
@@ -369,6 +370,61 @@ def test_batch_size_buckets_follow_max_poll_records():
     assert module.metrics.batch_size._upper_bounds == [
         1, 2, 5, 10, 25, 50, 99, 100, float("inf"),
     ]
+
+
+# -- several stages, one scrape endpoint ----------------------------------------
+
+
+def test_stages_sharing_a_metrics_port_share_one_exporter(free_port):
+    """Two handles naming one metrics_port take seats at ONE exporter: the
+    first handle's Metrics is adopted, the second's own never registers, and
+    each observer splats its own labels. __aexit__ releases the seat; the last
+    one out stops the server.
+    """
+    from flechtwerk.module import Flechtwerk
+
+    registry = CollectorRegistry()  # keep the process-global REGISTRY clean
+
+    def make(stage: str):
+        module = Flechtwerk.of(
+            application_id=f"app-{stage}",
+            bootstrap_servers="localhost:9092",
+            client_id=f"pod-0-{stage}",
+            metrics_labels={"stage": stage},
+            metrics_port=free_port,
+            stage=Transformer.of(input_topics=["in"], transform=noop_transform),
+        )
+        module.registry = registry
+        return module
+
+    a, b = make("a"), make("b")
+    assert a.exporter is b.exporter
+    assert a.exporter.metrics is a.metrics
+    assert b.prometheus_observer.metrics is a.metrics
+    assert b.metrics is not a.metrics
+    assert b.observer.metrics_labels == {"stage": "b"}
+
+    async def teardown():
+        await a.__aexit__(None, None, None)
+        assert a.exporter.server is not None  # b still holds the port
+        await b.__aexit__(None, None, None)
+        assert a.exporter.server is None
+
+    asyncio.run(teardown())
+
+
+def test_metrics_port_zero_takes_no_seat():
+    """Metrics off: no exporter is acquired and the observer is the no-op."""
+    from flechtwerk.module import Flechtwerk
+
+    module = Flechtwerk.of(
+        application_id="app",
+        bootstrap_servers="localhost:9092",
+        client_id="pod-0",
+        stage=Transformer.of(input_topics=["in"], transform=noop_transform),
+    )
+    assert module.exporter is None
+    assert type(module.observer) is Observer
 
 
 # -- configured_stage ----------------------------------------------------------

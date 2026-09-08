@@ -41,7 +41,7 @@ ADMIN_TOKEN = Attribute("admin_token", ENCRYPTED(STR, scope="admin_token"))
 UNSCOPED = Attribute("plain", ENCRYPTED(STR))  # scope=""
 
 # The autouse `_clean_secret_runtime` fixture (tests/conftest.py) isolates the
-# process-global keyring/observer per test.
+# secret runtime (process-global keyring, context-bound observer) per test.
 
 
 def _independent_token(header: dict, plaintext: bytes, key: bytes) -> str:
@@ -415,22 +415,42 @@ def test_plaintext_secret_error_renders_all_context():
     assert "scope='api_key'" in msg and "key='tenant-a'" in msg and "topic='cfg'" in msg
 
 
-def test_secret_observer_first_wins():
+def test_secret_observer_is_bound_per_context():
+    """Each stage binds its own observer in its task: a sibling task never sees
+    it, a task spawned afterwards inherits it, and the parent context stays
+    untouched — so co-hosted stages keep their own secret-metric labels."""
+    import asyncio
+
     from flechtwerk.keyring import active_observer, set_secret_observer
-    first, second = RecordingObserver(), RecordingObserver()
-    set_secret_observer(first)
-    assert active_observer() is first
-    set_secret_observer(second)                      # differs → keep first, warn
-    assert active_observer() is first
+
+    async def child():
+        return active_observer()
+
+    async def stage(observer):
+        set_secret_observer(observer)
+        await asyncio.sleep(0)                        # let the sibling bind in between
+        assert active_observer() is observer
+        return await asyncio.create_task(child())    # spawned after the bind → inherits it
+
+    async def main():
+        outer = active_observer()
+        first, second = RecordingObserver(), RecordingObserver()
+        seen = await asyncio.gather(stage(first), stage(second))
+        assert seen[0] is first and seen[1] is second
+        assert active_observer() is outer
+
+    asyncio.run(main())
 
 
-def test_secret_observer_same_instance_is_noop():
-    """Re-installing the same observer object is an idempotent early return, not a warning."""
+def test_secret_observer_token_resets_the_binding():
+    """`__aexit__` unbinds with the token `set_secret_observer` returned."""
     from flechtwerk.keyring import active_observer, set_secret_observer
+    before = active_observer()
     obs = RecordingObserver()
-    set_secret_observer(obs)
-    set_secret_observer(obs)                          # same object → early return
+    token = set_secret_observer(obs)
     assert active_observer() is obs
+    token.var.reset(token)
+    assert active_observer() is before
 
 
 # --- cross-language interop ---

@@ -86,6 +86,13 @@ flowchart LR
   your applications actually query — enriched, reshaped, validated, joined against
   config, keyed the way you want.
 
+Two stages need not mean two deployments — they can share a process, one
+`Flechtwerk` handle each ([Several Stages in One
+Process](getting-started.md#several-stages-in-one-process)) — but they usually
+do, because they scale differently: an extractor's replica count follows its
+config partitions, a transformer's follows its input partitions, and a replica
+count is per process.
+
 !!! tip "Wrap the Source Verbatim"
 
     The extractor's job is to preserve, not interpret. Take the raw JSON the source

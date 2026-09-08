@@ -6,9 +6,11 @@ know what they're called, which keeps it application-agnostic.
 """
 from functools import cached_property
 from itertools import count, takewhile
+from threading import Thread
 from typing import Final
+from wsgiref.simple_server import WSGIServer
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, start_http_server
 
 # Framework-internal on purpose: `PrometheusObserver` is the only consumer;
 # the application-facing surface is `metrics_port` / `metrics_labels`.
@@ -70,6 +72,10 @@ class Metrics:
     from `Flechtwerk` by attribute name. Each metric is a `cached_property`
     that builds its prometheus_client object on first access, taking
     `list(self.metrics_labels.keys()) + per_metric_extras` as `labelnames`.
+
+    One instance serves every stage on a scrape port (`acquire_exporter`
+    below adopts the first stage's); each stage's `PrometheusObserver` splats
+    its own `metrics_labels` VALUES over the shared families.
     """
 
     max_poll_records: int
@@ -383,3 +389,113 @@ class Metrics:
             self._label_names + ["topic"],
             registry=self.registry,
         )
+
+
+# --- one scrape endpoint per port ---
+#
+# A TCP port is a process resource, and so is the CollectorRegistry served on
+# it: prometheus_client refuses a second collector under a name the registry
+# already holds. So the scrape endpoint is reached through this table, keyed by
+# port. The first stage to name a port starts its server and lends it its
+# `Metrics` — those become the port's metric families — and every later stage
+# on that port adopts them, distinguished by its `metrics_labels` VALUES (the
+# Kafka Streams idiom: one JVM, many instances, a `client-id` tag apart).
+# Process-level state is legitimate here for the same reason it is for the
+# keyring: the resource it guards is process-scoped by nature, not by choice.
+
+_LabelSet = frozenset[tuple[str, str]]
+
+_exporters: dict[int, "Exporter"] = {}
+
+
+class Exporter:
+    """The scrape endpoint on one port, shared by every stage that names it.
+
+    `metrics` is adopted from the first stage on the port and outlives any one
+    stage: a counter is a process-lifetime quantity, so when the last holder
+    leaves only the server stops — the families keep their values and their
+    registration (which is what lets a later stage on this port join without
+    tripping `Duplicated timeseries`), and the server restarts on the next
+    acquire.
+    """
+
+    def __init__(self, port: int, metrics: Metrics) -> None:
+        self.holders: set[_LabelSet] = set()
+        self.metrics = metrics
+        self.port = port
+        self.server: WSGIServer | None = None
+        self.thread: Thread | None = None
+
+    def start(self) -> None:
+        self.server, self.thread = start_http_server(
+            port=self.port, addr="0.0.0.0", registry=self.metrics.registry,
+        )
+
+    def stop(self) -> None:
+        """Stop serving AND release the port — `shutdown()` alone keeps the socket bound."""
+        assert self.server is not None and self.thread is not None
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.server = self.thread = None
+
+    def check_compatible(self, candidate: Metrics) -> None:
+        """A later stage's `Metrics` must be able to adopt this port's families."""
+        adopted = self.metrics
+        if candidate.registry is not adopted.registry:
+            raise ValueError(f"stages sharing metrics port {self.port} must share one CollectorRegistry")
+        if set(candidate.metrics_labels) != set(adopted.metrics_labels):
+            raise ValueError(
+                f"stages sharing metrics port {self.port} must declare the same metrics_labels names — "
+                f"a Prometheus metric family has one label set: "
+                f"{sorted(adopted.metrics_labels)} vs {sorted(candidate.metrics_labels)}"
+            )
+        if candidate.max_poll_records != adopted.max_poll_records:
+            raise ValueError(
+                f"stages sharing metrics port {self.port} must agree on max_poll_records — "
+                f"the batch_size bucket ladder derives from it: "
+                f"{adopted.max_poll_records} vs {candidate.max_poll_records}"
+            )
+
+
+def acquire_exporter(port: int, metrics: Metrics, metrics_labels: dict[str, str]) -> Exporter:
+    """Join the scrape endpoint on `port`, starting its server if nobody serves it.
+
+    `metrics` is the calling stage's own, still-unregistered `Metrics`: the
+    first stage's is adopted as the port's families; a later stage's is read
+    for compatibility only — `registry`, `metrics_labels`, `max_poll_records`
+    — and must never have a metric property touched, since a second set of
+    collectors under the same names is exactly the `Duplicated timeseries`
+    failure this table exists to prevent. Stages on one port must agree on
+    the registry, the label NAMES (a family has one label set) and
+    `max_poll_records` (the `batch_size` ladder derives from it), and must
+    DIFFER in label values, or their series would merge indistinguishably.
+    Each violation is a `ValueError` at startup, before any metric exists. A
+    port held by a foreign process still raises `OSError` — let it crash so
+    the orchestrator surfaces it.
+    """
+    holder: _LabelSet = frozenset(metrics_labels.items())
+    exporter = _exporters.get(port)
+    if exporter is None:
+        exporter = Exporter(port, metrics)
+        exporter.start()
+        _exporters[port] = exporter
+    else:
+        exporter.check_compatible(metrics)
+        if holder in exporter.holders:
+            raise ValueError(
+                f"two stages on metrics port {port} carry identical metrics_labels "
+                f"{dict(sorted(holder))}; their series would merge — give each stage a "
+                f"distinguishing value, e.g. metrics_labels={{..., 'stage': '<name>'}}"
+            )
+        if exporter.server is None:
+            exporter.start()
+    exporter.holders.add(holder)
+    return exporter
+
+
+def release_exporter(exporter: Exporter, metrics_labels: dict[str, str]) -> None:
+    """Leave the endpoint; the last stage out stops the server (the table entry stays — see `Exporter`)."""
+    exporter.holders.discard(frozenset(metrics_labels.items()))
+    if not exporter.holders and exporter.server is not None:
+        exporter.stop()
