@@ -133,6 +133,12 @@ once per record, ever.
     instead has the same effect and is simpler — reach for the observation table
     when the lookup key only exists after transformation.
 
+    Where that table *lives* — a config topic every instance reads in full, or a
+    repartition hop with the memo in task state — follows from the key space
+    rather than from the traffic through it; the next section, [Look Up by the Key
+    You Partition By](#look-up-by-the-key-you-partition-by), is that choice in
+    full.
+
 !!! tip "Keep the Raw Topic Retained, Not Compacted"
 
     Replay reaches only as far back as the raw topic still holds. Give it
@@ -151,6 +157,78 @@ once per record, ever.
     the raw payload so the transformer can deduplicate as it refines (or make
     the refined write idempotent on that key). Duplicates in the raw log are cheap;
     duplicates leaking into the query model are not.
+
+## Look Up by the Key You Partition By
+
+A task sees one partition. Everything local to it — its RocksDB store, its
+transaction, its fencing — is scoped to that partition, so a lookup is cheap and
+exact only when what is being looked up lives on the same partition as the record
+doing the looking. When the lookup key is not the record's key that alignment is
+gone, and there are exactly three honest ways to get it back. Choosing one
+deliberately is the whole of this section; the failure mode is not choosing, and
+reaching for task state anyway.
+
+```mermaid
+flowchart TB
+    q{"Is the lookup key the<br>record's own key?"}
+    q -->|yes| st[task state<br><small>local, fenced, unbounded</small>]
+    q -->|no| w{Who writes the table?}
+    w -->|"someone else<br><small>ops, a UI, another team</small>"| cfg[config topic<br><small>replicated to every instance</small>]
+    w -->|this pipeline| g{Does the key space<br>grow with the data?}
+    g -->|no| cfg
+    g -->|yes| hop[repartition hop<br><small>rekey, then task state</small>]
+```
+
+- **Task state — when the lookup key already *is* the record's key.** Nothing to
+  arrange: `extract_state_key` defaults to the message key, Kafka's partitioner
+  has already put every record for that key on one partition, and one task owns
+  it. The store is RocksDB behind a compacted changelog, so the table is
+  unbounded, restored on assignment, and every write joins the batch
+  [transaction](../concepts/exactly-once.md). The cost is reach and record size:
+  the table answers only for the keys of the partitions this instance owns, and
+  one `State` is one changelog record under Kafka's ~1 MiB ceiling.
+- **A [config topic](../concepts/config-topics.md) — when the table is written
+  elsewhere, or is small and read-mostly.** Declared in `config_topics` and read
+  in full by *every* instance into the per-process `ConfigStore`, which makes
+  partition placement and count irrelevant: any key is findable from any task,
+  and any producer — Kafka UI included — can write one. The cost is the size
+  contract (the whole table in RAM on every instance, re-read on every boot),
+  lookups that are eventually consistent and outside the task transaction, and
+  writes that are not serialized.
+- **A [repartition
+  hop](../concepts/config-topics.md#graduating-to-a-repartition-hop) — when
+  neither holds: make the lookup key the partition key.** An explicit
+  intermediate topic keyed by the lookup key, then a second transformer whose
+  task state holds the table. The Kafka Streams DSL inserts this topic for you on
+  a key change; Flechtwerk is Processor-API-level, so you write the hop. The cost
+  is an extra topic, an extra transaction boundary with its latency, and the
+  original key travelling in the value — what it buys is everything the first
+  option buys, for a table no config topic could hold.
+
+!!! warning "The Silent Split"
+
+    The tempting fourth option is to leave the records where they are and simply
+    return the lookup key from `extract_state_key`. It runs, and it is wrong:
+    records for one logical key still arrive on whatever partition their *record*
+    key sent them to, so every partition builds an independent shard of that
+    state — several tasks, possibly on several instances, each holding part of the
+    picture and each convinced it holds all of it. Nothing errors, because nothing
+    can detect it: only partition *counts* are validated, exactly as in Kafka
+    Streams. When one logical state entry must see records from several topics,
+    [co-partition them](../concepts/exactly-once.md#constraints) — same key bytes,
+    same partitioner, same partition count — or repartition and be explicit about
+    it.
+
+!!! tip "Outside Kafka Is a Fourth Option, and It Costs Determinism"
+
+    A lookup against Redis or Postgres from inside `transform()` is sometimes the
+    right call: the table genuinely belongs to someone else and is far too large
+    to replicate. Know what you traded. The read is a side effect rather than part
+    of the task transaction, so it cannot be replayed — a reprocess asks again,
+    and a store that answers about the present answers differently, which is how a
+    replay quietly rewrites history. If the answer is worth keeping, record it as
+    [an observation of your own](../concepts/config-topics.md#writing-to-a-config-topic)
+    on the way past, and the external store is queried once per key, ever.
 
 ## Defer Aggregation to Query Time
 
@@ -273,5 +351,6 @@ Secret fields — API keys, tokens, passwords — are encrypted in place with th
 - **[MQTT Extractors](mqtt.md)** — the push-driven bridge: subscription lifecycle, replica count, and how to size its outage budget.
 - **[Transformers](transformer.md)** — build the refinement half that reads it back.
 - **[Exactly-once delivery](../concepts/exactly-once.md)** — why a transformer replay is safe to run to completion.
+- **[Config topics](../concepts/config-topics.md)** — the shared lookup table behind the rules above: its size contract, writing to one, and when to graduate to a hop.
 - **[Typed Attributes & Records](../concepts/typed-attributes.md)** — the model behind the wire-boundary rules above.
 - **[Encrypted Secrets](../concepts/secrets.md)** — the wire format, keyring, rotation, and migration behind the secret-handling rules above.

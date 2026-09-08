@@ -245,6 +245,16 @@ def test_config_message_in_increments_counter():
     ) == 2
 
 
+def test_config_store_bytes_sets_gauge():
+    observer, registry = make_observer()
+    observer.config_store_bytes(4096)
+    observer.config_store_bytes(2048)
+    assert registry.get_sample_value(
+        "flechtwerk_config_store_bytes",
+        {"datasource": "ds1", "stage": "extractor"},
+    ) == 2048
+
+
 def test_config_store_entries_sets_gauge():
     observer, registry = make_observer()
     observer.config_store_entries(9)

@@ -6,6 +6,7 @@ import pytest
 from aiokafka import TopicPartition
 
 from flechtwerk.configs import ConfigStore, bootstrap_config_store, drain_config_updates
+from flechtwerk.kafka import encode_json
 from flechtwerk.testing import make_record
 from flechtwerk.types import Config, Event, InvalidMessageError
 
@@ -90,6 +91,31 @@ def test_delete_removes_entry():
     store._delete("k1")
     store._delete("never-there")
     assert len(store) == 0
+
+
+def test_nbytes_weighs_the_utf8_key_and_the_encoded_value():
+    config = Config.wrap({"a": 1})
+    assert ConfigStore().nbytes == 0
+    store = ConfigStore.of({"kü": config})
+    assert store.nbytes == len("kü".encode()) + len(encode_json(config))
+
+
+def test_nbytes_does_not_double_count_an_overwrite():
+    """The running total is the store's size, not the sum of everything written."""
+    store = ConfigStore()
+    store._put("k1", Config.wrap({"a": 1}))
+    store._put("k1", Config.wrap({"a": 222}))
+    assert store.nbytes == len(b"k1") + len(encode_json(Config.wrap({"a": 222})))
+    assert len(store) == 1
+
+
+def test_nbytes_returns_to_zero_when_every_entry_is_deleted():
+    store = ConfigStore.of({"k1": Config.wrap({"a": 1}), "k2": Config.wrap({"b": 2})})
+    store._delete("k1")
+    store._delete("never-there")  # a no-op must not move the total
+    assert store.nbytes == len(b"k2") + len(encode_json(Config.wrap({"b": 2})))
+    store._delete("k2")
+    assert store.nbytes == 0
 
 
 # --- bootstrap_config_store ---

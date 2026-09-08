@@ -227,6 +227,16 @@ class Metrics:
         )
 
     @cached_property
+    def config_store_bytes(self) -> Gauge:
+        return Gauge(
+            "flechtwerk_config_store_bytes",
+            "Wire size of the config store (UTF-8 keys plus encoded values) — the store lives "
+            "in RAM on every instance, so this is the gauge for its size contract",
+            self._label_names,
+            registry=self.registry,
+        )
+
+    @cached_property
     def config_store_entries(self) -> Gauge:
         return Gauge(
             "flechtwerk_config_store_entries",

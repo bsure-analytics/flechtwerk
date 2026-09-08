@@ -314,6 +314,7 @@ class TransformerRunner:
                 self.config_store, self.transformer.enrich_config, self.on_invalid,
             )
             self.observer.config_store_restored(len(self.config_store))
+            self.observer.config_store_bytes(self.config_store.nbytes)
             self.observer.config_store_entries(len(self.config_store))
         self.transformer.configs = self.config_store
         self.consumer.subscribe(self.transformer.input_topics, listener=TaskRebalanceListener(self))
@@ -357,6 +358,7 @@ class TransformerRunner:
         for msg in records:
             self.observer.config_message_in(msg.topic)
         if records:
+            self.observer.config_store_bytes(self.config_store.nbytes)
             self.observer.config_store_entries(len(self.config_store))
 
     async def start_pending_tasks(self) -> None:

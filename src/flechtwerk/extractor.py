@@ -835,6 +835,7 @@ class ExtractorRunner:
         for msg in latest.values():
             await self.apply_config(msg)
         self.observer.config_store_restored(len(self.config_store))
+        self.observer.config_store_bytes(self.config_store.nbytes)
         self.observer.config_store_entries(len(self.config_store))
         log.info("Loaded %d initial config(s)", len(self.entries))
 
@@ -852,6 +853,7 @@ class ExtractorRunner:
             self.observer.config_message_in(msg.topic)
             await self.apply_config(msg)
         if records:
+            self.observer.config_store_bytes(self.config_store.nbytes)
             self.observer.config_store_entries(len(self.config_store))
 
     async def apply_config(self, msg: IncomingMessage) -> None:

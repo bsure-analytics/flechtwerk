@@ -116,6 +116,7 @@ Emitted by any stage that declares `config_topics`.
 | --- | --- | --- | --- |
 | `config_messages_in_total` | Counter | `topic` | Records consumed from config topics into the per-process store. |
 | `config_store_entries` | Gauge | — | Entries currently held (latest config per wire key) — your **"did my config arrive?"** gauge. |
+| `config_store_bytes` | Gauge | — | Wire size of the store (UTF-8 keys plus encoded values) — the gauge for the RAM contract this store lives under. |
 | `config_store_restored_entries_total` | Counter | — | Entries surviving the startup bootstrap of the store. |
 | `active_configs` | Gauge | — | Currently-active (non-suspended) configs being polled. *Extractor only.* |
 
@@ -175,6 +176,15 @@ static declarations — empty string for an unscoped attribute).
   never accepted it (wrong topic, or tombstoned; a malformed one crashes the
   stage by default — see `messages_invalid_total` below). See [Config
   topics](../concepts/config-topics.md).
+- **`config_store_bytes` climbing** — a config table people maintain plateaus;
+  one that a stage [maintains
+  itself](../concepts/config-topics.md#writing-to-a-config-topic) grows with the
+  data. Wire size is the floor, not the cost: Python objects multiply it, and a
+  startup bootstrap multiplies it again, so a table that fits can still fail to
+  boot. Read a sustained climb as the signal to
+  [graduate to a repartition
+  hop](../concepts/config-topics.md#graduating-to-a-repartition-hop), where the
+  measured figures are.
 - **`poll_cycle_seconds` approaching your `poll_interval`** — the extractor is
   barely keeping up. A poll cycle nearly as long as the interval is the documented
   signal to add replicas — extractors shard config ownership across instances

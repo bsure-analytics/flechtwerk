@@ -42,6 +42,10 @@ class Observer:
     def transaction_committed(self) -> None: pass
     def active_configs(self, n: int) -> None: pass
     def config_message_in(self, topic: str) -> None: pass
+    # Two views of the same store: entries answers "did my config arrive?",
+    # bytes weighs the RAM contract the store actually lives under. Separate
+    # hooks, like every other byte/count pair here.
+    def config_store_bytes(self, n: int) -> None: pass
     def config_store_entries(self, n: int) -> None: pass
     def config_store_restored(self, entries: int) -> None: pass
     def state_restored(self, partition: int, entries: int) -> None: pass
@@ -129,6 +133,9 @@ class PrometheusObserver(Observer):
 
     def config_message_in(self, topic: str) -> None:
         self.metrics.config_messages_in_total.labels(**self.metrics_labels, topic=topic).inc()
+
+    def config_store_bytes(self, n: int) -> None:
+        self.metrics.config_store_bytes.labels(**self.metrics_labels).set(n)
 
     def config_store_entries(self, n: int) -> None:
         self.metrics.config_store_entries.labels(**self.metrics_labels).set(n)

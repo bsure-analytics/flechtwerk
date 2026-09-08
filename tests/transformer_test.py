@@ -1306,6 +1306,7 @@ def test_check_config_updates_applies_enriches_and_observes():
         assert runner.config_store.get("k") == Config.wrap({"a": 1, "enriched": True})
         assert ("config_message_in", "cfg-topic") in mod.observer.calls
         assert ("config_store_entries", 1) in mod.observer.calls
+        assert ("config_store_bytes", runner.config_store.nbytes) in mod.observer.calls
 
     asyncio.run(run())
 

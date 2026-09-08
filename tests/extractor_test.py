@@ -227,6 +227,26 @@ def test_extractor_runner_polls_configs():
     asyncio.run(run())
 
 
+def test_config_bootstrap_weighs_the_store():
+    """The store's size contract is RAM, so both views of it are emitted: the
+    entry count answers "did my config arrive?", the byte total is what a
+    stage-maintained table grows."""
+
+    async def run():
+        record = json_record(key="k", value={"api_key": "key123"})
+        mod = make_module(SimpleExtractor(), FakeKafkaConsumer([record]), FakeKafkaProducer())
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+
+        await runner.load_initial_configs()
+
+        assert runner.config_store.nbytes > 0
+        assert ("config_store_entries", 1) in mod.observer.calls
+        assert ("config_store_bytes", runner.config_store.nbytes) in mod.observer.calls
+
+    asyncio.run(run())
+
+
 def test_poll_one_weighs_produced_messages():
     """Every message the extractor sends is weighed at the send site, key +
     value — the same ~1 MiB ceiling that kills an oversized state record kills

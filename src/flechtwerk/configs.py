@@ -71,18 +71,19 @@ class ConfigStore:
     returns a fresh `Config` (a protective copy by construction).
 
     From a stage's perspective the store is **read-only**: query it with
-    `get()` (and ``in`` / ``len``). There is no public write surface —
-    `_put`/`_delete` are internal to the config machinery in this module,
-    and reaching for them, or otherwise mutating the store, from application
-    code is an error. The store is a projection of the config topics, fed
-    exclusively by `bootstrap_config_store` / `drain_config_updates`; a
-    stage-side write never reaches Kafka (see the
+    `get()` (and ``in`` / ``len`` / `nbytes`). There is no public write
+    surface — `_put`/`_delete` are internal to the config machinery in this
+    module, and reaching for them, or otherwise mutating the store, from
+    application code is an error. The store is a projection of the config
+    topics, fed exclusively by `bootstrap_config_store` /
+    `drain_config_updates`; a stage-side write never reaches Kafka (see the
     "config topics never participate in a Kafka transaction" invariant),
     corrupts only this instance, and is silently reverted on the next record
     for the key or on the next restart.
     """
 
     def __init__(self) -> None:
+        self._nbytes = 0
         self._raw: dict[str, bytes] = {}
 
     def __contains__(self, key: str) -> bool:
@@ -95,7 +96,8 @@ class ConfigStore:
     def of(cls, entries: dict[str, Record]) -> "ConfigStore":
         """Build a pre-seeded store — the test-side entry point."""
         store = cls()
-        store._raw = {key: encode_json(value) for key, value in entries.items()}
+        for key, value in entries.items():
+            store._put(key, value)  # one accounting site for `nbytes`
         return store
 
     def get(self, key: str) -> Config | None:
@@ -111,11 +113,35 @@ class ConfigStore:
         raw = self._raw.get(key)
         return None if raw is None else decode_record(raw, Config)
 
+    @property
+    def nbytes(self) -> int:
+        """Wire footprint held: the UTF-8 keys plus the encoded values.
+
+        Tracked incrementally, so reading it is O(1). The runners emit it as
+        `config_store_bytes` on every store change, and a table large enough
+        to be worth watching is exactly the one a `sum()` per observation
+        would punish. It weighs the bytes, not the Python objects around
+        them: real RSS runs a small multiple higher, and a startup bootstrap
+        peaks higher still.
+        """
+        return self._nbytes
+
+    @staticmethod
+    def _weigh(key: str, raw: bytes) -> int:
+        return len(key.encode()) + len(raw)
+
     def _put(self, key: str, config: Record) -> None:
-        self._raw[key] = encode_json(config)
+        raw = encode_json(config)
+        previous = self._raw.get(key)
+        if previous is not None:
+            self._nbytes -= self._weigh(key, previous)
+        self._nbytes += self._weigh(key, raw)
+        self._raw[key] = raw
 
     def _delete(self, key: str) -> None:
-        self._raw.pop(key, None)
+        raw = self._raw.pop(key, None)
+        if raw is not None:
+            self._nbytes -= self._weigh(key, raw)
 
 
 async def apply_config_record(

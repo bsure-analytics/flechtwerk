@@ -67,6 +67,9 @@ class RecordingObserver(Observer):
     def config_message_in(self, topic: str) -> None:
         self.calls.append(("config_message_in", topic))
 
+    def config_store_bytes(self, n: int) -> None:
+        self.calls.append(("config_store_bytes", n))
+
     def config_store_entries(self, n: int) -> None:
         self.calls.append(("config_store_entries", n))
 
