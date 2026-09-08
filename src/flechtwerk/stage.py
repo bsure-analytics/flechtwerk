@@ -74,9 +74,10 @@ class Stage:
     re-read per lookup only what you can afford to see move. For an
     extractor the store is fully populated only after the startup
     bootstrap — during ``__aenter__`` it is still empty. Treat it as
-    **read-only** — look entries up with ``configs.get(key)``; mutating the
-    store (``put``/``delete``) from stage code is an error (see
-    `ConfigStore`). Tests seed this directly::
+    **read-only** — look entries up with ``configs.get(key)``; it has no
+    public write surface, and reaching for the config machinery's internal
+    one from stage code is an error (see `ConfigStore`). Tests seed this
+    directly::
 
         stage.configs = ConfigStore.of({key: config})
     """

@@ -71,8 +71,8 @@ def test_get_crashes_on_malformed_store_bytes():
     launder it into an empty Config.
     """
     store = ConfigStore()
-    # Seed the internal dict directly: put() only accepts a Record and always
-    # encodes valid JSON, so there's no public way to inject a malformed value.
+    # Seed the internal dict directly: _put() only accepts a Record and always
+    # encodes valid JSON, so there's no way to inject a malformed value.
     store._raw["bad"] = b"{not json"
     with pytest.raises(ValueError):
         store.get("bad")
@@ -80,15 +80,15 @@ def test_get_crashes_on_malformed_store_bytes():
 
 def test_put_overwrites_earlier_value():
     store = ConfigStore()
-    store.put("k1", Config.wrap({"a": 1}))
-    store.put("k1", Config.wrap({"a": 2}))
+    store._put("k1", Config.wrap({"a": 1}))
+    store._put("k1", Config.wrap({"a": 2}))
     assert store.get("k1") == Config.wrap({"a": 2})
 
 
 def test_delete_removes_entry():
     store = ConfigStore.of({"k1": Config.wrap({"a": 1})})
-    store.delete("k1")
-    store.delete("never-there")
+    store._delete("k1")
+    store._delete("never-there")
     assert len(store) == 0
 
 

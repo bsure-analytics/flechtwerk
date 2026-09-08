@@ -120,6 +120,19 @@ been running — no duplicates, no gaps. The raw topic absorbs upstream change; 
 transformer absorbs downstream change; the external source is queried exactly
 once per record, ever.
 
+!!! tip "When the Transformer Has to Ask Someone Else"
+
+    Enrichment that calls an external service from the *transformer* breaks the
+    promise above: every replay asks again, and a service that answers about the
+    present (a geocoder, a rate table, a registry) answers differently the second
+    time — so a reprocess silently rewrites history. Record each answer as an
+    observation on a [config topic the stage itself
+    maintains](../concepts/config-topics.md#writing-to-a-config-topic) and look it
+    up there first. The replay then reads the answer as it was, and the external
+    service is queried once per distinct key, ever. Enriching in the extractor
+    instead has the same effect and is simpler — reach for the observation table
+    when the lookup key only exists after transformation.
+
 !!! tip "Keep the Raw Topic Retained, Not Compacted"
 
     Replay reaches only as far back as the raw topic still holds. Give it

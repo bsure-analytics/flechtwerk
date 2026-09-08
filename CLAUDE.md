@@ -66,7 +66,7 @@ The framework has no CLI, no module-level `os.getenv`, and no `load_dotenv` — 
 
 **Co-Partitioning Trap**: If one logical state entry must see records from *several* input topics, those topics must be co-partitioned by key — same key bytes, same partitioner, same partition count. Only the partition count is validated at startup; key/partitioner alignment cannot be checked and is the application's responsibility (exactly as in Kafka Streams). Get it wrong and the same `extract_state_key` arrives on different partition numbers, yielding independent state shards owned by different tasks — possibly on different instances. This is a silent split, not an error. Kafka Streams' DSL protects against the related case (key changed inside the topology) by auto-inserting a repartition topic; Flechtwerk is a Processor-API-level framework and has no equivalent — a mid-pipeline key change requires an explicit intermediate topic, i.e. another transformer hop. Output keys and changelog keys impose no constraints: output partitioning is decoupled from task identity, and changelog placement is explicit-partition, ignoring keys entirely.
 
-**The escape hatch for config lookups is a config topic**: when one side of the "join" is a config table rather than a keyed stream, declare it in `config_topics` instead of `input_topics` (Kafka Streams' GlobalKTable, specialized to configuration). Every instance reads it in full into the per-process `ConfigStore`; lookups go through `self.configs.get(wire_key)`; partition placement and count are irrelevant, so any producer — Kafka UI included — can write to it. The trade: the source topic must be compacted and stay small, the wire key is authoritative (tombstones carry no body), and lookups are eventually consistent, outside the task transaction.
+**The escape hatch for config lookups is a config topic**: when one side of the "join" is a config table rather than a keyed stream, declare it in `config_topics` instead of `input_topics` (Kafka Streams' GlobalKTable, specialized to configuration). Every instance reads it in full into the per-process `ConfigStore`; lookups go through `self.configs.get(wire_key)`; partition placement and count are irrelevant, so any producer — Kafka UI included — can write to it. The trade: the source topic must be compacted and stay small, the wire key is authoritative (tombstones carry no body), and lookups are eventually consistent, outside the task transaction. A stage may also *write* to a config topic, maintaining a table of its own rather than reading a team-managed one — see "Sanctioned second use: a config topic as a stage-maintained table".
 
 **Exactly-Once Delivery & Load Balancing**: Transformer work is split into **tasks** — one per input partition number, spanning that partition of every input topic (the consumer uses the Range assignor, which co-assigns same-numbered partitions). Each task owns a transactional producer with the static transactional ID `{application_id}-{partition}`; one Kafka transaction per task per batch covers that task's output messages, state changelog writes (the task's `ChangelogStateStore` shares its producer), and offset commits. Multiple instances are safe: when a partition moves, the new owner's `InitProducerId` fences the previous owner's producer and aborts its in-flight transaction (Kafka Streams EOS-v1 — aiokafka has no KIP-447 generation fencing), and state is re-restored from the changelog's last stable offset before processing resumes. On rebalance, all tasks are torn down and rebuilt — never retained, since a missed rebalance would make retained producers/stores silently stale. All framework consumers run `read_committed`. Constraints: all input topics of a transformer must have equal partition counts (validated at startup, matching changelog created); the partition count is frozen once state exists (repartitioning requires a state migration); instances beyond the partition count sit idle.
 
@@ -76,11 +76,13 @@ The framework has no CLI, no module-level `os.getenv`, and no `load_dotenv` — 
 
 **"Let It Crash" Error Strategy**: No framework-level retry logic. Errors propagate; recovery is infrastructure: orchestrator restarts (e.g. Kubernetes `CrashLoopBackOff`), changelog replay restores state, transformer transactions catch any duplicates from partial writes. The key distinction is recoverable vs non-recoverable: only use try/except when the catch block can actually *remedy* the problem (e.g. refresh an expired token, skip a 400 on an endpoint that doesn't exist for this tenant). For transient errors like timeouts or 5xx, crash — sleeping and retrying in-process is reimplementing `CrashLoopBackOff` poorly. Never catch-and-skip data errors (silent data loss). An undecodable record follows the same law by default — it crashes — and `Stage.on_invalid_message` is the ONE sanctioned exception: a skip there is a deliberate, counted decision, never a silent one (see the invalid-message invariant below).
 
-## Invariant: config topics never participate in a Kafka transaction
+## Invariant: config topics never participate in a Kafka transaction (consumption side)
 
-In a transformer, config topics must have no contact with any task
-transaction. This holds by construction, through three independent
-mechanisms — keep all of them intact:
+In a transformer, the config CONSUMPTION path — offsets, store updates,
+lookups — must have no contact with any task transaction. This holds by
+construction, through three independent mechanisms — keep all of them intact.
+(Producing a `Message` ONTO a config topic is a different matter and is
+allowed; see "Sanctioned second use" below.)
 
 - **Separate, group-less consumer.** A transformer's config topics are read
   by a dedicated `config_consumer` with `group_id=None` (`module.py`). No
@@ -122,7 +124,8 @@ normal case — non-transactional producers (ops tooling, Kafka UI) writing
 config — it makes no difference at all: records are visible immediately
 either way. It matters only when a *transactional* producer writes to a
 config topic (nothing forbids a transformer emitting an output `Message`
-onto one): `read_uncommitted` would apply records from aborted transactions
+onto one — see the next subsection): `read_uncommitted` would apply records
+from aborted transactions
 to the store — and a startup bootstrap would compact them in until the next
 boot — while `read_committed` merely delays visibility until commit, which
 the eventually-consistent contract already absorbs. `read_committed` also
@@ -130,6 +133,64 @@ gives `bootstrap_config_store` / `read_to_end` a well-defined end offset
 (the LSO). Switching to `read_uncommitted` buys nothing and opens the
 aborted-write hole — keep `read_committed`, matching every other framework
 consumer.
+
+### Sanctioned second use: a config topic as a stage-maintained table
+
+A stage may both declare a config topic and produce onto it, by yielding a
+`Message` whose topic is that config topic. The motivating case is a durable
+memo of an *external observation* — a third-party answer that is timestamped
+rather than derived from our own data, so recomputing it later would ask a
+different question. The stage records the answer once and reads it back
+forever, including across a full reingest. This is a supported use of the
+mechanism, not a workaround, and the guarantees it leans on are the ones
+above: the runner sends every yielded `Message` through the task's
+transactional producer without caring which topic it names, so the new row,
+the downstream output derived from it, and the input offsets commit
+atomically; and the config consumer's `read_committed` keeps an aborted
+transaction's row out of every instance's store. Compaction plus the
+full-re-read-on-boot model make the table durable and shared across
+instances for free.
+
+What such a stage must design for:
+
+- **No read-your-writes.** `configs.get(...)` cannot see the row until the
+  next drain — the next loop iteration at the earliest — so the stage needs
+  its own in-process bridge across that gap. Keep the bridge BOUNDED (the
+  store holds wire bytes and re-decodes per `get`, so an unbounded parsed
+  shadow of it is a memory leak) and keep every entry safe to lose: an
+  eviction, or the process dying with a transaction aborted, must degrade to
+  "resolve it again and re-emit an identical row", never to "silently skip
+  the write".
+- **Writes are not serialized.** Two instances — or two buckets of one batch
+  — can resolve the same brand-new key concurrently and both emit. Compaction
+  makes that last-write-wins, so rows must be idempotent and
+  order-insensitive. No counters, no read-modify-write: a table that needs
+  those needs partitioned task state with its own changelog, not a config
+  topic.
+- **The `ConfigStore` is not the write path.** Its `_put`/`_delete` are
+  internal to the config machinery; a stage-side write never reaches Kafka,
+  corrupts one instance, and is reverted by the next record for that key or
+  the next restart. Yielding a `Message` is the only way in.
+- **The size contract still binds.** The whole table lives in RAM per
+  instance and is re-read in full on every boot — Flechtwerk's store is a
+  plain dict of wire bytes, NOT Kafka Streams' RocksDB-materialized,
+  checkpointed GlobalKTable (that difference is also what makes
+  `enrich_config` safe to run on every boot; see the KIP-813 note in
+  `configs.py`). A table whose key space grows without bound outgrows this
+  and belongs in partitioned state or outside Kafka. Watch the key count,
+  not the atomicity.
+- **The topic is not reproducible.** Unlike team-managed configuration, a
+  stage-maintained table is the sole copy of observations nothing can
+  recompute. Deployment must compact it, retain it forever, and keep reset
+  tooling away from it.
+
+Naming: `config_topics` describes the dominant use, and configuration is what
+almost every stage puts there. Renaming the whole surface to something
+neutral (`lookup_topics` / `LookupStore` / `Lookup`) was considered and
+rejected — it would make many truthful names generic to accommodate the
+exception, and `poll(config, state)` is genuinely configuration for every
+poll-driven extractor. Do not re-open this without new evidence; document the
+second use here instead.
 
 ## Invariant: the extractor runner's re-entry contract
 

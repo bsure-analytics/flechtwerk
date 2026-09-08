@@ -71,11 +71,12 @@ class ConfigStore:
     returns a fresh `Config` (a protective copy by construction).
 
     From a stage's perspective the store is **read-only**: query it with
-    `get()` (and ``in`` / ``len``). `put`/`delete` exist for the config
-    machinery alone — calling them, or otherwise mutating the store, from
-    application code is an error. The store is a projection of the config
-    topics, fed exclusively by `bootstrap_config_store` /
-    `drain_config_updates`; a stage-side write never reaches Kafka (see the
+    `get()` (and ``in`` / ``len``). There is no public write surface —
+    `_put`/`_delete` are internal to the config machinery in this module,
+    and reaching for them, or otherwise mutating the store, from application
+    code is an error. The store is a projection of the config topics, fed
+    exclusively by `bootstrap_config_store` / `drain_config_updates`; a
+    stage-side write never reaches Kafka (see the
     "config topics never participate in a Kafka transaction" invariant),
     corrupts only this instance, and is silently reverted on the next record
     for the key or on the next restart.
@@ -100,7 +101,7 @@ class ConfigStore:
     def get(self, key: str) -> Config | None:
         """Return the latest config for ``key``, or None if absent.
 
-        The store only ever holds `encode_json` output — `put` re-encodes
+        The store only ever holds `encode_json` output — `_put` re-encodes
         every value — so a malformed value is impossible by construction. If
         one appears anyway it is a framework bug, and the ``ValueError`` from
         the strict decode crashes rather than laundering it into an empty
@@ -110,10 +111,10 @@ class ConfigStore:
         raw = self._raw.get(key)
         return None if raw is None else decode_record(raw, Config)
 
-    def put(self, key: str, config: Record) -> None:
+    def _put(self, key: str, config: Record) -> None:
         self._raw[key] = encode_json(config)
 
-    def delete(self, key: str) -> None:
+    def _delete(self, key: str) -> None:
         self._raw.pop(key, None)
 
 
@@ -141,7 +142,7 @@ async def apply_config_record(
     # Tombstone check BEFORE the value decode: a tombstone's value is raw
     # emptiness by definition, never garbage, so it must not reach the handler.
     if is_tombstone(msg.value):
-        store.delete(key)
+        store._delete(key)
         value = Event.wrap({})
     else:
         decoded = decode_event_mediated(msg, on_invalid)
@@ -155,7 +156,7 @@ async def apply_config_record(
         # caller's `extract_state_key` input. Same defence `poll_one` applies
         # to the cached config; config records are rare and small by the
         # config-topic contract, so the copy is free in practice.
-        store.put(key, await enrich_config(Config(deepcopy(value))))
+        store._put(key, await enrich_config(Config(deepcopy(value))))
     return IncomingMessage(
         key=key,
         offset=msg.offset,

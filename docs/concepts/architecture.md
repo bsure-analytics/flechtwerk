@@ -69,7 +69,7 @@ Transformer work is partitioned into per-input-partition **tasks**, one per part
 
 Exactly-once delivery is one Kafka transaction per task per `getmany()` batch (capped at `max_poll_records`, default 500), covering that task's output messages, state changes (deduped to one final write per key), and offset commits. Task transactions commit concurrently and independently. On a rebalance, all tasks are torn down under the batch lock and rebuilt for the assigned partitions — never retained, since a missed rebalance would make retained producers or stores silently stale.
 
-A transformer may additionally declare `config_topics` and look entries up via `self.configs.get(wire_key)`. Config topics are read by a dedicated group-less consumer and never participate in any task transaction; lookups are eventually consistent (the GlobalKTable caveat).
+A transformer may additionally declare `config_topics` and look entries up via `self.configs.get(wire_key)`. Config topics are read by a dedicated group-less consumer, and that consumption path — offsets, store updates, lookups — never participates in any task transaction; lookups are eventually consistent (the GlobalKTable caveat). The reverse direction is allowed and transactional: a yielded `Message` may name a config topic, which is how a stage [maintains a table of its own](config-topics.md#writing-to-a-config-topic).
 
 ## Application Lifecycle
 
