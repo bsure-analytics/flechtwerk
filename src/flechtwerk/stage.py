@@ -112,6 +112,32 @@ class Stage:
         rotations, so rotating an API key via a new config message preserves
         the state entry. Override only if the operator-facing identity
         doesn't match the desired state namespace.
+
+        **A Transformer override may refine the message key, never coarsen
+        it.** State identity is *(input partition, state key)*, so every
+        record sharing a state key must arrive on one partition::
+
+            extract_state_key(a) == extract_state_key(b)
+                => partition(a) == partition(b)
+
+        Refining the key satisfies that (key ``tenant`` → state key
+        ``tenant:device``: the tenant's records are already on one
+        partition, so its per-device entries are too). Coarsening it does
+        not (key ``device`` → state key ``tenant``: that tenant's devices
+        hash across partitions, and each one silently builds its own
+        partial shard), and neither does any key read out of the value
+        independently of ``msg.key``. Nothing detects the split — only
+        partition counts are validated, exactly as in Kafka Streams — so a
+        state key the partitioner does not already group needs a
+        repartition hop or a config topic instead. See the "Silent Split"
+        warning in docs/guides/best-practices.md.
+
+        An Extractor is exempt: ownership is ``token_for(state_key, N)``,
+        computed consumer-side from this key over a config topic every
+        instance reads in full, so placement is irrelevant there. What the
+        key must be for an Extractor is *stable* — it is the state
+        namespace and the ownership hash at once, so changing it for a live
+        config migrates the entry to another token and orphans the old one.
         """
         return msg.key
 

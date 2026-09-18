@@ -213,6 +213,23 @@ Two things to know when sizing a deployment:
   handovers neither lose nor duplicate records (see the exactly-once note
   above).
 
+!!! note "The state key is unconstrained here — but it must be stable"
+
+    Because ownership is computed *from* the state key rather than from where
+    the record landed, an extractor's `extract_state_key` carries none of the
+    co-partitioning constraint a transformer's does. It may read whatever it
+    likes out of the config value, and no choice of key can split one entry
+    across two owners — the [refine-never-coarsen
+    rule](best-practices.md#look-up-by-the-key-you-partition-by) that governs a
+    transformer override simply does not apply.
+
+    What the key must be is **stable**. The same string is the state namespace
+    *and* the ownership hash, so changing it for a live config does not rename
+    the entry: it moves that config to a different token, starts a fresh cursor
+    there, and leaves the old entry orphaned in the changelog. That is why the
+    default is the message key — it survives a credential rotation that
+    rewrites the entire config body.
+
 **MQTT extractors are exempt from all of this** — and scale differently.
 They join no consumer group and negotiate no handover: an MQTT broker
 divides their work, and the guidance is to run **one replica** and do the

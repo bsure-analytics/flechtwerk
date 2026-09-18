@@ -226,6 +226,29 @@ flowchart TB
     same partitioner, same partition count — or repartition and be explicit about
     it.
 
+    The rule that separates a legal override from this one: an
+    `extract_state_key` override may **refine** the message key, never
+    **coarsen** it. Every record sharing a state key has to arrive on one
+    partition, so
+
+    ```text
+    extract_state_key(a) == extract_state_key(b)  =>  partition(a) == partition(b)
+    ```
+
+    Key `tenant` → state key `tenant:device` refines: the tenant's records are
+    already on one partition, so its per-device entries are too, and the
+    override simply carves finer namespaces inside one task. Key `device` →
+    state key `tenant` coarsens: that tenant's devices hash across partitions,
+    and each one quietly builds a partial shard. A key read out of the *value*
+    is safe only when it is a refinement of `msg.key` — if it can group records
+    the partitioner did not, it is the split above wearing a different name.
+    Note that none of this needs two replicas: one task per partition means a
+    single instance splits the state just as thoroughly.
+
+    [Extractors are exempt](extractor.md#scaling-out) — their ownership is
+    computed *from* the state key rather than from placement, so the hook is
+    unconstrained there.
+
 !!! tip "Outside Kafka Is a Fourth Option, and It Costs Determinism"
 
     A lookup against Redis or Postgres from inside `transform()` is sometimes the
