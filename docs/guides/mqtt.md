@@ -7,7 +7,7 @@ An `MqttExtractor` is a push-driven [`Extractor`](extractor.md): instead of poll
 - one paho connection per stage driven by the asyncio event loop (no threads);
 - persistent MQTT 5 sessions with a stable client id and a configurable session expiry;
 - shared subscriptions, so the rare deployment that needs a second replica divides the traffic without any Kafka-side coordination (see [Replicas and Scaling](#replicas-and-scaling));
-- manual ACKs — a batch is ACKed to the MQTT broker only once its transaction committed in Kafka (at the top of the next poll, per the runner's re-entry contract); an ACK that does not leave keeps its message pending and is retried at the top of the poll after, so "pending" means unconfirmed rather than unconfirmed-as-of-the-last-attempt. Within a process lifetime that makes delivery into Kafka exactly-once — an aborted page is rolled back, never ACKed. Across a crash it is at-least-once: the MQTT broker ACK cannot join a Kafka transaction, so messages committed but not yet ACKed are redelivered and written again — carry a payload identity and dedupe downstream if that matters;
+- manual ACKs — a batch is ACKed to the MQTT broker only once its transaction committed in Kafka (at the top of the next poll, per the runner's re-entry contract); an ACK that does not leave keeps its message pending and is retried at the top of the poll after, so "pending" means unconfirmed rather than unconfirmed-as-of-the-last-attempt. Within a process lifetime that makes delivery into Kafka exactly-once — an aborted page is rolled back, never ACKed. Across a crash it is at-least-once: the MQTT broker ACK cannot join a Kafka transaction, so messages committed but not yet ACKed are redelivered and written again — carry a payload identity and dedupe downstream if that matters. All of that presumes QoS 1, the default — see [Quality of Service](#quality-of-service);
 - per-topic subscriptions fed by config records;
 - an arrival wakeup so delivery latency is sub-second rather than poll-interval-bound;
 - and Prometheus metrics.
@@ -68,6 +68,50 @@ See [Getting Started → Running a Stage](getting-started.md#running-a-stage) fo
 !!! note "Broker Settings and the Optional Extra"
 
     `MqttBrokerConfig` carries the broker settings, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting Started](getting-started.md#installation)).
+
+## Quality of Service
+
+`MqttBrokerConfig.qos` is the QoS the stage *subscribes* with — the ceiling
+at which the MQTT broker delivers to it (a publish is downgraded to the
+subscription's QoS, never upgraded). The default is 1, and **1 is the only
+level the manual-ACK design is built for**:
+
+- **QoS 1** — a PUBLISH the stage has not PUBACKed is redelivered, payload
+  included, when the session resumes. That redelivery is what turns
+  ACK-after-Kafka-commit into at-least-once across a crash, and the whole
+  [outage budget](#sizing-the-outage-budget) rests on it.
+- **QoS 0** — no ACK, no queue. Whatever the publisher sends while the stage
+  is away is gone, and so is whatever sat in the process buffer at a crash.
+  Acceptable for telemetry where the next sample supersedes the last; the
+  outage budget is zero, and a deploy is just a restart.
+- **QoS 2** — **not supported.** The stage accepts it: the subscription goes
+  out at QoS 2 and the handshake completes. But the guarantee inverts, see
+  below.
+
+!!! warning "QoS 2 turns at-least-once into at-most-once"
+
+    The receiver's half of QoS 2 is PUBLISH → PUBREC → PUBREL → PUBCOMP.
+    paho answers PUBREC on receipt — before the message reaches Flechtwerk
+    — and parks the message in process memory until the PUBREL arrives; the
+    manual ACK withholds only the final PUBCOMP. Once the MQTT broker holds
+    PUBREC it never resends the PUBLISH; on session resume it resends only
+    the PUBREL (MQTT 5 §4.4). Flechtwerk recovers by crash and restart, so
+    that process memory is gone: paho receives the PUBREL, finds no parked
+    message, delivers nothing, and under manual ACK sends no PUBCOMP either.
+
+    Every message in flight at a crash — anywhere between PUBREC and the
+    Kafka commit — is therefore **lost**, where at QoS 1 the same window is
+    a redelivery. QoS 2 loses exactly the messages the manual ACK exists to
+    protect, and buys no exactly-once in return: the ACK still cannot join
+    the Kafka transaction. (A likely second effect, not measured: the
+    un-PUBCOMPed packet identifiers stay in the session's inflight window,
+    and every restart re-sends their PUBRELs into the same void.)
+
+    Supporting QoS 2 properly would mean persisting the parked message
+    outside process memory, between PUBREC and PUBREL — state, which an
+    MQTT stage [does not have](#mqtt-stages-are-stateless-by-contract).
+    Stay at QoS 1; if duplicates matter downstream, carry a payload
+    identity and dedupe there.
 
 ## Subscription Lifecycle
 

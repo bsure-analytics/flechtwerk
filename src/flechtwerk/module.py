@@ -99,6 +99,17 @@ class MqttBrokerConfig:
     binds first. Shorten it deliberately when running more than one replica,
     where a lingering session withholds traffic from its survivors — see the
     MQTT guide's "Sizing the Outage Budget".
+
+    ``qos`` is the QoS the stage subscribes with — the ceiling at which the
+    MQTT broker delivers to it. 1, the default, is the only level the
+    manual-ACK design is built for: an un-ACKed PUBLISH comes back with its
+    payload when the session resumes. 0 has no ACK and no backlog. 2 is
+    accepted on the wire but NOT supported: paho answers PUBREC on receipt,
+    before the message reaches the stage, and parks it in process memory
+    until PUBREL — after a crash the MQTT broker resends only the PUBREL,
+    which paho then neither delivers nor PUBCOMPs, so an in-flight message
+    is lost instead of redelivered. See the MQTT guide's "Quality of
+    Service".
     """
     broker: str
     port: int
