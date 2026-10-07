@@ -38,6 +38,11 @@ Flechtwerk's public surface is small and settled in shape. Every entry below is 
 
 ::: flechtwerk.attribute.Attribute
 
+::: flechtwerk.attribute.codec
+    options:
+      filters: ["!^_"]
+      show_if_no_docstring: true
+
 ## Runtime &amp; Configuration
 
 ::: flechtwerk.Flechtwerk

@@ -14,14 +14,13 @@ inverse of `optional`, for the few sites that branch on mandatory-ness
 Each `Attribute` carries a `Codec[V]` that drives both the static type
 parameter and the runtime encode/decode. The type checker infers the
 `[V]` from the codec — `Attribute("name", STR)` produces an
-`Attribute[str]` without an explicit subscript. Built-in codecs are
-exported from `flechtwerk.attribute` (`STR`, `INT`, `DATETIME`, `RECORD`,
-`LIST(RECORD)`, …).
+`Attribute[str]` without an explicit subscript. Built-in codecs live in
+`flechtwerk.attribute.codec` (`STR`, `INT`, `DATETIME`, `RECORD`,
+`LIST(RECORD)`, …), re-exported from `flechtwerk.attribute`.
 """
 from typing import Any
 
-from .codec import Codec
-from .codecs import IDENTITY
+from ._codec import IDENTITY, Codec
 
 type RawDict = dict[str, Any]
 """Wire-form JSON-native dict — the underlying storage of `Record.raw` and the

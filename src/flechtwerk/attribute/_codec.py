@@ -1,4 +1,10 @@
-"""Built-in codec atoms and constructors.
+"""Implementation home of `Codec[V]` and the built-in atoms and constructors.
+
+Applications import these from `flechtwerk.attribute.codec` (or the
+`flechtwerk.attribute` package); this module exists so that `attribute.py`
+and `record.py` can reach the codec primitives without importing the public
+`codec` module, which re-exports `RECORD` / `ANY` / `record_codec` from
+`record.py` and would otherwise close an import cycle.
 
 The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `BYTES`, `DATE`,
 `FLOAT`, `DATETIME`, `TIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
@@ -13,10 +19,39 @@ Naming convention: all atoms and constructors use uppercase identifiers
 matching the ALL_CAPS style of the typed-attribute call sites.
 """
 import base64
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any, Final
 
-from .codec import Codec, Decoder
+# Framework-internal on purpose: the public surface is `flechtwerk.attribute.codec`,
+# which re-exports everything here except `IDENTITY` and the private helpers.
+__all__: list[str] = []
+
+type Decoder[V] = Callable[[Any], V]
+"""A function that decodes a JSON-native wire value to a Python value of type `V`."""
+
+type Encoder[V] = Callable[[V], Any]
+"""A function that encodes a Python value of type `V` to a JSON-native wire value."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Codec[V]:
+    """A pair of `(decode, encode)` callables for a value of type `V`.
+
+    Both directions are required — there is no fallback registry. The value
+    type `V` is the single source of truth: pass a `Codec[V]` to an
+    `Attribute` and the type checker infers the `Attribute[V]` parameter.
+
+    Equality is identity (`eq=False`): the fields are functions, so a
+    generated field-wise `__eq__` would compare them by object identity
+    anyway while *looking* like value equality — composite codecs like
+    `LIST(STR)` rebuild fresh closures per call and would never compare
+    equal. Identity is the only honest contract, and `Attribute` already
+    excludes the codec from its own equality for this reason.
+    """
+    decode: Decoder[V]
+    encode: Encoder[V]
 
 
 def _encode_datetime(dt: datetime) -> str:
@@ -182,22 +217,8 @@ def DICT[V](inner: Codec[V]) -> Codec[dict[str, V]]:
 IDENTITY: Final = Codec[Any](decode=lambda x: x, encode=lambda x: x)
 """Identity codec — used by `ViewAttribute` where the value is already in wire form.
 
-Deliberately not re-exported from `flechtwerk.attribute`: an application
-that wants pass-through behavior should declare a real codec for the
-underlying type rather than reach for `IDENTITY`. Available via the
-fully-qualified import for the framework internals that need it.
+Deliberately not re-exported from `flechtwerk.attribute` or
+`flechtwerk.attribute.codec`: an application that wants pass-through behavior
+should declare a real codec for the underlying type rather than reach for
+`IDENTITY`. The framework internals that need it import it from here.
 """
-
-__all__ = [
-    "BOOL",
-    "BYTES",
-    "DATETIME",
-    "DICT",
-    "FLOAT",
-    "INT",
-    "LIST",
-    "SET",
-    "STR",
-    "TIME",
-    "TUPLE",
-]

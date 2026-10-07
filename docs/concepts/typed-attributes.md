@@ -56,6 +56,28 @@ Nest them freely — `DICT(LIST(INT))`, `LIST(RECORD)`, and so on — and the wh
 
 `BYTES` is the one atom whose Python type is not JSON-native: it carries binary as RFC 4648 base64 (standard alphabet, padded), strictly — whitespace, stray characters and non-canonical trailing bits are all rejected rather than repaired, so the wire form and the value stay in step. Binary is never *inferred*: `ANY` still refuses `bytes`, so a blob reaches the wire through an explicit `Attribute(name, BYTES)` or not at all. Base64 costs 4/3 of the payload against Kafka's 1 MiB record ceiling — for a message that *is* a blob, send it as a `bytes` `Payload` instead and skip the framing.
 
+## Resolving Name Conflicts
+
+Codec names are short and upper-case on purpose — they match the `ALL_CAPS` style of attribute declarations. That is also the style of your own constants, so sooner or later an attribute wants a codec's name for itself. Reach the codec through its module instead:
+
+```python
+from flechtwerk.attribute import Attribute, codec
+
+DATE = Attribute("date", codec.DATE)
+TIME = Attribute("time", codec.TIME)
+```
+
+or rename it on import:
+
+```python
+from flechtwerk.attribute import Attribute
+from flechtwerk.attribute.codec import DATE as DATE_CODEC
+
+DATE = Attribute("date", DATE_CODEC)
+```
+
+`flechtwerk.attribute.codec` holds the complete catalogue — every atom and constructor above, the `Codec` type itself, and `record_codec` for `Record` subclasses. The `flechtwerk.attribute` package re-exports all of it, so both spellings name the very same objects and mix freely within one module. The one codec that lives elsewhere is `ENCRYPTED`, in `flechtwerk.secrets` — see [Encrypted Secrets](secrets.md).
+
 ## Spreading: Enrich Without Mutating
 
 `Record` subclasses **spread like plain dicts**, so enrichment is always a copy-with-overrides — never an in-place edit:

@@ -1,11 +1,14 @@
+import ast
 import base64
 import json
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from flechtwerk.attribute import ANY, BYTES, DATE, DATETIME, DICT, LIST, TIME, Attribute, Record
+import flechtwerk.attribute as package
+from flechtwerk.attribute import ANY, BYTES, DATE, DATETIME, DICT, LIST, TIME, Attribute, Codec, Record, codec
 
 
 def test_datetime_from_iso_utc_round_trip():
@@ -265,3 +268,78 @@ def test_bytes_composes_with_the_container_constructors():
     assert LIST(BYTES).encode([b"AB", b"CD"]) == ["QUI=", "Q0Q="]
     assert LIST(BYTES).decode(["QUI=", "Q0Q="]) == [b"AB", b"CD"]
     assert DICT(BYTES).encode({"k": b"AB"}) == {"k": "QUI="}
+
+
+def test_codec_module_is_the_complete_catalogue():
+    """`flechtwerk.attribute.codec` is the one namespace holding every codec —
+    the disambiguating import (`codec.DATE`) must never miss one the package
+    exports, or an application with a colliding name has no way to reach it."""
+    assert set(codec.__all__) == {
+        "ANY", "BOOL", "BYTES", "Codec", "DATE", "DATETIME", "DICT", "Decoder", "Encoder",
+        "FLOAT", "INT", "LIST", "RECORD", "SET", "STR", "TIME", "TUPLE", "record_codec",
+    }
+    package_codecs = {name for name in package.__all__ if isinstance(getattr(package, name), Codec)}
+    assert package_codecs <= set(codec.__all__)
+
+
+def test_package_reexports_the_codec_module_verbatim():
+    assert set(codec.__all__) <= set(package.__all__)
+    for name in codec.__all__:
+        assert getattr(package, name) is getattr(codec, name), name
+
+
+def test_identity_codec_stays_internal():
+    assert "IDENTITY" not in codec.__all__
+    assert not hasattr(codec, "IDENTITY")
+    assert not hasattr(package, "IDENTITY")
+
+
+def _imports_codec_facade(tree: ast.Module) -> bool:
+    """Whether a module imports `flechtwerk.attribute.codec`, in any spelling."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == "flechtwerk.attribute.codec" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if (node.level, node.module) in {(0, "flechtwerk.attribute.codec"), (1, "codec")}:
+                return True
+            if (node.level, node.module) in {(0, "flechtwerk.attribute"), (1, None)} and any(
+                alias.name == "codec" for alias in node.names
+            ):
+                return True
+    return False
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from .codec import Codec",
+        "from . import codec",
+        "from flechtwerk.attribute.codec import DATE",
+        "from flechtwerk.attribute import codec",
+        "import flechtwerk.attribute.codec",
+    ],
+)
+def test_import_rule_detector_recognizes_every_spelling(source):
+    assert _imports_codec_facade(ast.parse(source))
+
+
+def test_package_internals_never_import_the_codec_facade():
+    """Modules inside `flechtwerk.attribute` import `_codec`, never `codec`.
+
+    `codec` re-exports `RECORD` / `ANY` / `record_codec` from `record.py`, so
+    an internal module importing it closes the cycle
+    `attribute -> codec -> record -> attribute` — which surfaces as an
+    `ImportError` about a partially initialized module, naming the symptom
+    instead of this rule. Only the package `__init__` (the public face) and
+    `codec.py` itself are exempt; modules outside the package (`secrets.py`)
+    sit downstream of the cycle and may use the facade freely.
+    """
+    root = Path(package.__file__).parent
+    exempt = {"__init__.py", "codec.py"}
+    offenders = [
+        path.name
+        for path in sorted(root.glob("*.py"))
+        if path.name not in exempt and _imports_codec_facade(ast.parse(path.read_text()))
+    ]
+    assert offenders == []

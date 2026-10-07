@@ -1,11 +1,12 @@
 """Type-safe handles on dict keys, paired with explicit encode/decode codecs."""
+from . import codec
 from .attribute import (
     Attribute,
     MissingAttributeError,
     RawDict,
 )
-from .codec import Codec, Decoder, Encoder
-from .codecs import (
+from .codec import (
+    ANY,
     BOOL,
     BYTES,
     DATE,
@@ -14,17 +15,17 @@ from .codecs import (
     FLOAT,
     INT,
     LIST,
+    RECORD,
     SET,
     STR,
     TIME,
     TUPLE,
-)
-from .record import (
-    ANY,
-    RECORD,
-    Record,
+    Codec,
+    Decoder,
+    Encoder,
     record_codec,
 )
+from .record import Record
 
 __all__ = [
     "ANY",
@@ -32,6 +33,7 @@ __all__ = [
     "BOOL",
     "BYTES",
     "Codec",
+    "codec",
     "DATE",
     "DATETIME",
     "DICT",

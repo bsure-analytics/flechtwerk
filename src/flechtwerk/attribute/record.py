@@ -32,13 +32,12 @@ from copy import deepcopy
 from datetime import date, datetime, time
 from typing import Any, Final, Self, overload
 
+from ._codec import DATE, DATETIME, DICT, LIST, SET, TIME, TUPLE, Codec
 from .attribute import (
     Attribute,
     RawDict,
     ViewAttribute,
 )
-from .codec import Codec
-from .codecs import DATE, DATETIME, DICT, LIST, SET, TIME, TUPLE
 
 
 def _encode_any(v: Any) -> Any:
