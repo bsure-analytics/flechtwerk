@@ -20,6 +20,7 @@ from .codec import (
     STR,
     TIME,
     TUPLE,
+    ZONE_INFO,
     Codec,
     Decoder,
     Encoder,
@@ -50,5 +51,6 @@ __all__ = [
     "STR",
     "TIME",
     "TUPLE",
+    "ZONE_INFO",
     "record_codec",
 ]

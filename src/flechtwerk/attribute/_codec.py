@@ -7,8 +7,9 @@ and `record.py` can reach the codec primitives without importing the public
 `record.py` and would otherwise close an import cycle.
 
 The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `BYTES`, `DATE`,
-`FLOAT`, `DATETIME`, `TIME`) are fixed leaves; constructors (`LIST`, `SET`, `TUPLE`,
-`DICT`) take an inner codec and return a parameterized container codec.
+`FLOAT`, `DATETIME`, `TIME`, `ZONE_INFO`) are fixed leaves; constructors
+(`LIST`, `SET`, `TUPLE`, `DICT`) take an inner codec and return a
+parameterized container codec.
 Element validation is uniform — `LIST(STR).encode([1, 2, 3])` rejects
 non-strings (each element runs through `STR.encode`).
 
@@ -22,7 +23,9 @@ import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from functools import cache
 from typing import Any, Final
+from zoneinfo import ZoneInfo, available_timezones
 
 # Framework-internal on purpose: the public surface is `flechtwerk.attribute.codec`,
 # which re-exports everything here except `IDENTITY` and the private helpers.
@@ -114,6 +117,45 @@ def _encode_bytes(b: bytes) -> str:
     return base64.b64encode(b).decode("ascii")
 
 
+@cache
+def _zone_keys() -> frozenset[str]:
+    """The canonical IANA keys on this host, scanned once on first `ZONE_INFO` decode (~600 entries)."""
+    return frozenset(available_timezones())
+
+
+def _decode_zone_info(v: Any) -> ZoneInfo:
+    """Decoder for `ZONE_INFO` — an IANA key, spelled exactly as the database spells it.
+
+    An unknown key raises `ValueError`, like every other codec's decode
+    failure; `ZoneInfo` itself would raise `ZoneInfoNotFoundError`, which is
+    a `KeyError` and would slip past a caller that rejects bad payloads by
+    catching `ValueError`.
+
+    The membership check against `available_timezones()` is stricter than
+    `ZoneInfo(v)` alone, deliberately: `ZoneInfo` resolves a key by opening a
+    file, so on a case-insensitive filesystem (macOS) `"europe/berlin"`
+    decodes fine and on Linux it doesn't. A record accepted on a developer
+    machine and rejected in production is the portability trap a strict
+    decoder exists to close — the `decode_key` argument again.
+    """
+    if type(v) is not str:
+        raise TypeError(f"expected an IANA time zone key as str, got {type(v).__name__}")
+    if v not in _zone_keys():
+        raise ValueError(f"unknown time zone: {v!r}")
+    return ZoneInfo(v)
+
+
+def _encode_zone_info(z: ZoneInfo) -> str:
+    """Encoder for `ZONE_INFO` — the zone's IANA key.
+
+    Exact-type check (the `_validate` discipline), plus a key check: a zone
+    built with `ZoneInfo.from_file` has `key is None` and no wire form at all.
+    """
+    assert type(z) is ZoneInfo, f"expected ZoneInfo, got {type(z).__name__}: {z!r}"
+    assert z.key is not None, f"ZoneInfo without a key has no wire form: {z!r}"
+    return z.key
+
+
 def _validate[T](t: type[T]) -> Decoder[T]:
     """Codec helper that asserts `type(x) is t`.
 
@@ -158,6 +200,17 @@ DATE: Final = Codec[date](date.fromisoformat, date.isoformat)
 FLOAT: Final = Codec[float](_validate(float), _validate(float))
 DATETIME: Final = Codec[datetime](datetime.fromisoformat, _encode_datetime)
 TIME: Final = Codec[time](time.fromisoformat, time.isoformat)
+ZONE_INFO: Final = Codec[ZoneInfo](_decode_zone_info, _encode_zone_info)
+"""Codec for an IANA time zone (`Europe/Berlin`, `UTC`, `CET`) as its key string.
+
+Fixed-offset `datetime.timezone` values are out of scope: they have no IANA
+key, and an offset is not a zone (it knows nothing about DST). `ZoneInfo`
+reads the host's tz database, falling back to the `tzdata` package — an
+image without either rejects every key.
+
+Like `BYTES`, the zone is deliberately absent from the `ANY` walker: its wire
+form is a plain string that would read back as text.
+"""
 
 
 # --- constructors ---

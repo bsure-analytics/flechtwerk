@@ -7,7 +7,7 @@ the codec by the type checker — there's no runtime type introspection.
 
 This module is the complete codec catalogue: the `Codec` type and its
 `Decoder` / `Encoder` aliases, the atoms (`STR`, `INT`, `BOOL`, `BYTES`,
-`DATE`, `FLOAT`, `DATETIME`, `TIME`, `RECORD`, `ANY`), the constructors
+`DATE`, `FLOAT`, `DATETIME`, `TIME`, `ZONE_INFO`, `RECORD`, `ANY`), the constructors
 (`LIST`, `SET`, `TUPLE`, `DICT`), and the `record_codec` factory for
 `Record` subclasses. The `flechtwerk.attribute` package re-exports all of
 them, so the short import works too; this module exists for the
@@ -36,6 +36,7 @@ from ._codec import (
     STR,
     TIME,
     TUPLE,
+    ZONE_INFO,
     Codec,
     Decoder,
     Encoder,
@@ -60,5 +61,6 @@ __all__ = [
     "STR",
     "TIME",
     "TUPLE",
+    "ZONE_INFO",
     "record_codec",
 ]

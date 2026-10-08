@@ -3,12 +3,12 @@ import base64
 import json
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import TZPATH, ZoneInfo
 
 import pytest
 
 import flechtwerk.attribute as package
-from flechtwerk.attribute import ANY, BYTES, DATE, DATETIME, DICT, LIST, TIME, Attribute, Codec, Record, codec
+from flechtwerk.attribute import ANY, BYTES, DATE, DATETIME, DICT, LIST, TIME, ZONE_INFO, Attribute, Codec, Record, codec
 
 
 def test_datetime_from_iso_utc_round_trip():
@@ -270,13 +270,67 @@ def test_bytes_composes_with_the_container_constructors():
     assert DICT(BYTES).encode({"k": b"AB"}) == {"k": "QUI="}
 
 
+@pytest.mark.parametrize("key", ["Europe/Berlin", "UTC", "CET", "America/Argentina/Buenos_Aires"])
+def test_zone_info_round_trip(key):
+    decoded = ZONE_INFO.decode(key)
+    assert decoded == ZoneInfo(key)
+    assert ZONE_INFO.encode(decoded) == key
+
+
+@pytest.mark.parametrize("key", ["Nope/Nope", "", "../etc/passwd", "/etc/localtime", "Europe//Berlin", "+02:00"])
+def test_zone_info_rejects_unknown_or_malformed_keys_with_value_error(key):
+    """Every failure is a `ValueError` — never `ZoneInfoNotFoundError` (a `KeyError`)."""
+    with pytest.raises(ValueError, match="unknown time zone"):
+        ZONE_INFO.decode(key)
+
+
+def test_zone_info_rejects_a_key_in_the_wrong_case():
+    """`ZoneInfo("europe/berlin")` succeeds on a case-insensitive filesystem
+    (macOS) and fails on Linux — the codec must reject it on both."""
+    with pytest.raises(ValueError, match="unknown time zone"):
+        ZONE_INFO.decode("europe/berlin")
+
+
+def test_zone_info_rejects_non_str_wire_value():
+    with pytest.raises(TypeError, match="int"):
+        ZONE_INFO.decode(1)
+
+
+def test_zone_info_encode_rejects_fixed_offset_timezone():
+    with pytest.raises(AssertionError, match="expected ZoneInfo"):
+        ZONE_INFO.encode(timezone.utc)
+
+
+def test_zone_info_encode_rejects_a_keyless_zone():
+    path = next((p for p in map(Path, TZPATH) if (p / "UTC").is_file()), None)
+    if path is None:
+        pytest.skip("no system tz database on TZPATH")
+    with (path / "UTC").open("rb") as f:
+        keyless = ZoneInfo.from_file(f)
+    with pytest.raises(AssertionError, match="without a key"):
+        ZONE_INFO.encode(keyless)
+
+
+def test_zone_info_attribute_round_trips_through_a_record():
+    zone = Attribute("zone", ZONE_INFO)
+    record = Record({zone: ZoneInfo("Europe/Berlin")})
+    assert record.raw == {"zone": "Europe/Berlin"}
+    assert Record.wrap(record.raw)[zone] == ZoneInfo("Europe/Berlin")
+
+
+def test_any_rejects_zoneinfo():
+    """A zone would read back as plain text — binary-style, it needs an explicit `ZONE_INFO` attribute."""
+    with pytest.raises(TypeError):
+        ANY.encode(ZoneInfo("UTC"))
+
+
 def test_codec_module_is_the_complete_catalogue():
     """`flechtwerk.attribute.codec` is the one namespace holding every codec —
     the disambiguating import (`codec.DATE`) must never miss one the package
     exports, or an application with a colliding name has no way to reach it."""
     assert set(codec.__all__) == {
         "ANY", "BOOL", "BYTES", "Codec", "DATE", "DATETIME", "DICT", "Decoder", "Encoder",
-        "FLOAT", "INT", "LIST", "RECORD", "SET", "STR", "TIME", "TUPLE", "record_codec",
+        "FLOAT", "INT", "LIST", "RECORD", "SET", "STR", "TIME", "TUPLE", "ZONE_INFO", "record_codec",
     }
     package_codecs = {name for name in package.__all__ if isinstance(getattr(package, name), Codec)}
     assert package_codecs <= set(codec.__all__)
