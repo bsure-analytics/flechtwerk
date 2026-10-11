@@ -362,6 +362,25 @@ def test_secret_decrypted_increments_counter_per_scope_and_kid():
     ) == 1
 
 
+def test_secret_unsigned_read_increments_counter_per_scope():
+    observer, registry = make_observer()
+    observer.secret_unsigned_read("api_key")
+    observer.secret_unsigned_read("api_key")
+    assert registry.get_sample_value(
+        "flechtwerk_secret_unsigned_reads_total",
+        {"datasource": "ds1", "stage": "extractor", "scope": "api_key"},
+    ) == 2
+
+
+def test_secret_verified_increments_counter_per_scope_and_kid():
+    observer, registry = make_observer()
+    observer.secret_verified("api_key", "box-17")
+    assert registry.get_sample_value(
+        "flechtwerk_secret_verifications_total",
+        {"datasource": "ds1", "stage": "extractor", "scope": "api_key", "kid": "box-17"},
+    ) == 1
+
+
 def test_mqtt_connects_and_disconnects_increment_counters():
     observer, registry = make_observer()
     observer.mqtt_connected()

@@ -560,7 +560,7 @@ plain sentence, no prefix, matching `git log`.
   - Verify: `uv run pytest -q tests/secrets_test.py tests/keyring_test.py` passes, then
     commit.
 
-- [ ] **3. The `SIGNED` codec, its tooling and its telemetry** (`src/flechtwerk/secrets.py`, `src/flechtwerk/observer.py`, `src/flechtwerk/metrics.py`, `src/flechtwerk/testing.py`, `tests/secrets_test.py`, `tests/observer_test.py`)
+- [x] **3. The `SIGNED` codec, its tooling and its telemetry** (`src/flechtwerk/secrets.py`, `src/flechtwerk/observer.py`, `src/flechtwerk/metrics.py`, `src/flechtwerk/testing.py`, `tests/secrets_test.py`, `tests/observer_test.py`)
   - Public constants beside `SCHEME`/`PREFIX`: `SIGNATURE_SCHEME = "flsig"` and
     `SIGNATURE_PREFIX = "flsig:jws:"` (the envelope segment `jws` names RFC 7515 compact
     serialization). Private: `_SIGNATURE_ALG = "Ed25519"` (RFC 9864 — never `EdDSA`,
@@ -938,3 +938,8 @@ cannot open the file, so it would have nothing to judge.
   tests/keyring_test.py` → `124 passed`, both modules at 100 %. Beyond the listed
   tests, `test_asymmetric_signing_kid_cannot_open_a_token` pins that a signing kid
   stays an `UnknownKeyError` cause. Ticked. Task 3 started.
+- 2026-10-11, execution: task 3 done — `uv run pytest -q tests/secrets_test.py
+  tests/observer_test.py` → `113 passed`; secrets.py and keyring.py at 100 %. Added
+  `test_signed_verify_only_reader_verifies` and `test_signed_errors_carry_caller_context`
+  (the latter covers the `topic`/`wire_key` detail branches of the two new errors).
+  Ticked. Task 4 started.

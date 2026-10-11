@@ -25,8 +25,15 @@ knobs: ``scope`` binds a token into a domain-separation compartment
 (``flenc_scope`` in the integrity-protected header) so it can't be relocated
 into a differently-scoped field — a one-way ratchet (adding a scope is
 non-breaking, dropping it is blocked); ``read_plaintext`` tolerates a legacy
-plaintext value on read during a migration. See ``docs/concepts/secrets.md``
-for the full spec (format longevity, rotation, migration, post-quantum posture).
+plaintext value on read during a migration.
+
+``SIGNED(inner, scope=...)`` turns a field into an RFC 7515 compact JWS signed
+with an Ed25519 key from the keyring, wire form ``flsig:jws:<compact JWS>`` —
+it vouches for *who wrote* a value, which a recipient token cannot (anyone
+holding the public recipient key can seal). The recommended composition is
+sign-then-encrypt, ``ENCRYPTED(SIGNED(inner, scope=s), scope=s)``. See
+``docs/concepts/secrets.md`` for the full spec (format longevity, rotation,
+migration, post-quantum posture).
 """
 import base64
 import functools
@@ -36,7 +43,7 @@ from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 
 from aiokafka import AIOKafkaConsumer
-from joserfc import jwe
+from joserfc import jwe, jws
 from joserfc.jwk import OctKey, OKPKey
 from joserfc.registry import HeaderParameter
 
@@ -65,17 +72,25 @@ __all__ = [
     "PREFIX",
     "PlaintextSecretError",
     "SCHEME",
+    "SIGNATURE_PREFIX",
+    "SIGNATURE_SCHEME",
+    "SIGNED",
     "ScanEntry",
     "SecretDecryptError",
     "SecretError",
     "SecretFormatError",
+    "SecretSignatureError",
+    "UnsignedSecretError",
     "X25519Key",
     "encrypt_value",
     "install_keyring",
     "is_encrypted",
+    "is_signed",
     "kid_of",
     "reencrypt",
     "scan_config_topics",
+    "sign_value",
+    "signer_of",
 ]
 
 SCHEME = "flenc"
@@ -85,11 +100,20 @@ _ENVELOPE = "jwe"  # the encoding segment: RFC 7516 *compact* serialization, thi
 PREFIX = f"{SCHEME}:{_ENVELOPE}:"
 """The full token prefix, ``flenc:jwe:`` — a valid URI scheme + envelope segment."""
 
+SIGNATURE_SCHEME = "flsig"
+"""The URI scheme naming a Flechtwerk-signed value — ``flenc:`` stays reserved for ciphertext forms."""
+
+_SIGNATURE_ENVELOPE = "jws"  # RFC 7515 *compact* serialization
+SIGNATURE_PREFIX = f"{SIGNATURE_SCHEME}:{_SIGNATURE_ENVELOPE}:"
+"""The full signed-value prefix, ``flsig:jws:``."""
+
 _SCHEME_PREFIX = f"{SCHEME}:"  # any value under this scheme is ciphertext-form
+_SIGNATURE_SCHEME_PREFIX = f"{SIGNATURE_SCHEME}:"  # any value under this scheme is signed-form
 _ALG = "dir"
 _ENC = "A256GCM"
 _FLENC_SCOPE = "flenc_scope"  # optional protected-header param — the domain-separation scope
 _RECIPIENT_ALG = "ECDH-ES+A256KW"
+_SIGNATURE_ALG = "Ed25519"  # RFC 9864, fully specified — never the deprecated polymorphic "EdDSA"
 
 # The one extension header every registry admits: flenc_scope is OPTIONAL (a
 # token may carry a scope or not).
@@ -109,6 +133,13 @@ _REGISTRY = jwe.JWERegistry(
 _RECIPIENT_REGISTRY = jwe.JWERegistry(
     header_registry=_HEADER_REGISTRY,
     algorithms=[_RECIPIENT_ALG, _ENC],
+    strict_check_header=True,
+)
+# Signatures: exactly Ed25519. A signed token always carries flenc_scope (the
+# codec checks it), the registry merely admits the header.
+_SIGNATURE_REGISTRY = jws.JWSRegistry(
+    header_registry=_HEADER_REGISTRY,
+    algorithms=[_SIGNATURE_ALG],
     strict_check_header=True,
 )
 
@@ -179,6 +210,52 @@ class PlaintextSecretError(SecretError):
         super().__init__("; ".join(detail))
 
 
+class SecretSignatureError(SecretError):
+    """A ``flsig`` token could not be verified, or vouches for a different scope.
+
+    Shaped like `SecretDecryptError`: the codec's ``scope``, the token's signer
+    ``kid``, ``topic`` / ``wire_key`` when a caller has them, and a ``reason``.
+    An unknown signer keeps `UnknownKeyError` as ``__cause__``.
+    """
+
+    def __init__(self, *, scope: str = "", kid: str | None = None,
+                 topic: str | None = None, wire_key: str | None = None,
+                 reason: str | None = None) -> None:
+        self.scope = scope
+        self.kid = kid
+        self.topic = topic
+        self.wire_key = wire_key
+        detail = ["cannot verify signed value"]
+        if scope:
+            detail.append(f"scope={scope!r}")
+        if kid is not None:
+            detail.append(f"kid={kid!r}")
+        if wire_key is not None:
+            detail.append(f"key={wire_key!r}")
+        if topic is not None:
+            detail.append(f"topic={topic!r}")
+        if reason is not None:
+            detail.append(reason)
+        super().__init__("; ".join(detail))
+
+
+class UnsignedSecretError(SecretError):
+    """A ``SIGNED`` value is unsigned but the codec's ``read_unsigned`` is off."""
+
+    def __init__(self, *, scope: str = "", topic: str | None = None, wire_key: str | None = None) -> None:
+        self.scope = scope
+        self.topic = topic
+        self.wire_key = wire_key
+        detail = ["value is unsigned but read_unsigned is off for this attribute"]
+        if scope:
+            detail.append(f"scope={scope!r}")
+        if wire_key is not None:
+            detail.append(f"key={wire_key!r}")
+        if topic is not None:
+            detail.append(f"topic={topic!r}")
+        super().__init__("; ".join(detail))
+
+
 # --- classification & crypto helpers ---
 
 
@@ -192,6 +269,19 @@ def is_encrypted(value: object) -> bool:
     return isinstance(value, str) and value.startswith(_SCHEME_PREFIX)
 
 
+def is_signed(value: object) -> bool:
+    """True if ``value`` is signed-form — a string under the ``flsig:`` scheme."""
+    return isinstance(value, str) and value.startswith(_SIGNATURE_SCHEME_PREFIX)
+
+
+def _strip_envelope(token: str, scheme: str, expected: str) -> str:
+    body = token[len(scheme) + 1:]
+    envelope, sep, compact = body.partition(":")
+    if not sep or envelope != expected or not compact:
+        raise SecretFormatError(f"unknown {scheme} envelope {envelope!r} — expected {expected!r}")
+    return compact
+
+
 def _compact(token: str) -> str:
     """Strip ``flenc:jwe:`` and return the compact JWE, or raise on a bad envelope.
 
@@ -199,19 +289,21 @@ def _compact(token: str) -> str:
     understand) raises in every keyring mode — it is never handed to an inner
     codec as legacy plaintext.
     """
-    body = token[len(_SCHEME_PREFIX):]
-    envelope, sep, compact = body.partition(":")
-    if not sep or envelope != _ENVELOPE or not compact:
-        raise SecretFormatError(f"unknown {SCHEME} envelope {envelope!r} — expected {_ENVELOPE!r}")
-    return compact
+    return _strip_envelope(token, SCHEME, _ENVELOPE)
+
+
+def _signature_compact(token: str) -> str:
+    """Strip ``flsig:jws:`` and return the compact JWS, or raise on a bad envelope (as `_compact`)."""
+    return _strip_envelope(token, SIGNATURE_SCHEME, _SIGNATURE_ENVELOPE)
 
 
 def _read_kid(compact: str) -> str:
-    """Read the ``kid`` from a compact JWE header without the key (base64url decode).
+    """Read the ``kid`` from a compact JWE or JWS header without the key (base64url decode).
 
-    Used only to *select* which key to hand the decryptor; the header is
-    re-parsed and authenticated as the AEAD's associated data during the
-    actual decrypt, so a tampered kid fails the tag check regardless.
+    Used only to *select* which key to hand the decryptor or verifier; the
+    header is re-parsed and authenticated during the actual decrypt (as the
+    AEAD's associated data) or verify (as part of the signing input), so a
+    tampered kid fails regardless.
     """
     header_segment = compact.split(".", 1)[0]
     try:
@@ -352,7 +444,50 @@ def _decrypt_to_payload(scope: str, token: str, *, topic: str | None = None,
     return obj.plaintext
 
 
-# --- the codec ---
+def _verify_to_payload(scope: str, token: str) -> bytes:
+    """Verify a ``flsig`` token to raw payload bytes, enforcing scope and binding.
+
+    Selects the signer by the token's ``kid`` and pins ``Ed25519``. The token's
+    stamped ``flenc_scope`` must **equal** ``scope`` — there is no ratchet, as
+    no unscoped signature exists — and ``scope`` must be within the signer's
+    binding. Every failure surfaces as ``SecretSignatureError``.
+    """
+    keyring = active_keyring()
+    compact = _signature_compact(token)
+    kid = _read_kid(compact)
+    try:
+        signer = keyring.signer_for(kid)
+    except UnknownKeyError as e:
+        raise SecretSignatureError(scope=scope, kid=kid) from e
+    key = OKPKey.import_key({"crv": "Ed25519", "kty": "OKP", "x": _b64url(signer.public)})
+    try:
+        obj = jws.deserialize_compact(compact, key, registry=_SIGNATURE_REGISTRY)
+    except Exception as e:
+        raise SecretSignatureError(scope=scope, kid=kid) from e
+    stamped = obj.protected.get(_FLENC_SCOPE)
+    if stamped != scope:
+        raise SecretSignatureError(
+            scope=scope, kid=kid, reason=f"scope mismatch: signature scoped {stamped!r}, read as {scope!r}",
+        )
+    bound = keyring.scopes[kid]
+    if scope not in bound:
+        raise SecretSignatureError(
+            scope=scope, kid=kid, reason=f"signer {kid!r} is bound to scopes {sorted(bound)}",
+        )
+    active_observer().secret_verified(scope, kid)
+    return obj.payload
+
+
+def _canonical_json(value: object) -> bytes:
+    # sort_keys + allow_nan=False match the framework's canonical JSON
+    # (kafka.encode_json), so encrypted / signed RECORD/DICT payloads are
+    # deterministic and NaN is rejected rather than emitted.
+    return json.dumps(
+        value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+
+
+# --- the codecs ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,14 +520,7 @@ def ENCRYPTED[V](inner: Codec[V], *, scope: str = "", read_plaintext: bool = Fal
     ``PlaintextSecretError``.
     """
     def encode(value: object) -> str:
-        # sort_keys + allow_nan=False match the framework's canonical JSON
-        # (kafka.encode_json), so encrypted RECORD/DICT payloads are
-        # deterministic and NaN is rejected rather than emitted.
-        payload = json.dumps(
-            inner.encode(value), allow_nan=False, ensure_ascii=False,
-            separators=(",", ":"), sort_keys=True,
-        ).encode("utf-8")
-        return _encrypt_payload(scope, payload)
+        return _encrypt_payload(scope, _canonical_json(inner.encode(value)))
 
     def decode(value: object) -> object:
         if is_encrypted(value):
@@ -404,6 +532,55 @@ def ENCRYPTED[V](inner: Codec[V], *, scope: str = "", read_plaintext: bool = Fal
         raise PlaintextSecretError(scope=scope)
 
     return _EncryptedCodec(decode=decode, encode=encode, scope=scope)
+
+
+@dataclass(frozen=True, slots=True)
+class _SignedCodec(Codec):
+    """The plain `Codec` returned by `SIGNED(...)` — a marker carrying its `scope`."""
+
+    scope: str = ""
+
+
+def SIGNED[V](inner: Codec[V], *, scope: str, read_unsigned: bool = False) -> Codec[V]:
+    """Wrap ``inner`` so the attribute's value is stored as an Ed25519-signed token.
+
+    The token is ``flsig:jws:<compact JWS>``, signed by the keyring's signing
+    key for ``scope`` (``signing[scope]``). ``scope`` is required: a signature
+    always names the compartment it vouches for, and a reader accepts it only
+    for exactly that scope, from any signing key in its keyring bound to it.
+
+    Composes like any codec; the recommended composition is sign-then-encrypt,
+    ``ENCRYPTED(SIGNED(inner, scope=s), scope=s)`` — the signer's kid stays
+    inside the ciphertext, and the signature's scope keeps a decrypting reader
+    from re-sealing the value into another field.
+
+    ``read_unsigned`` (default off) tolerates an unsigned value on read during
+    a migration, logging a WARNING and emitting ``secret_unsigned_read``; off,
+    an unsigned value raises ``UnsignedSecretError``.
+    """
+    if not scope:
+        raise ValueError("SIGNED needs a non-empty scope — a signature always names the compartment it vouches for")
+
+    def encode(value: object) -> str:
+        keyring = active_keyring()
+        kid = keyring.signing_kid(scope)
+        signer = keyring.signer_for(kid)
+        key = _okp_private_key(kid, "Ed25519", signer.public, signer.private)
+        protected = {"alg": _SIGNATURE_ALG, _FLENC_SCOPE: scope, "kid": kid}
+        token = jws.serialize_compact(protected, _canonical_json(inner.encode(value)), key,
+                                      registry=_SIGNATURE_REGISTRY)
+        return SIGNATURE_PREFIX + token
+
+    def decode(value: object) -> object:
+        if is_signed(value):
+            return inner.decode(json.loads(_verify_to_payload(scope, value)))  # type: ignore[arg-type]
+        if read_unsigned:
+            log.warning("Signed value read unsigned (scope=%r) — migrate this record to a signed one", scope)
+            active_observer().secret_unsigned_read(scope)
+            return inner.decode(value)
+        raise UnsignedSecretError(scope=scope)
+
+    return _SignedCodec(decode=decode, encode=encode, scope=scope)
 
 
 # --- ops tooling primitives ---
@@ -424,6 +601,30 @@ def encrypt_value[V](attribute: Attribute[V], value: V) -> str:
     if ``attribute`` is not an encrypted attribute.
     """
     return _require_encrypted(attribute).encode(value)
+
+
+def signer_of(token: str) -> str:
+    """Return the ``kid`` of the key that signed a ``flsig`` token (no key needed).
+
+    Raises ``SecretFormatError`` for a non-``flsig`` value.
+    """
+    if not is_signed(token):
+        raise SecretFormatError("not a flsig token")
+    return _read_kid(_signature_compact(token))
+
+
+def sign_value[V](attribute: Attribute[V], value: V) -> str:
+    """Sign ``value`` for ``attribute`` and return the ``flsig:jws:`` token.
+
+    The write-side boundary for a ``SIGNED`` attribute, like `encrypt_value`
+    for an encrypted one — for an ``ENCRYPTED(SIGNED(...))`` attribute the
+    boundary stays `encrypt_value`. Raises ``SecretError`` if ``attribute`` is
+    not a signed attribute.
+    """
+    codec = attribute.codec
+    if not isinstance(codec, _SignedCodec):
+        raise SecretError(f"{attribute!r} is not a signed attribute (its codec is not SIGNED)")
+    return codec.encode(value)
 
 
 def reencrypt[V](token: str, attribute: Attribute[V]) -> str:

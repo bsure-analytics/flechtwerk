@@ -101,6 +101,12 @@ class RecordingObserver(Observer):
     def secret_decrypted(self, scope: str, kid: str) -> None:
         self.calls.append(("secret_decrypted", scope, kid))
 
+    def secret_unsigned_read(self, scope: str) -> None:
+        self.calls.append(("secret_unsigned_read", scope))
+
+    def secret_verified(self, scope: str, kid: str) -> None:
+        self.calls.append(("secret_verified", scope, kid))
+
     def mqtt_buffered(self, topic: str, n: int) -> None:
         self.calls.append(("mqtt_buffered", topic, n))
 

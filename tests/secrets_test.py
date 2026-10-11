@@ -15,6 +15,7 @@ import sys
 import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x448 import X448PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -26,6 +27,7 @@ from joserfc.registry import HeaderParameter
 
 from flechtwerk.attribute import ANY, Attribute, DICT, LIST, RECORD, Record, STR
 from flechtwerk.keyring import (
+    Ed25519Key,
     Keyring,
     KeyringError,
     KeyringNotInstalledError,
@@ -36,14 +38,21 @@ from flechtwerk.secrets import (
     ENCRYPTED,
     PREFIX,
     PlaintextSecretError,
+    SIGNATURE_PREFIX,
+    SIGNED,
     SecretDecryptError,
     SecretError,
     SecretFormatError,
+    SecretSignatureError,
+    UnsignedSecretError,
     encrypt_value,
     is_encrypted,
+    is_signed,
     kid_of,
     reencrypt,
     scan_config_topics,
+    sign_value,
+    signer_of,
 )
 from flechtwerk.testing import (
     FakeKafkaConsumer,
@@ -780,3 +789,205 @@ def test_asymmetric_our_token_decodes_with_independent_reader():
         token = encrypt_value(API_KEY, "round-trips-out")
     plaintext = _independent_ecdh_es_a256kw_decrypt(token[len(PREFIX):], bytes(range(32)))
     assert json.loads(plaintext) == "round-trips-out"
+
+
+# --- signed values ---
+
+
+SIGNED_API_KEY = Attribute("api_key", SIGNED(STR, scope="api_key"))
+SEALED_SIGNED_API_KEY = Attribute("api_key", ENCRYPTED(SIGNED(STR, scope="api_key"), scope="api_key"))
+_SIGNER = fixture_asymmetric_keyring().signer_for("test-signer")
+
+
+def _verify_only_keyring(bound: set[str]) -> Keyring:
+    """A reader keyring holding only the fixture signer's public half, bound to ``bound``."""
+    return Keyring.of({"test-key": KEY_A}, primary="test-key", scopes={"test-signer": bound},
+                      signers={"test-signer": Ed25519Key(public=_SIGNER.public)})
+
+
+def test_signed_round_trip_names_the_signer():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "sk-live-123")
+        assert token.startswith(SIGNATURE_PREFIX)
+        assert signer_of(token) == "test-signer"
+        assert SIGNED_API_KEY.codec.decode(token) == "sk-live-123"
+
+
+def test_signed_verify_only_reader_verifies():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "s")
+    with installed_keyring(_verify_only_keyring({"api_key"})):
+        assert SIGNED_API_KEY.codec.decode(token) == "s"
+
+
+def test_signed_requires_a_scope():
+    with pytest.raises(ValueError):
+        SIGNED(STR, scope="")
+
+
+def test_signed_tampered_payload_is_refused():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "genuine")
+        h64, _, s64 = token[len(SIGNATURE_PREFIX):].split(".")
+        forged = SIGNATURE_PREFIX + f"{h64}.{_b64(json.dumps('forged').encode())}.{s64}"
+        with pytest.raises(SecretSignatureError) as ei:
+            SIGNED_API_KEY.codec.decode(forged)
+    assert ei.value.kid == "test-signer"
+    assert str(ei.value).startswith("cannot verify signed value")
+
+
+def test_signed_signature_for_another_scope_is_refused():
+    other = SIGNED(STR, scope="other")
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "s")
+        with pytest.raises(SecretSignatureError, match="scope mismatch"):
+            other.decode(token)
+
+
+def test_signed_signer_bound_elsewhere_is_refused():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "s")
+    with installed_keyring(_verify_only_keyring({"other"})):
+        with pytest.raises(SecretSignatureError, match="bound to scopes"):
+            SIGNED_API_KEY.codec.decode(token)
+
+
+def test_signed_unknown_signer_is_refused():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "s")
+    with installed_keyring(fixture_keyring()):
+        with pytest.raises(SecretSignatureError) as ei:
+            SIGNED_API_KEY.codec.decode(token)
+    assert isinstance(ei.value.__cause__, UnknownKeyError)
+
+
+def test_signed_unknown_envelope_is_a_format_error():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        with pytest.raises(SecretFormatError):
+            SIGNED_API_KEY.codec.decode("flsig:xyz:abc.def.ghi")
+
+
+def test_signed_unsigned_value_is_rejected_by_default():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        with pytest.raises(UnsignedSecretError, match="read_unsigned is off") as ei:
+            SIGNED_API_KEY.codec.decode("sk-live-plain")
+    assert ei.value.scope == "api_key"
+
+
+def test_signed_unsigned_value_is_accepted_with_read_unsigned(caplog):
+    codec = SIGNED(STR, scope="api_key", read_unsigned=True)
+    obs = RecordingObserver()
+    with installed_keyring(fixture_asymmetric_keyring(), observer=obs):
+        with caplog.at_level("WARNING", logger="flechtwerk.secrets"):
+            assert codec.decode("sk-live-plain") == "sk-live-plain"
+    assert ("secret_unsigned_read", "api_key") in obs.calls
+    assert any("unsigned" in r.getMessage() for r in caplog.records)
+
+
+def test_signed_encode_without_a_signing_key_raises():
+    with installed_keyring(fixture_keyring()):
+        with pytest.raises(KeyringError, match="no signing key"):
+            sign_value(SIGNED_API_KEY, "s")
+
+
+def test_signed_secret_verified_fires():
+    obs = RecordingObserver()
+    with installed_keyring(fixture_asymmetric_keyring(), observer=obs):
+        SIGNED_API_KEY.codec.decode(sign_value(SIGNED_API_KEY, "s"))
+    assert ("secret_verified", "api_key", "test-signer") in obs.calls
+
+
+def test_signed_tooling_classifies_and_refuses_unsigned_attributes():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "s")
+        assert is_signed(token) is True
+        assert is_signed("plain") is False
+        assert is_signed(42) is False
+        assert is_encrypted(token) is False
+        with pytest.raises(SecretError):
+            sign_value(API_KEY, "s")
+
+
+def test_signed_signer_of_refuses_a_non_flsig_value():
+    with pytest.raises(SecretFormatError):
+        signer_of("plain")
+    with installed_keyring(fixture_asymmetric_keyring()):
+        with pytest.raises(SecretFormatError):
+            signer_of(encrypt_value(API_KEY, "s"))
+
+
+def test_signed_then_encrypted_round_trips_and_hides_the_signer():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = encrypt_value(SEALED_SIGNED_API_KEY, "sk-live-123")
+        assert SEALED_SIGNED_API_KEY.codec.decode(token) == "sk-live-123"
+    assert _header(token)["kid"] == "test-recipient"
+    assert "test-signer" not in json.dumps(_header(token))
+    assert _b64(b'"test-signer"') not in token
+
+
+def test_signed_reencrypt_keeps_the_inner_signature_verifiable():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = encrypt_value(SEALED_SIGNED_API_KEY, "kept")
+        moved = reencrypt(token, SEALED_SIGNED_API_KEY)
+        assert moved != token
+        assert SEALED_SIGNED_API_KEY.codec.decode(moved) == "kept"
+
+
+# Tokens minted by panva `jose` 6.2.12 (npm) with the fixture signer
+# "test-signer" (seed bytes(range(32, 64))) and recipient "test-recipient",
+# scope "api_key", payload JSON.stringify("from-panva-jose"). Regenerate with:
+#   const key = await importJWK({kty:'OKP', crv:'Ed25519', x, d}, 'Ed25519')
+#   new CompactSign(TextEncoder().encode(JSON.stringify(value)))
+#     .setProtectedHeader({alg:'Ed25519',kid:'test-signer',flenc_scope:'api_key'}).sign(key)
+# and, for the nested token, seal JSON.stringify("flsig:jws:" + <that JWS>) as
+# for _PANVA_JOSE_ECDH_TOKEN.
+_PANVA_JOSE_JWS_TOKEN = (
+    "flsig:jws:eyJhbGciOiJFZDI1NTE5Iiwia2lkIjoidGVzdC1zaWduZXIiLCJmbGVuY19zY29wZSI6ImFwaV9rZXkifQ"
+    ".ImZyb20tcGFudmEtam9zZSI.4GFO76IqssQLUrXDsxzczkHyCVs4W5iwW7_zhG4AUtHcvtXtW2rHGgIhbNklx1qPB0uxtSXbv-aB5vUSYngODg"
+)
+_PANVA_JOSE_NESTED_TOKEN = (
+    "flenc:jwe:eyJhbGciOiJFQ0RILUVTK0EyNTZLVyIsImVuYyI6IkEyNTZHQ00iLCJraWQiOiJ0ZXN0LXJlY2lwaWVudCIsImZsZW5jX3Nj"
+    "b3BlIjoiYXBpX2tleSIsImVwayI6eyJ4IjoibVVYS1NaU2J6MFRDSjNWaUNYRjZZa05KYVA3WHh5YjhnMVlEcFBlTnZ4byIsImNydiI6"
+    "IlgyNTUxOSIsImt0eSI6Ik9LUCJ9fQ.UxK6uIEE0C9gKmcNQ9xBAM_3FPkSTC3Dd5lxCuzU6pQQfNJ72EK_2g.8O-im68xAS5XFeEc."
+    "6CzCRw0CoYNdwuyusitVuQ9JhEJG0_4mxtz4K7rkfiYad1maYoXiQWSI4WooKAX07flU4CQ0bZ4MGEQzXvEq2LL8plfw9rNuS7g9ewayA2mv"
+    "2lZt-stjuREMZG5pj-Qyoy4n7DsrRD05DtSGKHiePQiTa60ggXJ5oFZKO88Sou6cBLc-Tpuy8RMoS_XXeaa_RAZiVHhZw-0NqoXA4XUWWUYn"
+    "CO80EWdP1plGjwyHEW91EMR1gTZs6Lq1zXWE9qjC4p-RVszdmZ8mNfyv1g.J--jcRUA0jQ_SOF_sqkr0A"
+)
+
+
+def test_signed_reads_pinned_panva_jose_token():
+    """A real panva-`jose` Ed25519 JWS verifies with our reader."""
+    with installed_keyring(fixture_asymmetric_keyring()):
+        assert SIGNED_API_KEY.codec.decode(_PANVA_JOSE_JWS_TOKEN) == "from-panva-jose"
+
+
+def test_signed_reads_pinned_panva_jose_nested_token():
+    """A real panva-`jose` sign-then-encrypt token opens and verifies with our reader."""
+    with installed_keyring(fixture_asymmetric_keyring()):
+        assert SEALED_SIGNED_API_KEY.codec.decode(_PANVA_JOSE_NESTED_TOKEN) == "from-panva-jose"
+
+
+def _independent_ed25519_verify(compact: str, public: bytes) -> bytes:
+    h64, p64, s64 = compact.split(".")
+    assert json.loads(_unb64(h64))["alg"] == "Ed25519"
+    Ed25519PublicKey.from_public_bytes(public).verify(_unb64(s64), f"{h64}.{p64}".encode("ascii"))
+    return _unb64(p64)
+
+
+def test_signed_our_token_verifies_with_independent_reader():
+    """Our Ed25519 JWS → a verifier built on pyca/cryptography alone."""
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = sign_value(SIGNED_API_KEY, "round-trips-out")
+    payload = _independent_ed25519_verify(token[len(SIGNATURE_PREFIX):], _SIGNER.public)
+    assert json.loads(payload) == "round-trips-out"
+
+
+def test_signed_errors_carry_caller_context():
+    """Like their encryption siblings, both errors name the record a caller located."""
+    signature = SecretSignatureError(scope="api_key", kid="k", topic="cfg", wire_key="w", reason="why")
+    assert str(signature) == "cannot verify signed value; scope='api_key'; kid='k'; key='w'; topic='cfg'; why"
+    assert (signature.topic, signature.wire_key) == ("cfg", "w")
+    unsigned = UnsignedSecretError(scope="api_key", topic="cfg", wire_key="w")
+    assert str(unsigned) == "value is unsigned but read_unsigned is off for this attribute; scope='api_key'; key='w'; topic='cfg'"
+    assert str(SecretSignatureError()) == "cannot verify signed value"
+    assert str(UnsignedSecretError()) == "value is unsigned but read_unsigned is off for this attribute"

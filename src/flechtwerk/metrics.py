@@ -342,6 +342,24 @@ class Metrics:
             registry=self.registry,
         )
 
+    @cached_property
+    def secret_unsigned_reads_total(self) -> Counter:
+        return Counter(
+            "flechtwerk_secret_unsigned_reads_total",
+            "Reads of a signed value that took the unsigned branch — should reach zero before ending the migration",
+            self._label_names + ["scope"],
+            registry=self.registry,
+        )
+
+    @cached_property
+    def secret_verifications_total(self) -> Counter:
+        return Counter(
+            "flechtwerk_secret_verifications_total",
+            "Successful signature verifications, by scope and signer kid — 'verifications under the old kid are flat' gates a signer rotation",
+            self._label_names + ["scope", "kid"],
+            registry=self.registry,
+        )
+
     # MQTT metrics — the `topic` label carries the subscription filter from
     # config (bounded cardinality), never the per-device publish topic.
 
