@@ -5,6 +5,7 @@ never loads paho — mirroring the framework rule that ``flechtwerk/mqtt.py``
 is the only eager paho importer (the ``flechtwerk[mqtt]`` extra seam).
 """
 import asyncio
+import base64
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Self
@@ -12,7 +13,9 @@ from typing import TYPE_CHECKING, Any, Self
 from aiokafka import ConsumerRecord, TopicPartition
 
 from flechtwerk.keyring import (
+    Ed25519Key,
     Keyring,
+    X25519Key,
     _override_secret_runtime,
     _restore_secret_runtime,
 )
@@ -29,6 +32,7 @@ __all__ = [
     "FakeMqttConnection",
     "FakeMqttSubscription",
     "InMemoryStateStore",
+    "fixture_asymmetric_keyring",
     "fixture_keyring",
     "installed_keyring",
     "make_mqtt_message",
@@ -168,6 +172,35 @@ def fixture_keyring() -> Keyring:
     kid is ``test-key``.
     """
     return Keyring.of({"test-key": bytes(range(32))}, primary="test-key")
+
+
+def fixture_asymmetric_keyring(*, recipient_private: bool = True) -> Keyring:
+    """A deterministic `Keyring` holding all three key kinds, for tests.
+
+    The oct ``test-key`` is the unbound ``primary``; the X25519 recipient
+    ``test-recipient`` seals scope ``api_key`` (``primaries``) and the Ed25519
+    ``test-signer`` signs it (``signing``), both bound to ``api_key``.
+    ``recipient_private=False`` drops the recipient's private half, making a
+    seal-only keyring — what a writer holds. All key material is fixed so
+    failures are reproducible.
+    """
+    def unb64(s: str) -> bytes:
+        return base64.urlsafe_b64decode(s + "=")
+
+    recipient = X25519Key(
+        public=unb64("j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8"),
+        private=bytes(range(32)) if recipient_private else None,
+    )
+    signer = Ed25519Key(public=unb64("Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc"), private=bytes(range(32, 64)))
+    return Keyring.of(
+        {"test-key": bytes(range(32))},
+        primary="test-key",
+        primaries={"api_key": "test-recipient"},
+        recipients={"test-recipient": recipient},
+        scopes={"test-recipient": {"api_key"}, "test-signer": {"api_key"}},
+        signers={"test-signer": signer},
+        signing={"api_key": "test-signer"},
+    )
 
 
 @contextmanager

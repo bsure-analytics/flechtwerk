@@ -448,7 +448,7 @@ plain sentence, no prefix, matching `git log`.
     `flenc_signing`; two installs of equal asymmetric keyrings are idempotent.
   - Verify: `uv run pytest -q tests/keyring_test.py` passes, then commit.
 
-- [ ] **2. Seal to recipients, enforce bindings on read** (`src/flechtwerk/secrets.py`, `src/flechtwerk/testing.py`, `tests/secrets_test.py`)
+- [x] **2. Seal to recipients, enforce bindings on read** (`src/flechtwerk/secrets.py`, `src/flechtwerk/testing.py`, `tests/secrets_test.py`)
   - Constants (keep `_ALG`, `_ENC`, `_REGISTRY` and their names; Pre-Flight greps
     `_ALG = "dir"`): add `_RECIPIENT_ALG = "ECDH-ES+A256KW"` and
     `_RECIPIENT_REGISTRY = jwe.JWERegistry(header_registry=<the same flenc_scope header>, algorithms=[_RECIPIENT_ALG, _ENC], strict_check_header=True)`.
@@ -934,3 +934,7 @@ cannot open the file, so it would have nothing to judge.
 - 2026-10-11, execution: task 1 started.
 - 2026-10-11, execution: task 1 done — `uv run pytest -q tests/keyring_test.py` →
   `63 passed`; keyring.py fully covered by the wider suite. Ticked. Task 2 started.
+- 2026-10-11, execution: task 2 done — `uv run pytest -q tests/secrets_test.py
+  tests/keyring_test.py` → `124 passed`, both modules at 100 %. Beyond the listed
+  tests, `test_asymmetric_signing_kid_cannot_open_a_token` pins that a signing kid
+  stays an `UnknownKeyError` cause. Ticked. Task 3 started.

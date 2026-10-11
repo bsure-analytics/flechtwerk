@@ -14,8 +14,13 @@ JSON-string wire form is ``flenc:jwe:<compact JWE>``:
 
     API_KEY = Attribute("api_key", ENCRYPTED(STR))
 
-The token is symmetric ``dir`` + ``A256GCM`` under an injected keyring, and
-readers pin a strict ``(alg, enc)`` allowlist. Two optional per-attribute
+The token is sealed under an injected keyring in one of two generations:
+symmetric ``dir`` + ``A256GCM`` under an oct key, or ``ECDH-ES+A256KW`` +
+``A256GCM`` to an X25519 recipient key (whose public half seals and whose
+private half opens). Readers pin a strict ``(alg, enc)`` allowlist per
+generation, and the **kind of the key behind the token's ``kid``** selects
+which one applies — a token never chooses. A key bound to scopes in the
+keyring serves only those scopes, on write and on read. Two optional per-attribute
 knobs: ``scope`` binds a token into a domain-separation compartment
 (``flenc_scope`` in the integrity-protected header) so it can't be relocated
 into a differently-scoped field — a one-way ratchet (adding a scope is
@@ -24,6 +29,7 @@ plaintext value on read during a migration. See ``docs/concepts/secrets.md``
 for the full spec (format longevity, rotation, migration, post-quantum posture).
 """
 import base64
+import functools
 import json
 import logging
 from collections.abc import AsyncIterator, Iterable
@@ -31,7 +37,7 @@ from dataclasses import dataclass
 
 from aiokafka import AIOKafkaConsumer
 from joserfc import jwe
-from joserfc.jwk import OctKey
+from joserfc.jwk import OctKey, OKPKey
 from joserfc.registry import HeaderParameter
 
 from flechtwerk.attribute import Attribute
@@ -40,8 +46,11 @@ from flechtwerk.attribute.codec import Codec
 from .kafka import decode_key, decode_record, is_tombstone, read_to_end, topic_partitions
 from .types import Config
 from .keyring import (
+    Ed25519Key,
     Keyring,
+    KeyringError,
     UnknownKeyError,
+    X25519Key,
     active_keyring,
     active_observer,
     install_keyring,
@@ -51,6 +60,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "ENCRYPTED",
+    "Ed25519Key",
     "Keyring",
     "PREFIX",
     "PlaintextSecretError",
@@ -59,6 +69,7 @@ __all__ = [
     "SecretDecryptError",
     "SecretError",
     "SecretFormatError",
+    "X25519Key",
     "encrypt_value",
     "install_keyring",
     "is_encrypted",
@@ -78,14 +89,26 @@ _SCHEME_PREFIX = f"{SCHEME}:"  # any value under this scheme is ciphertext-form
 _ALG = "dir"
 _ENC = "A256GCM"
 _FLENC_SCOPE = "flenc_scope"  # optional protected-header param — the domain-separation scope
+_RECIPIENT_ALG = "ECDH-ES+A256KW"
 
-# The v1 acceptance rule, pinned at the single call site: exactly dir+A256GCM;
-# flenc_scope is an OPTIONAL header (a token may carry a scope or not). Widening
-# this allowlist (a future hybrid post-quantum mode) is a deliberate reader-side
-# change, never token content.
+# The one extension header every registry admits: flenc_scope is OPTIONAL (a
+# token may carry a scope or not).
+_HEADER_REGISTRY = {_FLENC_SCOPE: HeaderParameter("Flechtwerk domain-separation scope", "str", False)}
+
+# The acceptance rule: exactly two (alg, enc) pairs, one registry each —
+# dir+A256GCM for an oct kid, ECDH-ES+A256KW+A256GCM for an X25519 recipient
+# kid. The KIND OF THE KEY behind the token's kid selects the registry; the
+# token's own header never chooses, so neither generation can be confused for
+# the other. Widening an allowlist (a future hybrid post-quantum mode) is a
+# deliberate reader-side change, never token content.
 _REGISTRY = jwe.JWERegistry(
-    header_registry={_FLENC_SCOPE: HeaderParameter("Flechtwerk domain-separation scope", "str", False)},
+    header_registry=_HEADER_REGISTRY,
     algorithms=[_ALG, _ENC],
+    strict_check_header=True,
+)
+_RECIPIENT_REGISTRY = jwe.JWERegistry(
+    header_registry=_HEADER_REGISTRY,
+    algorithms=[_RECIPIENT_ALG, _ENC],
     strict_check_header=True,
 )
 
@@ -213,14 +236,48 @@ def kid_of(token: str) -> str:
     return _read_kid(_compact(token))
 
 
+def _b64url(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+@functools.cache
+def _okp_private_key(kid: str, crv: str, public: bytes, private: bytes) -> OKPKey:
+    """Import a private OKP key and check that its halves belong together.
+
+    joserfc imports a mismatched pair without complaint, so the check derives
+    the public half from the private one. Cached: it runs once per key
+    material. A mismatch is a keyring misconfiguration and propagates as
+    `KeyringError`, unwrapped.
+    """
+    key = OKPKey.import_key({"crv": crv, "d": _b64url(private), "kty": "OKP", "x": _b64url(public)})
+    if key.private_key.public_key().public_bytes_raw() != public:
+        raise KeyringError(f"{crv} key {kid!r}: the private key does not match its public key")
+    return key
+
+
 def _encrypt_payload(scope: str, payload: bytes) -> str:
-    """Encrypt raw payload bytes under the primary key, stamping ``scope`` if set."""
-    kid, key_bytes = active_keyring().primary_pair()
-    key = OctKey.import_key(key_bytes, {"kid": kid})
-    protected = {"alg": _ALG, "enc": _ENC, "kid": kid}
+    """Encrypt raw payload bytes under the scope's sealing key, stamping ``scope`` if set.
+
+    The keyring picks the kid (``primaries[scope]``, else ``primary``) and
+    refuses a scope outside that key's binding. An oct kid seals ``dir``; an
+    X25519 recipient kid seals ``ECDH-ES+A256KW`` to its public half.
+    """
+    keyring = active_keyring()
+    kid = keyring.sealing_kid(scope)
+    if kid in keyring.recipients:
+        recipient = keyring.recipient_for(kid)
+        if recipient.private is not None:
+            _okp_private_key(kid, "X25519", recipient.public, recipient.private)
+        key = OKPKey.import_key({"crv": "X25519", "kty": "OKP", "x": _b64url(recipient.public)})
+        protected = {"alg": _RECIPIENT_ALG, "enc": _ENC, "kid": kid}
+        registry = _RECIPIENT_REGISTRY
+    else:
+        key = OctKey.import_key(keyring.key_for(kid), {"kid": kid})
+        protected = {"alg": _ALG, "enc": _ENC, "kid": kid}
+        registry = _REGISTRY
     if scope:
         protected[_FLENC_SCOPE] = scope
-    token = jwe.encrypt_compact(protected, payload, key, registry=_REGISTRY)
+    token = jwe.encrypt_compact(protected, payload, key, registry=registry)
     return PREFIX + token
 
 
@@ -228,8 +285,9 @@ def _decrypt_to_payload(scope: str, token: str, *, topic: str | None = None,
                         wire_key: str | None = None) -> bytes:
     """Decrypt a ``flenc`` token to raw payload bytes, enforcing the scope ratchet.
 
-    Selects the key by the token's ``kid`` and enforces the ``(alg, enc)``
-    allowlist. Then, comparing the codec's ``scope`` to the token's stamped
+    Selects the key by the token's ``kid`` — a recipient kid opens with its
+    private half under the ``ECDH-ES+A256KW`` allowlist, any other kid is an oct
+    key under the ``dir`` allowlist. Then, comparing the codec's ``scope`` to the token's stamped
     ``flenc_scope``:
 
     - ``scope`` set: reject only when the token carries a *different* scope
@@ -240,20 +298,36 @@ def _decrypt_to_payload(scope: str, token: str, *, topic: str | None = None,
     - ``scope`` empty: reject when the token *carries* a scope (downgrade
       blocked — a scoped token may not be read by an unscoped codec).
 
-    Every failure surfaces as ``SecretDecryptError``.
+    Finally, a key bound to scopes in the keyring rejects a token whose
+    stamped scope (possibly none) is outside its binding. That check runs
+    after decryption, because only then is the stamped header authenticated.
+
+    Every token failure surfaces as ``SecretDecryptError``; a keyring whose
+    recipient halves do not match raises ``KeyringError``.
     """
     # Resolve the keyring first: a missing keyring is a deployment error that
     # should win over any complaint about the token's shape.
     keyring = active_keyring()
     compact = _compact(token)
     kid = _read_kid(compact)
+    if kid in keyring.recipients:
+        recipient = keyring.recipient_for(kid)
+        if recipient.private is None:
+            raise SecretDecryptError(
+                scope=scope, kid=kid, topic=topic, wire_key=wire_key,
+                reason=f"keyring holds only the public half of {kid!r}: it can seal but not open",
+            )
+        key = _okp_private_key(kid, "X25519", recipient.public, recipient.private)
+        registry = _RECIPIENT_REGISTRY
+    else:
+        try:
+            key_bytes = keyring.key_for(kid)
+        except UnknownKeyError as e:
+            raise SecretDecryptError(scope=scope, kid=kid, topic=topic, wire_key=wire_key) from e
+        key = OctKey.import_key(key_bytes, {"kid": kid})
+        registry = _REGISTRY
     try:
-        key_bytes = keyring.key_for(kid)
-    except UnknownKeyError as e:
-        raise SecretDecryptError(scope=scope, kid=kid, topic=topic, wire_key=wire_key) from e
-    key = OctKey.import_key(key_bytes, {"kid": kid})
-    try:
-        obj = jwe.decrypt_compact(compact, key, registry=_REGISTRY)
+        obj = jwe.decrypt_compact(compact, key, registry=registry)
     except Exception as e:
         raise SecretDecryptError(scope=scope, kid=kid, topic=topic, wire_key=wire_key) from e
     stamped = obj.protected.get(_FLENC_SCOPE)  # str | None
@@ -267,6 +341,12 @@ def _decrypt_to_payload(scope: str, token: str, *, topic: str | None = None,
         raise SecretDecryptError(
             scope=scope, kid=kid, topic=topic, wire_key=wire_key,
             reason=f"token is scoped {stamped!r} but this codec declares no scope (downgrade blocked)",
+        )
+    bound = keyring.scopes.get(kid)
+    if bound is not None and stamped not in bound:
+        raise SecretDecryptError(
+            scope=scope, kid=kid, topic=topic, wire_key=wire_key,
+            reason=f"key {kid!r} is bound to scopes {sorted(bound)}; token stamped {stamped!r}",
         )
     active_observer().secret_decrypted(scope, kid)
     return obj.plaintext
@@ -347,12 +427,15 @@ def encrypt_value[V](attribute: Attribute[V], value: V) -> str:
 
 
 def reencrypt[V](token: str, attribute: Attribute[V]) -> str:
-    """Re-encrypt ``token`` under the current primary key (decrypt-with-named-kid).
+    """Re-encrypt ``token`` under the scope's current sealing key (decrypt-with-named-kid).
 
     The building block for a rotation sweep and for cross-environment
     promotion: it decrypts with the key the token names, then re-encrypts the
-    same payload under the primary — preserving the exact inner bytes without
-    round-tripping through the decoded value. Also promotes an unscoped token to
+    same payload under the keyring's sealing key for the attribute's scope
+    (``primaries[scope]``, else ``primary``) — which moves a token from ``dir``
+    to a recipient key, from one recipient key to another, and back. Opening a
+    recipient token needs that recipient's private half. The exact inner bytes
+    are preserved, never round-tripped through the decoded value. Also promotes an unscoped token to
     the attribute's ``scope`` (the ratchet's upgrade path); it cannot strip a
     scope (an unscoped attribute's decrypt rejects a scoped token). Raises if
     ``attribute`` is not encrypted, or ``SecretDecryptError`` if the token

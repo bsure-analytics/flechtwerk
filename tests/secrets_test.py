@@ -8,16 +8,29 @@ is genuinely cross-implementation, not a joserfc dialect.
 """
 import base64
 import json
+import struct
 import subprocess
 import sys
 
 import pytest
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.x448 import X448PrivateKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
+from cryptography.hazmat.primitives.keywrap import aes_key_unwrap
+from joserfc import jwe
+from joserfc.jwk import OKPKey
+from joserfc.registry import HeaderParameter
 
 from flechtwerk.attribute import ANY, Attribute, DICT, LIST, RECORD, Record, STR
 from flechtwerk.keyring import (
     Keyring,
+    KeyringError,
     KeyringNotInstalledError,
+    UnknownKeyError,
+    X25519Key,
 )
 from flechtwerk.secrets import (
     ENCRYPTED,
@@ -32,7 +45,14 @@ from flechtwerk.secrets import (
     reencrypt,
     scan_config_topics,
 )
-from flechtwerk.testing import FakeKafkaConsumer, RecordingObserver, fixture_keyring, installed_keyring, make_record
+from flechtwerk.testing import (
+    FakeKafkaConsumer,
+    RecordingObserver,
+    fixture_asymmetric_keyring,
+    fixture_keyring,
+    installed_keyring,
+    make_record,
+)
 
 KEY_A = bytes(range(32))
 KEY_B = bytes(range(32, 64))
@@ -509,3 +529,254 @@ def test_importing_flechtwerk_does_not_load_joserfc():
     """The base install must not drag in joserfc — the [secrets] extra seam."""
     code = "import flechtwerk.module, sys; assert 'joserfc' not in sys.modules, sorted(m for m in sys.modules if 'jose' in m)"
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# --- asymmetric recipients and scope-bound keys ---
+
+
+def _unb64(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _b64(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def _header(token: str) -> dict:
+    return json.loads(_unb64(token[len(PREFIX):].split(".", 1)[0]))
+
+
+def _with_header(token: str, header: dict) -> str:
+    """Rewrite a token's protected header (which invalidates its tag — the point is the reader's reaction)."""
+    rest = token[len(PREFIX):].split(".", 1)[1]
+    return PREFIX + _b64(json.dumps(header, separators=(",", ":")).encode()) + "." + rest
+
+
+_RECIPIENT_PUBLIC = fixture_asymmetric_keyring().recipient_for("test-recipient").public
+
+
+def _mint_recipient_token(header: dict, value: str, public: bytes = _RECIPIENT_PUBLIC) -> str:
+    """An ECDH-ES+A256KW token minted with joserfc directly, bypassing the writer's checks."""
+    key = OKPKey.import_key({"crv": "X25519", "kty": "OKP", "x": _b64(public)})
+    registry = jwe.JWERegistry(header_registry={"flenc_scope": HeaderParameter("scope", "str", False)},
+                               algorithms=["ECDH-ES+A256KW", "A256GCM"])
+    return PREFIX + jwe.encrypt_compact(header, json.dumps(value).encode(), key, registry=registry)
+
+
+def _x25519_pair(seed: int) -> X25519Key:
+    private = bytes(range(seed, seed + 32))
+    public = X25519PrivateKey.from_private_bytes(private).public_key().public_bytes_raw()
+    return X25519Key(public=public, private=private)
+
+
+def test_asymmetric_seal_only_writer_seals_and_full_reader_opens():
+    with installed_keyring(fixture_asymmetric_keyring(recipient_private=False)):
+        token = encrypt_value(API_KEY, "sk-live-123")
+    with installed_keyring(fixture_asymmetric_keyring()):
+        assert API_KEY.codec.decode(token) == "sk-live-123"
+
+
+def test_asymmetric_seal_only_keyring_cannot_open():
+    with installed_keyring(fixture_asymmetric_keyring(recipient_private=False)):
+        token = encrypt_value(API_KEY, "s")
+        with pytest.raises(SecretDecryptError, match="can seal but not open") as ei:
+            API_KEY.codec.decode(token)
+    assert ei.value.kid == "test-recipient"
+
+
+def test_asymmetric_token_shape():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = encrypt_value(API_KEY, "s")
+    header = _header(token)
+    assert {k: header[k] for k in ("alg", "enc", "flenc_scope", "kid")} == {
+        "alg": "ECDH-ES+A256KW", "enc": "A256GCM", "flenc_scope": "api_key", "kid": "test-recipient",
+    }
+    assert header["epk"]["crv"] == "X25519"
+    assert token[len(PREFIX):].split(".")[1] != ""  # the wrapped per-token content key
+    assert kid_of(token) == "test-recipient"
+
+
+def test_asymmetric_algorithm_confusion_is_refused_both_ways():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        dir_naming_recipient = _independent_token(
+            {"alg": "dir", "enc": "A256GCM", "flenc_scope": "api_key", "kid": "test-recipient"},
+            b'"x"', bytes(range(32)),
+        )
+        with pytest.raises(SecretDecryptError):
+            API_KEY.codec.decode(dir_naming_recipient)
+        ecdh_naming_oct = _mint_recipient_token(
+            {"alg": "ECDH-ES+A256KW", "enc": "A256GCM", "flenc_scope": "api_key", "kid": "test-key"}, "x",
+        )
+        with pytest.raises(SecretDecryptError):
+            API_KEY.codec.decode(ecdh_naming_oct)
+
+
+def _hostile_epks() -> list[dict]:
+    x448 = X448PrivateKey.generate().public_key().public_bytes_raw()
+    p256 = ec.generate_private_key(ec.SECP256R1()).public_key().public_numbers()
+    return [
+        {"crv": "X25519", "kty": "OKP", "x": _b64(bytes(32))},
+        {"crv": "X448", "kty": "OKP", "x": _b64(x448)},
+        {"crv": "P-256", "kty": "EC", "x": _b64(p256.x.to_bytes(32, "big")), "y": _b64(p256.y.to_bytes(32, "big"))},
+    ]
+
+
+@pytest.mark.parametrize("epk", _hostile_epks(), ids=["x25519-zero", "x448", "p256"])
+def test_asymmetric_hostile_epk_is_refused(epk):
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = encrypt_value(API_KEY, "s")
+        with pytest.raises(SecretDecryptError):
+            API_KEY.codec.decode(_with_header(token, _header(token) | {"epk": epk}))
+
+
+def test_asymmetric_mismatched_recipient_pair_raises_keyring_error():
+    good = fixture_asymmetric_keyring()
+    mismatched = X25519Key(public=_RECIPIENT_PUBLIC, private=bytes(range(1, 33)))
+    keyring = Keyring.of(good.keys, primary="test-key", primaries=good.primaries,
+                         recipients={"test-recipient": mismatched}, scopes={"test-recipient": {"api_key"}})
+    with installed_keyring(good):
+        token = encrypt_value(API_KEY, "s")
+    with installed_keyring(keyring):
+        with pytest.raises(KeyringError, match="does not match"):
+            API_KEY.codec.decode(token)
+        with pytest.raises(KeyringError, match="does not match"):
+            encrypt_value(API_KEY, "s")
+
+
+def test_asymmetric_dir_and_recipient_tokens_decode_side_by_side():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        recipient_token = encrypt_value(API_KEY, "sealed")
+        dir_token = encrypt_value(UNSCOPED, "symmetric")
+        assert kid_of(recipient_token) == "test-recipient"
+        assert kid_of(dir_token) == "test-key"
+        assert API_KEY.codec.decode(recipient_token) == "sealed"
+        assert UNSCOPED.codec.decode(dir_token) == "symmetric"
+
+
+def test_asymmetric_binding_on_read_refuses_recipient_tokens_outside_it():
+    other = Attribute("other", ENCRYPTED(STR, scope="other"))
+    with installed_keyring(fixture_asymmetric_keyring()):
+        stamped_other = _mint_recipient_token(
+            {"alg": "ECDH-ES+A256KW", "enc": "A256GCM", "flenc_scope": "other", "kid": "test-recipient"}, "x",
+        )
+        with pytest.raises(SecretDecryptError, match="bound to scopes"):
+            other.codec.decode(stamped_other)
+        unscoped = _mint_recipient_token({"alg": "ECDH-ES+A256KW", "enc": "A256GCM", "kid": "test-recipient"}, "x")
+        with pytest.raises(SecretDecryptError, match="bound to scopes"):
+            API_KEY.codec.decode(unscoped)
+
+
+def test_asymmetric_bound_oct_key_refuses_tokens_outside_its_binding():
+    keyring = Keyring.of({"test-key": KEY_A}, primary="test-key", scopes={"test-key": {"api_key"}})
+    token = _independent_token(
+        {"alg": "dir", "enc": "A256GCM", "flenc_scope": "admin_token", "kid": "test-key"}, b'"x"', KEY_A,
+    )
+    with installed_keyring(keyring):
+        with pytest.raises(SecretDecryptError, match="bound to scopes"):
+            ADMIN_TOKEN.codec.decode(token)
+        assert API_KEY.codec.decode(encrypt_value(API_KEY, "fine")) == "fine"
+
+
+def test_asymmetric_binding_on_write_refuses_an_unscoped_value():
+    keyring = Keyring.of({}, primary="test-recipient",
+                         recipients={"test-recipient": X25519Key(public=_RECIPIENT_PUBLIC)},
+                         scopes={"test-recipient": {"api_key"}})
+    with installed_keyring(keyring):
+        with pytest.raises(KeyringError, match="an unscoped value"):
+            UNSCOPED.codec.encode("s")
+
+
+def test_asymmetric_per_scope_sealing_picks_the_key_per_scope():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        assert _header(encrypt_value(API_KEY, "s"))["alg"] == "ECDH-ES+A256KW"
+        assert _header(encrypt_value(UNSCOPED, "s"))["alg"] == "dir"
+
+
+def test_asymmetric_scope_ratchet_blocks_relocation_of_recipient_tokens():
+    base = fixture_asymmetric_keyring()
+    keyring = Keyring.of(base.keys, primary="test-key",
+                         primaries={"admin_token": "test-recipient", "api_key": "test-recipient"},
+                         recipients=base.recipients, scopes={"test-recipient": {"admin_token", "api_key"}})
+    with installed_keyring(keyring):
+        stolen = encrypt_value(ADMIN_TOKEN, "s")
+        with pytest.raises(SecretDecryptError, match="scope mismatch"):
+            API_KEY.codec.decode(stolen)
+
+
+def test_asymmetric_reencrypt_moves_tokens_between_key_kinds():
+    base = fixture_asymmetric_keyring()
+    second = _x25519_pair(100)
+    recipients = {"second-recipient": second, "test-recipient": base.recipient_for("test-recipient")}
+    scopes = {"second-recipient": {"api_key"}, "test-recipient": {"api_key"}}
+    with installed_keyring(fixture_keyring()):
+        dir_token = encrypt_value(API_KEY, "moved")
+    with installed_keyring(Keyring.of(base.keys, primary="test-key", primaries={"api_key": "test-recipient"},
+                                      recipients=recipients, scopes=scopes)):
+        to_recipient = reencrypt(dir_token, API_KEY)
+        assert kid_of(to_recipient) == "test-recipient"
+    with installed_keyring(Keyring.of(base.keys, primary="test-key", primaries={"api_key": "second-recipient"},
+                                      recipients=recipients, scopes=scopes)):
+        to_second = reencrypt(to_recipient, API_KEY)
+        assert kid_of(to_second) == "second-recipient"
+        assert API_KEY.codec.decode(to_second) == "moved"
+
+
+def test_asymmetric_secret_decrypted_reports_the_recipient_kid():
+    obs = RecordingObserver()
+    with installed_keyring(fixture_asymmetric_keyring(), observer=obs):
+        API_KEY.codec.decode(encrypt_value(API_KEY, "s"))
+    assert ("secret_decrypted", "api_key", "test-recipient") in obs.calls
+
+
+def test_asymmetric_signing_kid_cannot_open_a_token():
+    with installed_keyring(fixture_asymmetric_keyring()):
+        token = _independent_token(
+            {"alg": "dir", "enc": "A256GCM", "flenc_scope": "api_key", "kid": "test-signer"}, b'"x"', KEY_A,
+        )
+        with pytest.raises(SecretDecryptError) as ei:
+            API_KEY.codec.decode(token)
+    assert isinstance(ei.value.__cause__, UnknownKeyError)
+
+
+# An ECDH-ES+A256KW token minted by panva `jose` 6.2.12 (npm) to the fixture
+# recipient "test-recipient" (public x j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8),
+# scope "api_key", payload JSON.stringify("from-panva-jose"). Regenerate with:
+#   const key = await importJWK({kty:'OKP', crv:'X25519', x}, 'ECDH-ES+A256KW')
+#   new CompactEncrypt(TextEncoder().encode(JSON.stringify(value)))
+#     .setProtectedHeader({alg:'ECDH-ES+A256KW',enc:'A256GCM',kid:'test-recipient',flenc_scope:'api_key'})
+#     .encrypt(key)
+_PANVA_JOSE_ECDH_TOKEN = (
+    "flenc:jwe:eyJhbGciOiJFQ0RILUVTK0EyNTZLVyIsImVuYyI6IkEyNTZHQ00iLCJraWQiOiJ0ZXN0LXJlY2lwaWVudCIsImZsZW5jX3Nj"
+    "b3BlIjoiYXBpX2tleSIsImVwayI6eyJ4IjoiQ05Kd3dRVkhjQzc4eUxLcFo3NkZYTFk2aVNkc1U5el90N2R0T0VIc2JHdyIsImNydiI6"
+    "IlgyNTUxOSIsImt0eSI6Ik9LUCJ9fQ.25AYx4I-5kAOer_IxHPTEWdw1-06HwobWuxKoZST6Ck-7dh4XfdwZQ.XtWiNILmXZl60Vkl."
+    "Ysf9xPVrhFB_t2KoRNyh7Jc.ZrUOixIdsD2XSHONnGIzmw"
+)
+
+
+def test_asymmetric_reads_pinned_panva_jose_token():
+    """A real panva-`jose` ECDH-ES+A256KW token opens with our reader."""
+    with installed_keyring(fixture_asymmetric_keyring()):
+        assert API_KEY.codec.decode(_PANVA_JOSE_ECDH_TOKEN) == "from-panva-jose"
+
+
+def _independent_ecdh_es_a256kw_decrypt(compact: str, private: bytes) -> bytes:
+    """RFC 7518 §4.6: Z = X25519(d, epk); KEK = Concat KDF(SHA-256, Z, alg id); CEK = unwrap; AES-GCM."""
+    h64, ek64, iv64, ct64, tag64 = compact.split(".")
+    header = json.loads(_unb64(h64))
+    epk = X25519PublicKey.from_public_bytes(_unb64(header["epk"]["x"]))
+    z = X25519PrivateKey.from_private_bytes(private).exchange(epk)
+    alg = header["alg"].encode()
+    apu, apv = _unb64(header.get("apu", "")), _unb64(header.get("apv", ""))
+    other = (struct.pack(">I", len(alg)) + alg + struct.pack(">I", len(apu)) + apu
+             + struct.pack(">I", len(apv)) + apv + struct.pack(">I", 256))
+    kek = ConcatKDFHash(algorithm=hashes.SHA256(), length=32, otherinfo=other).derive(z)
+    cek = aes_key_unwrap(kek, _unb64(ek64))
+    return AESGCM(cek).decrypt(_unb64(iv64), _unb64(ct64) + _unb64(tag64), h64.encode("ascii"))
+
+
+def test_asymmetric_our_token_decodes_with_independent_reader():
+    """Our ECDH-ES+A256KW token → a reader built on pyca/cryptography alone."""
+    with installed_keyring(fixture_asymmetric_keyring(recipient_private=False)):
+        token = encrypt_value(API_KEY, "round-trips-out")
+    plaintext = _independent_ecdh_es_a256kw_decrypt(token[len(PREFIX):], bytes(range(32)))
+    assert json.loads(plaintext) == "round-trips-out"
