@@ -1,5 +1,5 @@
 ---
-branch: worktree-encryption
+branch: main
 closeout_push: false
 created: 2026-10-10
 executor:
@@ -69,6 +69,14 @@ All commands ran on 2026-10-11 in the worktree
 in a planning session under permission mode `auto` — the mode the executor runs in.
 Every command this plan prescribes ran cleanly under it. (The first draft was written
 on 2026-10-10 in the main checkout; every fact below was re-established here.)
+
+**Retargeted to the main checkout at handoff.** The run works in
+`/Users/christian/projects/bsure-analytics/flechtwerk` on branch `main`, which was
+fast-forwarded to the handoff commit `c765986`, the tip of `worktree-encryption`, so
+the two hold identical files. There, `git branch --show-current` → `main`,
+`git status --porcelain` → empty, `uv run python -c "import sys; print(sys.version_info[:2])"`
+→ `(3, 14)`, and `uv run pytest -q` → `587 passed, 22 deselected`. The facts below that
+name the worktree hold for this checkout as well.
 
 - **Repository and branch.** The worktree is on branch `worktree-encryption`, clean,
   fast-forwarded to `main` at `231e7f5 Make Record.raw a read-only snapshot`; remote
@@ -313,7 +321,7 @@ the message.
 3. **Ground.** Run each `git` command on its own.
    - This file exists at `2026-10-10-asymmetric-secrets-plan.md`, the `plan_file` in
      its frontmatter, in the working directory
-     `/Users/christian/projects/bsure-analytics/flechtwerk/.claude/worktrees/encryption`.
+     `/Users/christian/projects/bsure-analytics/flechtwerk`.
    - `git remote -v` names `bsure-analytics/flechtwerk`.
    - `git branch --show-current` prints the `branch` the frontmatter names.
    - `git status --porcelain` is empty — or this is a resume: the frontmatter says
@@ -405,8 +413,9 @@ plain sentence, no prefix, matching `git log`.
     - `kty: oct` as today, plus an optional `flenc_scopes` member;
     - `kty: OKP` with `crv: X25519` → `recipients`, or `crv: Ed25519` → `signers`:
       `kid` and `x` required, `d` optional, both decoded with the existing strict
-      `_decode_key` (malformed base64url → `KeyringError`), `flenc_scopes` required by
-      rule 6;
+      `_decode_key` (generalize its `'k' must be a base64url string` message to name
+      the member being decoded) (malformed base64url → `KeyringError`), `flenc_scopes`
+      required by rule 6;
     - any other `crv` → `KeyringError` naming the curve; any other `kty` → `KeyringError`
       (reword the message to name the accepted kinds — tests only check the type).
     `flenc_scopes`, when present, must be a non-empty JSON array of non-empty strings.
@@ -612,7 +621,7 @@ plain sentence, no prefix, matching `git log`.
     default and accepted with `read_unsigned=True` (WARNING + `secret_unsigned_read`);
     encode without a signing key for the scope → `KeyringError`; `secret_verified`
     fires; `sign_value`, `is_signed`, and `sign_value` refusing a non-`SIGNED`
-    attribute; `ENCRYPTED(SIGNED(STR, scope="api_key"), scope="api_key")` round trips,
+    attribute; `signer_of` raises `SecretFormatError` for a non-`flsig` value; `ENCRYPTED(SIGNED(STR, scope="api_key"), scope="api_key")` round trips,
     and its outer header names `test-recipient` while the signer kid appears nowhere in
     the token; `reencrypt` of a nested token keeps the inner signature verifiable;
     `test_signed_reads_pinned_panva_jose_token` (the JWS vector) and
@@ -676,6 +685,13 @@ plain sentence, no prefix, matching `git log`.
     - **Not in v1**: HPKE / post-quantum hybrid; trust beyond the keyring (`x5c`, a CA);
       per-attribute signer allowlists; `scan_config_topics` for `SIGNED`-only
       attributes; recipient and signing key granularity as an application decision.
+    - **Where It Lives**: the format commitment now covers two JWE generations and a
+      JWS form; replace "a vendored ~50-line `dir`+A256GCM implementation" with "a
+      vendored implementation of the three pinned forms (`dir`+A256GCM,
+      `ECDH-ES+A256KW`+A256GCM over X25519, Ed25519 JWS)".
+    - **Not in v1 → Per-tenant keys**: note that recipient keys now make
+      crypto-shredding by key destruction available per recipient key (link to
+      Rotating Keys).
   - `docs/guides/observability.md`: two rows in the Secrets table for the new counters.
   - `docs/api/index.md`: `::: flechtwerk.secrets.SIGNED`, `::: flechtwerk.keyring.X25519Key`,
     `::: flechtwerk.keyring.Ed25519Key`, `::: flechtwerk.secrets.sign_value`,
@@ -685,7 +701,11 @@ plain sentence, no prefix, matching `git log`.
     changed (key kinds, bindings, per-scope selection, `SIGNED`, `flsig:jws:`); the
     sentence calling `Event` unfit notes that the nonce half does not apply to recipient
     tokens; and in the `attribute/` bullet, change "`ENCRYPTED` is the one codec
-    outside it" to "`ENCRYPTED` and `SIGNED` are the codecs outside it".
+    outside it" to "`ENCRYPTED` and `SIGNED` are the codecs outside it"; and in
+    "Invariant: joserfc stays confined to flechtwerk.secrets", widen "(`flenc:jwe:`
+    compact JWE, dir+A256GCM)" to name the `ECDH-ES+A256KW` generation and the
+    `flsig:jws:` Ed25519 form, and say the panva-jose and independent-pyca vectors now
+    pin all three.
   - Verify: `uv run poe docs-build` exits 0, then commit.
 
 ## Acceptance Criteria
@@ -718,10 +738,9 @@ Closeout criteria — hold only once the Closeout section has run, and are shown
 
 ## Rollback
 
-- Every change is local and unpushed on branch `worktree-encryption`. Undo with
-  `git revert` of the work commits, newest first, each signed; nothing outside the
-  repository changes. Merging the branch into `main` is the owner's step after the run,
-  not part of it.
+- Every change is local and unpushed on branch `main`. Undo with `git revert` of the
+  work commits, newest first, each signed; nothing outside the repository changes.
+  Pushing is the owner's step after the run, not part of it.
 
 ## Closeout
 
@@ -853,13 +872,11 @@ from what is written here plus the repository, and record what you decided.
 
 ## Handoff
 
-Run from the worktree directory
-`/Users/christian/projects/bsure-analytics/flechtwerk/.claude/worktrees/encryption`
-(branch `worktree-encryption`) — the main checkout is on `main`, where this file does
-not exist. Cache the gpg passphrase first (Pre-Flight check 2).
+Run from the main checkout `/Users/christian/projects/bsure-analytics/flechtwerk`
+(branch `main`). Cache the gpg passphrase first (Pre-Flight check 2).
 
 ```bash
-claude --model opus --effort medium --permission-mode auto --remote-control 2026-10-10-asymmetric-secrets-plan '/goal Execute the plan at 2026-10-10-asymmetric-secrets-plan.md to completion. Before changing anything, run the Pre-Flight section of that plan and show the output of every check: the model must be claude-opus-5-5, the effort medium, the permission mode auto, and every privilege probe must pass. If any pre-flight check fails, write the blocked report named below and stop - do not start the tasks and do not continue on a different model or mode. Done when all of the following hold: the Pre-Flight checks were run first in this session and passed; every task checkbox in that file was ticked before the file was removed; after the last work commit and before the Closeout, each of these was run in this session with its output shown: uv run poe cov exited 0, its pytest summary reported at least 650 passed and none failed, and its coverage report showed src/flechtwerk/keyring.py and src/flechtwerk/secrets.py each at 100%; uv run pytest -q tests/keyring_test.py tests/secrets_test.py -k asymmetric exited 0 with at least 20 passed; uv run pytest -q tests/secrets_test.py -k signed exited 0 with at least 14 passed; uv run pytest -q tests/secrets_test.py -k panva exited 0 with exactly 4 passed; uv run pytest -q tests/observer_test.py -k "unsigned_read or verified" exited 0 with at least 2 passed; uv run python -c "import flechtwerk.module, flechtwerk.keyring, flechtwerk.testing, sys; print(sorted(m for m in sys.modules if m.startswith((chr(106)+chr(111)+chr(115)+chr(101)+chr(114)+chr(102)+chr(99), chr(99)+chr(114)+chr(121)+chr(112)+chr(116)+chr(111)))))" printed []; uv run python -c "import flechtwerk.secrets as s, flechtwerk.keyring as k; assert s.__all__ == sorted(s.__all__) and k.__all__ == sorted(k.__all__); print(s.SIGNED, k.X25519Key, k.Ed25519Key)" exited 0; uv run poe docs-build exited 0. Every existing test passed without being modified. The final state of the plan file was committed on its own, signed, in this session, and only then was the plan file deleted in a separate later signed commit; git status --porcelain was empty afterwards; all work was committed signed on the current branch worktree-encryption and nothing was pushed. Do not create a branch. Do not relax, skip, or declare passed any check that was not actually run, and do not route around a permission denial - a refused command is a blocked-report situation. If a pre-flight or acceptance check cannot be made to pass, write 2026-10-10-asymmetric-secrets-plan.BLOCKED.md in this session, naming a check this session ran, what was tried, and why it cannot pass, commit it with the plan, then stop - that also satisfies this goal. A blocked report left by an earlier launch does not.'
+claude --model opus --effort medium --permission-mode auto --remote-control 2026-10-10-asymmetric-secrets-plan '/goal Execute the plan at 2026-10-10-asymmetric-secrets-plan.md to completion. Before changing anything, run the Pre-Flight section of that plan and show the output of every check: the model must be claude-opus-5-5, the effort medium, the permission mode auto, and every privilege probe must pass. If any pre-flight check fails, write the blocked report named below and stop - do not start the tasks and do not continue on a different model or mode. Done when all of the following hold: the Pre-Flight checks were run first in this session and passed; every task checkbox in that file was ticked before the file was removed; after the last work commit and before the Closeout, each of these was run in this session with its output shown: uv run poe cov exited 0, its pytest summary reported at least 650 passed and none failed, and its coverage report showed src/flechtwerk/keyring.py and src/flechtwerk/secrets.py each at 100%; uv run pytest -q tests/keyring_test.py tests/secrets_test.py -k asymmetric exited 0 with at least 20 passed; uv run pytest -q tests/secrets_test.py -k signed exited 0 with at least 14 passed; uv run pytest -q tests/secrets_test.py -k panva exited 0 with exactly 4 passed; uv run pytest -q tests/observer_test.py -k "unsigned_read or verified" exited 0 with at least 2 passed; uv run python -c "import flechtwerk.module, flechtwerk.keyring, flechtwerk.testing, sys; print(sorted(m for m in sys.modules if m.startswith((chr(106)+chr(111)+chr(115)+chr(101)+chr(114)+chr(102)+chr(99), chr(99)+chr(114)+chr(121)+chr(112)+chr(116)+chr(111)))))" printed []; uv run python -c "import flechtwerk.secrets as s, flechtwerk.keyring as k; assert s.__all__ == sorted(s.__all__) and k.__all__ == sorted(k.__all__); print(s.SIGNED, k.X25519Key, k.Ed25519Key)" exited 0; uv run poe docs-build exited 0. Every existing test passed without being modified. The final state of the plan file was committed on its own, signed, in this session, and only then was the plan file deleted in a separate later signed commit; git status --porcelain was empty afterwards; all work was committed signed on the current branch main and nothing was pushed. Do not create a branch. Do not relax, skip, or declare passed any check that was not actually run, and do not route around a permission denial - a refused command is a blocked-report situation. If a pre-flight or acceptance check cannot be made to pass, write 2026-10-10-asymmetric-secrets-plan.BLOCKED.md in this session, naming a check this session ran, what was tried, and why it cannot pass, commit it with the plan, then stop - that also satisfies this goal. A blocked report left by an earlier launch does not.'
 ```
 
 `/pdca:execute <this file>` runs that command as a background session with Remote
@@ -897,3 +914,14 @@ cannot open the file, so it would have nothing to judge.
 - 2026-10-11, planning: the owner said proceed on the reviewed version; Handoff
   written (condition 2676 characters, every acceptance criterion inlined), status
   `handed-off`, committed alone on `worktree-encryption`, not pushed.
+- 2026-10-11, planning: the launch from the worktree was refused by that session's
+  worktree-isolation guard. At the owner's request the plan was retargeted to the main
+  checkout on `main` (already fast-forwarded to `c765986`): `branch`, the Ground check's
+  directory, Rollback and the Handoff now name `main` and the main checkout.
+- 2026-10-11, planning: review of the retargeted plan (Opus 5.5, medium, plan mode,
+  cold) → AGREED, no blockers. Nits 1–5 applied as worded (`Where It Lives`, the
+  `CLAUDE.md` joserfc invariant, the per-tenant-keys note, the `_decode_key` message,
+  a `signer_of` test). Nit 6 not applied: a `git diff` criterion with no removed lines
+  in `tests/` would fail on a legitimately widened import line, and "existing tests
+  unmodified" is already in the goal condition. Committed on `main` and launched at
+  the owner's request ("launch it when the review agrees").
