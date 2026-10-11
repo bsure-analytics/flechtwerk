@@ -596,9 +596,9 @@ def _require_encrypted(attribute: Attribute) -> _EncryptedCodec:
 def encrypt_value[V](attribute: Attribute[V], value: V) -> str:
     """Encrypt ``value`` for ``attribute`` and return the ``flenc:jwe:`` token.
 
-    The write-side boundary for producers and form backends — the primary
-    defense that keeps malformed tokens off the topic. Raises ``SecretError``
-    if ``attribute`` is not an encrypted attribute.
+    The token a typed write (``config[attribute] = value``) would store, for
+    writers that build their JSON without a ``Record`` — a form backend, say.
+    Raises ``SecretError`` if ``attribute`` is not an encrypted attribute.
     """
     return _require_encrypted(attribute).encode(value)
 
@@ -616,9 +616,8 @@ def signer_of(token: str) -> str:
 def sign_value[V](attribute: Attribute[V], value: V) -> str:
     """Sign ``value`` for ``attribute`` and return the ``flsig:jws:`` token.
 
-    The write-side boundary for a ``SIGNED`` attribute, like `encrypt_value`
-    for an encrypted one — for an ``ENCRYPTED(SIGNED(...))`` attribute the
-    boundary stays `encrypt_value`. Raises ``SecretError`` if ``attribute`` is
+    The counterpart of `encrypt_value` for a ``SIGNED`` attribute — for an
+    ``ENCRYPTED(SIGNED(...))`` attribute use `encrypt_value`. Raises ``SecretError`` if ``attribute`` is
     not a signed attribute.
     """
     codec = attribute.codec
