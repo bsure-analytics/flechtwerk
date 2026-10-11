@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -528,7 +528,7 @@ requires-dist = [
     { name = "joserfc", marker = "extra == 'secrets'", specifier = "~=1.7" },
     { name = "paho-mqtt", marker = "extra == 'mqtt'", specifier = "~=2.1" },
     { name = "prometheus-client", specifier = "~=0.21" },
-    { name = "reactor-di", specifier = "~=0.5" },
+    { name = "reactor-di", specifier = "~=0.6" },
     { name = "rocksdict", specifier = "~=0.3" },
 ]
 provides-extras = ["mqtt", "secrets"]
@@ -1148,11 +1148,11 @@ wheels = [
 
 [[package]]
 name = "reactor-di"
-version = "0.5.3"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/21/01/ed5f1eba9db1b25909cdd57ca6a6c01079bad9fcbfb91f66b836892e4435/reactor_di-0.5.3.tar.gz", hash = "sha256:322c614582bbfefc4a39cffb3378526fc9b0ace56489a88244cfa97598a9bb12", size = 101801, upload-time = "2026-04-25T21:34:41.319Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/7f/c4c09df2764166699b919d52d3bb879e506e6972da985984ad3ac317025d/reactor_di-0.6.0.tar.gz", hash = "sha256:14cda4ab8a25415e96a513d11db205c22ec4cec1af9dd247930b84c68a5549c2", size = 101872, upload-time = "2026-10-11T09:23:20.606Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/d6/acdea23d97774efbf987ebf719d970c5548bf7ea8bd0333945946d502b20/reactor_di-0.5.3-py3-none-any.whl", hash = "sha256:9f8f0e1b7e84336bb7508d8f722016936db583541d7b5c14350acb925405831a", size = 20807, upload-time = "2026-04-25T21:34:40.038Z" },
+    { url = "https://files.pythonhosted.org/packages/72/8e/1434711a05d36bfb2c5b6b792479faeb10fcffe3b0fd360c0b04bcf00b4a/reactor_di-0.6.0-py3-none-any.whl", hash = "sha256:350a9dc1d6dce67229bac3a952fae068df8a17022c502cafde376b2b85036ca5", size = 20866, upload-time = "2026-10-11T09:23:19.391Z" },
 ]
 
 [[package]]

@@ -42,7 +42,7 @@ classifiers = [
 dependencies = [
     "aiokafka[zstd]~=0.13",
     "prometheus-client~=0.21",
-    "reactor-di~=0.5",
+    "reactor-di~=0.6",
     "rocksdict~=0.3",
 ]
 description = "Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data."
