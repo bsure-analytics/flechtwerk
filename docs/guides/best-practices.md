@@ -355,10 +355,11 @@ Secret fields — API keys, tokens, passwords — are encrypted in place with th
   hits the AES-GCM nonce budget — and encrypted event fields are opaque to
   analytics engines anyway (see the
   [caveats](../concepts/secrets.md#scope-caveats)).
-- **Inject the keyring; encrypt at the write boundary.** Pass the keyring via
-  `Flechtwerk.of(keyring=...)`, and have producers write secrets through
-  `encrypt_value(ATTR, value)` — never hand-assemble a token. Reading is
-  transparent.
+- **Inject the keyring; let the codec encrypt.** Pass the keyring via
+  `Flechtwerk.of(keyring=...)` (or `install_keyring` outside a stage). Reading
+  and writing through the attribute are transparent; a writer that builds its
+  JSON without a `Record` uses `encrypt_value(ATTR, value)` — never
+  hand-assemble a token.
 - **Rotate reader-first.** Add a new key to every reader before promoting it to
   primary on the writers; between those steps, a reader rollback is a
   deterministic crash-loop (see [Rotation](../concepts/secrets.md#rotating-keys)).

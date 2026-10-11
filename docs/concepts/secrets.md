@@ -40,10 +40,12 @@ API_KEY: Final = Attribute("api_key", ENCRYPTED(STR))
 field, and `read_plaintext=True` tolerates legacy plaintext during a
 [migration](#migrating-from-plaintext).
 
-Reading is transparent — `config[API_KEY]` returns the decrypted `str`, exactly
-as a plain `Attribute("api_key", STR)` would. Build a keyring and inject it (a
-mounted secret, a file, an env var the *application* reads — the framework reads
-none of these itself):
+Reading and writing are both transparent, exactly as with a plain
+`Attribute("api_key", STR)`: `config[API_KEY]` returns the decrypted `str`, and
+`config[API_KEY] = "sk-live-…"` — like a typed literal
+`Config({API_KEY: "sk-live-…"})` — stores the `flenc:jwe:…` token. Both
+directions need a keyring. Build one and inject it (a mounted secret, a file, an
+env var the *application* reads — the framework reads none of these itself):
 
 ```python
 from pathlib import Path
@@ -55,14 +57,20 @@ keyring = Keyring.from_json(Path("/etc/keys/flechtwerk.json").read_text())
 await Flechtwerk.of(..., stage=my_stage, keyring=keyring).run()
 ```
 
-Producers and ops tooling encrypt at the write boundary with `encrypt_value`:
+A process that writes config without running a stage — a producer, ops tooling
+— installs the keyring itself and then writes the same way:
 
 ```python
-from flechtwerk.secrets import encrypt_value, install_keyring
+from flechtwerk import Config
+from flechtwerk.secrets import install_keyring
 
-install_keyring(keyring)                       # in any process that encrypts without running a stage
-token = encrypt_value(API_KEY, "sk-live-…")    # -> "flenc:jwe:…"; write this to the config topic
+install_keyring(keyring)
+config = Config({API_KEY: "sk-live-…"})    # stores the "flenc:jwe:…" token
 ```
+
+A writer that assembles the record without a `Record` — a form backend emitting
+its own JSON, say — encrypts the single value with
+`encrypt_value(API_KEY, "sk-live-…")`, which returns the same kind of token.
 
 A writer that should seal but never open can hold only the public half of an
 X25519 [recipient key](#the-keyring); and where a reader must know *who* wrote a
@@ -276,10 +284,11 @@ parsing rather than AES-GCM. A pleasant side effect: anything that dumps
 
 ### Where Encode Runs
 
-The framework runtime never produces config records to Kafka — `encode` runs in
-application producers (via `encrypt_value`), test seeding (`ConfigStore.of`),
-in-place writes inside `enrich_config`, and typed `Config` literals (which run
-codecs at construction). Two consequences:
+The framework runtime never produces config records to Kafka — `encode` runs on
+every typed write — `config[ATTR] = value`, typed `Config` literals (which run
+codecs at construction), in-place writes inside `enrich_config` — in application
+producers (typed writes, or `encrypt_value` for JSON built without a `Record`),
+and in test seeding (`ConfigStore.of`). Two consequences:
 
 - **Encode with no keyring installed raises** the same deployment error as
   decode — never a plaintext pass-through, which would silently produce the
@@ -319,7 +328,7 @@ writer's data error with fleet-wide blast radius — the design accepts that tra
   tag failure are distinct incident signatures (missing key vs. wrong bytes for
   a known key), preserved on `__cause__`.
 - **Write-side validation is the primary defense**: producers encrypt through
-  `encrypt_value` at the boundary, so malformed tokens should never reach the
+  the codec — a typed write or `encrypt_value` — so malformed tokens should never reach the
   topic; the read-side crash is the backstop.
 - A **recovery runbook**: suspend or tombstone the offending record to restore
   the fleet, then re-produce it correctly encrypted (or fix the keyring). For
@@ -540,7 +549,8 @@ A sweep re-produces records, which has sharp edges the tooling must respect:
 `flechtwerk.secrets` ships the primitives the runbooks build on (no CLI — those
 belong in application tooling per the framework's boundary rule):
 
-- `encrypt_value(attribute, value) -> str` — the write-side boundary.
+- `encrypt_value(attribute, value) -> str` — the token a typed write would
+  store, for writers that build their JSON without a `Record`.
 - `is_encrypted(value) -> bool` and `kid_of(token) -> str` — classification and
   scan building blocks.
 - `reencrypt(token, attribute) -> str` — decrypt-with-named-kid,
@@ -548,9 +558,8 @@ belong in application tooling per the framework's boundary rule):
   cross-environment promotion. It moves tokens across key kinds — from `dir` to a
   recipient key, between recipient keys, and back — and keeps an inner signature
   intact, since the payload bytes pass through untouched.
-- `sign_value(attribute, value) -> str` — the write-side boundary for a `SIGNED`
-  attribute (an `ENCRYPTED(SIGNED(...))` attribute still goes through
-  `encrypt_value`).
+- `sign_value(attribute, value) -> str` — the same for a `SIGNED` attribute (an
+  `ENCRYPTED(SIGNED(...))` attribute still goes through `encrypt_value`).
 - `is_signed(value) -> bool` and `signer_of(token) -> str` — classification and
   the signer's `kid`, no key needed.
 - `scan_config_topics(consumer, topics, attributes)` — an async iterator of
