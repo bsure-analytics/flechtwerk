@@ -641,7 +641,7 @@ plain sentence, no prefix, matching `git log`.
   - Verify: `uv run pytest -q tests/secrets_test.py tests/observer_test.py` passes,
     then commit.
 
-- [ ] **4. Document recipients, signatures and scope-bound keys** (`docs/concepts/secrets.md`, `docs/guides/observability.md`, `docs/api/index.md`, `CLAUDE.md`)
+- [x] **4. Document recipients, signatures and scope-bound keys** (`docs/concepts/secrets.md`, `docs/guides/observability.md`, `docs/api/index.md`, `CLAUDE.md`)
   - `docs/concepts/secrets.md` — keep its voice and structure; touch these places:
     - **Quick Start**: two sentences pointing at recipient keys (seal-only writers) and
       at `SIGNED`, linking to the new sections.
@@ -943,3 +943,7 @@ cannot open the file, so it would have nothing to judge.
   `test_signed_verify_only_reader_verifies` and `test_signed_errors_carry_caller_context`
   (the latter covers the `topic`/`wire_key` detail branches of the two new errors).
   Ticked. Task 4 started.
+- 2026-10-11, execution: task 4 done — `docs/concepts/secrets.md` (every listed
+  place plus a new "Signed Values" section and Scope & Caveats item 6),
+  `docs/guides/observability.md`, `docs/api/index.md`, `CLAUDE.md`; `uv run poe
+  docs-build` exits 0. Ticked.

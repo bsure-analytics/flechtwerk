@@ -55,18 +55,30 @@ Flechtwerk's public surface is small and settled in shape. Every entry below is 
 
 ## Secrets
 
-The `flechtwerk[secrets]` optional extra — field-level encryption for attributes. See the [Encrypted Secrets](../concepts/secrets.md) concept page for usage and the full spec (wire format, rotation, migration, post-quantum posture).
+The `flechtwerk[secrets]` optional extra — field-level encryption and signing for attributes. See the [Encrypted Secrets](../concepts/secrets.md) concept page for usage and the full spec (wire format, rotation, migration, post-quantum posture).
 
 ::: flechtwerk.secrets.ENCRYPTED
 
+::: flechtwerk.secrets.SIGNED
+
 ::: flechtwerk.keyring.Keyring
 
+::: flechtwerk.keyring.X25519Key
+
+::: flechtwerk.keyring.Ed25519Key
+
 ::: flechtwerk.secrets.encrypt_value
+
+::: flechtwerk.secrets.sign_value
 
 ::: flechtwerk.secrets.reencrypt
 
 ::: flechtwerk.secrets.is_encrypted
 
+::: flechtwerk.secrets.is_signed
+
 ::: flechtwerk.secrets.kid_of
+
+::: flechtwerk.secrets.signer_of
 
 ::: flechtwerk.secrets.scan_config_topics

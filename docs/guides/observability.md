@@ -188,6 +188,8 @@ static declarations — empty string for an unscoped attribute).
 | `keyring_keys_loaded` | Gauge | `kid` | One series per key in the installed keyring (value 1) — makes *"has every reader got the new key?"* checkable fleet-wide before a rotation. |
 | `secret_plaintext_reads_total` | Counter | `scope` | Reads of a secret value that took the legacy-plaintext branch (a `read_plaintext` attribute) — should reach zero before turning `read_plaintext` off. |
 | `secret_decrypts_total` | Counter | `scope`, `kid` | Successful secret decryptions — *"decrypts under the old kid are flat"* gates a key rotation. |
+| `secret_unsigned_reads_total` | Counter | `scope` | Reads of a `SIGNED` value that took the unsigned branch (a `read_unsigned` attribute) — should reach zero before turning `read_unsigned` off. |
+| `secret_verifications_total` | Counter | `scope`, `kid` | Successful signature verifications, by signer — *"verifications under the old kid are flat"* gates a signing-key rotation. |
 
 ## Signals Worth Watching
 

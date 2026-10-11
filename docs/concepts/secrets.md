@@ -64,6 +64,10 @@ install_keyring(keyring)                       # in any process that encrypts wi
 token = encrypt_value(API_KEY, "sk-live-…")    # -> "flenc:jwe:…"; write this to the config topic
 ```
 
+A writer that should seal but never open can hold only the public half of an
+X25519 [recipient key](#the-keyring); and where a reader must know *who* wrote a
+value, [`SIGNED`](#signed-values) adds an Ed25519 signature.
+
 That is the whole application-facing surface. The rest of this page specifies
 the wire format, the keyring, and the operational procedures (rotation,
 migration) it supports.
@@ -89,6 +93,19 @@ The compact serialization is five base64url segments joined by dots:
 | iv | fresh random nonce for this encryption |
 | ciphertext | AES-256-GCM over the JSON-encoded inner wire value |
 | tag | the GCM authentication tag |
+
+A second token generation shares the prefix: a value sealed to an X25519
+[recipient key](#the-keyring) carries `ECDH-ES+A256KW` instead of `dir`.
+
+| Segment | Content in a recipient token |
+| --- | --- |
+| header | `{"alg": "ECDH-ES+A256KW", "enc": "A256GCM", "kid": "livia-2026-10", "flenc_scope": "face_vector", "epk": {…}}` |
+| encrypted key | the per-token AES-256 content key, wrapped (AES-KW) under a key agreed between the ephemeral `epk` and the recipient |
+| iv, ciphertext, tag | as above, under that fresh content key |
+
+The writer needs only the recipient's *public* half; opening needs the private
+half. Both generations coexist in one topic, and the kind of key the `kid` names
+decides which one a reader accepts.
 
 `flenc_scope` is an **optional** header — present only when the attribute
 declares a [`scope`](#scope-domain-separation); a plain `ENCRYPTED(STR)` omits
@@ -143,17 +160,36 @@ principals and want the extra hardening.
 Decide `scope` up front, then: adding it later is a migration you can run, but
 removing it is deliberately hard.
 
+Under a [recipient key](#the-keyring) the "key-less attacker" premise thins:
+holding the *public* half is enough to mint a token with any content and any
+scope, so "can neither mint nor strip" holds for `dir` only. Relocating an
+*existing* token is still blocked — its scope is authenticated like before — but
+a recipient token says nothing about who wrote it ([`SIGNED`](#signed-values)
+does). That is why a key itself can be **bound to scopes** in the keyring
+(`flenc_scopes`): a reader rejects a token whose stamped scope lies outside its
+key's binding, and a writer refuses to seal outside it. Recipient and signing
+keys must be bound; oct keys may be.
+
 ### The Acceptance Rule
 
 Binding on **all** implementations — the Python reader and any TS/Java producer
 or serde alike:
 
-- A reader accepts exactly `alg: dir` and `enc: A256GCM`. Any other `alg` or
-  `enc`, any `zip` member, and any unrecognized `crit` member is rejected with a
-  distinct error *before* any cryptographic work. `flechtwerk.secrets` pins this
-  allowlist in a single `JWERegistry`, never library defaults.
+- A JWE reader accepts exactly two `(alg, enc)` pairs: `dir` + `A256GCM` for a
+  `kid` naming an oct key, and `ECDH-ES+A256KW` + `A256GCM` for a `kid` naming an
+  X25519 recipient key. The **kind of key the `kid` names** selects the pair — a
+  token never chooses, so neither generation can be passed off as the other. Any
+  other `alg` or `enc`, any `zip` member, and any unrecognized `crit` member is
+  rejected with a distinct error *before* any cryptographic work.
+  `flechtwerk.secrets` pins each allowlist in its own `JWERegistry`, never
+  library defaults.
+- A JWS reader accepts exactly `alg: Ed25519` (RFC 9864 — never the deprecated
+  polymorphic `EdDSA`), from a `kid` naming a signing key.
 - The `kid` → key mapping is authoritative: a token cannot select a key of a
   type its `alg` did not expect.
+- A key bound to scopes serves only those scopes: after decryption or
+  verification (only then is the header authenticated), a token stamped outside
+  its key's binding is rejected.
 - Widening the allowlist (a future hybrid post-quantum mode) is a deliberate,
   reader-first deployment change — never something token content can trigger.
 
@@ -197,10 +233,17 @@ in every keyring mode, never falling through to plaintext), and any value under
 a different scheme — a plaintext config value that happens to be a URL, say — is
 not ciphertext-form at all.
 
+Signed values follow the same rule with their own scheme: a
+[`SIGNED`](#signed-values) value is `flsig:jws:<compact JWS>` — `flsig` because
+`flenc:` is reserved for ciphertext forms, `jws` for the RFC 7515 Compact
+Serialization. A sign-then-encrypt value is a `flenc:jwe:` token whose
+plaintext is the `flsig:jws:` string.
+
 Symmetric `dir` mode is a considered default: AES-256 is post-quantum-safe
-(below), and the empty second segment is exactly where an asymmetric or hybrid
-post-quantum mode would slot in later, under a different `alg`, with both token
-generations coexisting in one topic.
+(below). The second segment, empty under `dir`, is where the recipient
+generation carries its wrapped content key, and where a hybrid post-quantum mode
+would slot in later, under a different `alg`, with every token generation
+coexisting in one topic.
 
 ## Declaring Encrypted Attributes
 
@@ -283,6 +326,44 @@ writer's data error with fleet-wide blast radius — the design accepts that tra
   pasted plaintext, follow the compromise procedure in
   [Ending the Transition](#ending-the-transition).
 
+## Signed Values
+
+Encryption says nothing about *who wrote* a value: under `dir` every writer is a
+key holder anyway, and under a recipient key anyone holding the public half can
+seal. `SIGNED(inner, *, scope, read_unsigned=False)` answers that question — a
+plain codec constructor beside `ENCRYPTED`, wrapping the inner wire value in an
+Ed25519 compact JWS, wire form `flsig:jws:<compact JWS>`:
+
+```python
+from flechtwerk.attribute import Attribute, FLOAT, LIST
+from flechtwerk.secrets import ENCRYPTED, SIGNED
+
+FACE_VECTOR = Attribute("face_vector", ENCRYPTED(SIGNED(LIST(FLOAT), scope="face_vector"), scope="face_vector"))
+```
+
+- **The scope is required and exact.** A signature always names the compartment
+  it vouches for (`flenc_scope` in its protected header), and a reader accepts it
+  only for exactly that scope — there are no unscoped signatures, so there is no
+  ratchet.
+- **The trust rule.** A reader accepts a signature from *any* signing key in its
+  keyring whose binding covers the attribute's scope. Readers hold verify-only
+  keys (public half); writers hold the private half and sign with the key
+  `flenc_signing` names for the scope.
+- **Sign, then encrypt** is the recommended composition (the RFC 7519 nested-JWT
+  order): the signer's `kid` stays inside the ciphertext, and because the
+  signature carries its own scope stamp, a reader that can decrypt cannot
+  re-seal the value into another field and have it verify there. Every other
+  composition stays legal.
+- **`read_unsigned=True`** tolerates an unsigned value on read while existing
+  data is migrated, loudly — a WARNING and `secret_unsigned_read` per read —
+  exactly like `read_plaintext`; off, an unsigned value raises
+  `UnsignedSecretError`. A failed verification raises `SecretSignatureError`.
+
+Key granularity is the application's choice, with a trade-off: a **per-box**
+signing key means adding a box updates every reader's keyring, but a stolen box
+forges only as itself; a **fleet-wide** key spares the keyring updates, but a
+stolen box can forge for the whole fleet within the scope.
+
 ## The Keyring
 
 A key is 32 random bytes. The keyring document is an **RFC 7517 JWK Set** —
@@ -300,9 +381,47 @@ base64url; unknown members are ignored.
 }
 ```
 
-Encryption always uses the primary key and stamps its `kid`; decryption uses
+Two more kinds of key are OKP JWKs, and three more members map scopes to keys:
+
+```json
+{
+    "flenc_primaries": {"face_vector": "livia-2026-10"},
+    "flenc_signing": {"face_vector": "box-17"},
+    "keys": [
+        {"k": "<32 bytes>", "kid": "prod-2026-07", "kty": "oct"},
+        {"crv": "X25519", "flenc_scopes": ["face_vector"], "kid": "livia-2026-10", "kty": "OKP", "x": "<public>"},
+        {"crv": "Ed25519", "d": "<seed>", "flenc_scopes": ["face_vector"], "kid": "box-17", "kty": "OKP", "x": "<public>"}
+    ],
+    "primary": "prod-2026-07"
+}
+```
+
+- An **X25519 recipient key** (`crv: X25519`) seals with its public `x` and
+  opens with its private `d`. Without `d` it is a **seal-only** key — what a
+  writer holds; it cannot open a single token, its own included.
+- An **Ed25519 signing key** (`crv: Ed25519`) signs with its private seed `d`
+  and verifies with `x`. Without `d` it is a **verify-only** key — what a reader
+  holds.
+- **`flenc_scopes`** binds a key to the scopes it serves. Public-key material is
+  *always* bound: holding a public half is enough to seal or to check, so an
+  unbound one would serve every compartment. An oct key may be bound or not.
+- **`flenc_primaries`** picks the sealing key per scope (falling back to
+  `primary`); **`flenc_signing`** picks the signing key per scope. Both are
+  explicit — a key is never chosen for a scope implicitly.
+
+The keyring validates itself on construction and refuses: a keyring without an
+oct or recipient key; an empty kid, or one kid held as two kinds; a key of the
+wrong length (32 bytes for oct keys and for each half of an OKP key); a
+`primary` that is not an oct or recipient key; a binding for a kid it does not
+hold, or an empty one; an unbound recipient or signing key; a `flenc_primaries`
+entry naming a non-sealing key or a scope outside that key's binding; and a
+`flenc_signing` entry naming a key that is not a private signing key, or a
+scope outside its binding. A private half that does not belong to its public
+half is refused on first use.
+
+Encryption uses the scope's sealing key and stamps its `kid`; decryption uses
 whatever key the token's `kid` names. `Keyring` is a pure value object — key
-bytes plus the primary kid, nothing else; no crypto, no `joserfc` import — built
+bytes plus the scope mappings, nothing else; no crypto, no `joserfc` import — built
 via `Keyring.of(...)` (raw bytes) or `Keyring.from_json(...)` (the JWK Set). The
 framework never learns *where* the document came from: the application
 constructs the keyring and injects it via `Flechtwerk.of(keyring=...)`, exactly
@@ -378,6 +497,17 @@ someone re-produces the record, so rotation is keyring surgery, not a key swap.
 A *compromised* key is the same procedure executed immediately, sweep first. The
 `kid` header makes each decrypt O(1) rather than trial-decrypting every key.
 
+The same reader-first order governs the other kinds:
+
+- **Recipient keys.** Readers gain the new private key first; then writers
+  switch `flenc_primaries` for the scope to the new kid. `reencrypt` of a
+  surviving token needs the *old* private key, so a sweep runs where that is
+  held. Destroying a recipient private key crypto-shreds everything ever sealed
+  to it — by design, and irreversibly.
+- **Signing keys.** Readers gain the new public key first; then the writer swaps
+  its private key and `flenc_signing`. `secret_verifications_total{scope, kid}`
+  going flat for the old kid says the old signatures are gone.
+
 Two operational rails:
 
 - **Observability.** `keyring_keys_loaded{kid}` at startup makes step 1's
@@ -414,8 +544,15 @@ belong in application tooling per the framework's boundary rule):
 - `is_encrypted(value) -> bool` and `kid_of(token) -> str` — classification and
   scan building blocks.
 - `reencrypt(token, attribute) -> str` — decrypt-with-named-kid,
-  re-encrypt-with-primary: the building block for sweeps and cross-environment
-  promotion.
+  re-encrypt with the scope's sealing key: the building block for sweeps and
+  cross-environment promotion. It moves tokens across key kinds — from `dir` to a
+  recipient key, between recipient keys, and back — and keeps an inner signature
+  intact, since the payload bytes pass through untouched.
+- `sign_value(attribute, value) -> str` — the write-side boundary for a `SIGNED`
+  attribute (an `ENCRYPTED(SIGNED(...))` attribute still goes through
+  `encrypt_value`).
+- `is_signed(value) -> bool` and `signer_of(token) -> str` — classification and
+  the signer's `kid`, no key needed.
 - `scan_config_topics(consumer, topics, attributes)` — an async iterator of
   `ScanEntry` *(attribute, error, kid, partition, topic, wire key)* for every
   secret-bearing value, the engine behind the migration and rotation scans.
@@ -507,6 +644,15 @@ under a new `alg`, coexisting with `dir` tokens, adopted reader-first through th
 acceptance-rule allowlist. If compact serialization ever cannot carry a future
 mode, that is what a new envelope segment under `flenc:` is for.
 
+**Recipient tokens are the exception.** `ECDH-ES+A256KW` over X25519 is exactly
+the RSA/ECDH class those phase-outs target, so "harvest now, decrypt later"
+applies to them, unlike `dir`: a token captured today opens once X25519 falls.
+Use recipient keys where the write-surface separation is worth that horizon.
+Signatures are different in kind — a future quantum computer could forge *new*
+Ed25519 signatures, but a value verified today was not retroactively forged, so
+the exposure is forward-only. HPKE with a hybrid KEM is the way forward once
+joserfc can encrypt it, as one more `alg` beside the two.
+
 ## Scope & Caveats
 
 1. **`Config` first, but `State` is usable.** JWE draws a fresh nonce, so
@@ -534,7 +680,9 @@ mode, that is what a new envelope segment under `flenc:` is for.
    deterministic cipher would leak which entries share a value, which is a
    reason to keep encryption randomized, not a nonce concern.) `Event` support
    would need both a deterministic-AEAD answer and a per-key encryption-count /
-   rotation policy first.
+   rotation policy first. The budget does **not** apply to recipient tokens:
+   each carries a fresh, randomly drawn content key, so no key encrypts twice —
+   which makes `Event` viable in recipient mode, subject still to items 1 and 3.
 3. **Non-decrypting consumers.** An encrypted field is opaque to any consumer
    without the keyring — including analytics pipelines reading event topics
    directly. Fields such consumers need must stay plaintext or be decrypted by a
@@ -550,10 +698,10 @@ mode, that is what a new envelope segment under `flenc:` is for.
    that decrypts every secret under that `kid`, so compromising the most exposed
    writer discloses everything. There is also no per-decrypt audit trail; a
    transit-engine backend could sit behind the same codec seam if that is ever
-   required. Two directions improve the shared-key problem, both out of scope
-   for v1 and both conditional:
+   required. Two directions improve the shared-key problem, both conditional:
 
-    1. **Asymmetric (HPKE) encryption** helps *only* to the extent the private
+    1. **Asymmetric encryption** — [recipient keys](#the-keyring), available
+       now — helps *only* to the extent the private
        (decrypt) key stays off the write surfaces — writers hold the public key
        and encrypt-only, the consuming stage holds the private key. Then a
        compromised writer leaks nothing already encrypted. But the moment a
@@ -576,6 +724,11 @@ mode, that is what a new envelope segment under `flenc:` is for.
    would matter only if mutually *distrusting* parties held different keys —
    untrusted per-tenant keys, or franking-style uses — which would need a
    committing AEAD under a new `enc`/`alg`, which the format's agility permits.
+6. **Recipient tokens authenticate nothing about the writer.** Anyone holding
+   the public recipient key can seal a token with any content and any scope it
+   is bound to. Where provenance matters, sign the value with
+   [`SIGNED`](#signed-values) — or rely on Kafka producer authentication and
+   ACLs on the topic.
 
 ## Where It Lives
 
@@ -584,15 +737,29 @@ tooling, and exceptions; `flechtwerk.keyring` holds the joserfc-free `Keyring`
 value object and the process-global runtime — so `module.py` can annotate its
 `keyring` slot at decoration time without importing joserfc (the same discipline
 paho follows in `flechtwerk.mqtt`). The decade-scale commitment is to the
-*format*, not the library: joserfc could be replaced by a vendored ~50-line
-`dir`+A256GCM implementation without a wire change, which the pinned panva-jose
-and independent-pyca interop vectors guard.
+*format*, not the library: two JWE generations and one JWS form. joserfc could
+be replaced by a vendored implementation of the three pinned forms (`dir`+A256GCM,
+`ECDH-ES+A256KW`+A256GCM over X25519, Ed25519 JWS) without a wire change, which
+the pinned panva-jose and independent-pyca interop vectors guard for each.
 
 ## Not in v1
 
 - **Per-tenant keys.** The `kid` header makes per-tenant keys a keyring-policy
   change, not a format change — relevant only if crypto-shredding (erasure by key
   destruction) becomes a requirement (mind the key-commitment caveat first).
+  Recipient keys already make crypto-shredding available per recipient key (see
+  [Rotating Keys](#rotating-keys)).
+- **HPKE and post-quantum hybrids.** joserfc cannot encrypt JOSE HPKE yet; it
+  joins as one more `alg` when it can.
+- **Trust beyond the keyring.** No certificate chains (`x5c`) and no CA: a
+  signature is trusted because its key is in the keyring, bound to the scope.
+- **Per-attribute signer allowlists.** Any signing key bound to the scope is
+  accepted; narrowing that per attribute is not offered.
+- **`scan_config_topics` for `SIGNED`-only attributes.** The scan classifies
+  `flenc:` values; a signed-only attribute is not reported.
+- **Key granularity.** Whether recipient and signing keys are per environment,
+  site, box or period is an application decision — the trade-offs are in
+  [Signed Values](#signed-values) and [Rotating Keys](#rotating-keys).
 - **Keyring hot-reload.** The keyring loads at startup; rotation therefore
   implies a rolling restart — cheap for transformers and re-readable extractors,
   and cheap for an MQTT extractor too, whose persistent session holds its
