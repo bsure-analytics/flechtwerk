@@ -17,7 +17,7 @@ plugin_url: https://github.com/christian-schlichtherle/cs7-claude-plugins
 plugin_version: 0.16.1
 review_rounds: 10
 sources: []
-status: executing
+status: done
 ticket: none
 ---
 
@@ -947,3 +947,16 @@ cannot open the file, so it would have nothing to judge.
   place plus a new "Signed Values" section and Scope & Caveats item 6),
   `docs/guides/observability.md`, `docs/api/index.md`, `CLAUDE.md`; `uv run poe
   docs-build` exits 0. Ticked.
+- 2026-10-11, execution: acceptance re-run after the last work commit `795ebaf` —
+  (1) `uv run poe cov` exit 0, `690 passed`, none failed, `keyring.py` and
+  `secrets.py` 100 % (total 98 %); (2) `-k asymmetric` → `59 passed`; (3) `-k signed`
+  → `20 passed`; (4) `-k panva` → `4 passed`; (5) observer `-k "unsigned_read or
+  verified"` → `2 passed`; (6) import check → `[]`; (7) `__all__` sorted, prints
+  `SIGNED`, `X25519Key`, `Ed25519Key`; (8) `uv run poe docs-build` exit 0. Since
+  `2c63d0a` the only line removed under `tests/` is the one-line `flechtwerk.testing`
+  import in `tests/secrets_test.py`, now a multi-line import; no existing test
+  changed.
+- 2026-10-11, outcome: done. Work commits `25e420e` (task 1), `e3b4cfb` (task 2),
+  `ed6cf96` (task 3), `795ebaf` (task 4) on `main`, all signed, none pushed. Status
+  `done`; preservation commit next, then the plan file is removed in a separate
+  commit.
