@@ -17,7 +17,7 @@ plugin_url: https://github.com/christian-schlichtherle/cs7-claude-plugins
 plugin_version: 0.16.1
 review_rounds: 10
 sources: []
-status: handed-off
+status: executing
 ticket: none
 ---
 
@@ -344,7 +344,7 @@ Ordered by dependency: the keyring (task 1) is what sealing (task 2) and signing
 (task 4) describes what the tests prove. Each task ends in a signed commit — subject a
 plain sentence, no prefix, matching `git log`.
 
-- [ ] **1. Teach `Keyring` recipient keys, signing keys and scope bindings** (`src/flechtwerk/keyring.py`, `tests/keyring_test.py`)
+- [x] **1. Teach `Keyring` recipient keys, signing keys and scope bindings** (`src/flechtwerk/keyring.py`, `tests/keyring_test.py`)
   - Add two frozen dataclasses, both exported from `flechtwerk.keyring.__all__`:
 
     ```python
@@ -925,3 +925,12 @@ cannot open the file, so it would have nothing to judge.
   in `tests/` would fail on a legitimately widened import line, and "existing tests
   unmodified" is already in the goal condition. Committed on `main` and launched at
   the owner's request ("launch it when the review agrees").
+- 2026-10-11, execution: Pre-Flight passed in the executing session — goal record
+  `"met":false` naming this plan, `claude-opus-5-5`, `permissionMode auto`,
+  `effort=medium`; `gpg-ok`; Docker `29.8.2`; remote `bsure-analytics/flechtwerk`,
+  branch `main`, tree clean; Python `(3, 14)`; `_ALG = "dir"` at line 78; joserfc
+  `1.7.4`; `uv run pytest -q` → `587 passed, 22 deselected`. No blocked report to
+  consume. Status set to `executing`.
+- 2026-10-11, execution: task 1 started.
+- 2026-10-11, execution: task 1 done — `uv run pytest -q tests/keyring_test.py` →
+  `63 passed`; keyring.py fully covered by the wider suite. Ticked. Task 2 started.
