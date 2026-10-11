@@ -14,6 +14,7 @@ from flechtwerk.testing import FakeKafkaConsumer, FakeKafkaProducer, InMemorySta
 COUNT: Final = Attribute("count", INT)
 CURSOR: Final = Attribute("cursor", INT)
 DATA: Final = Attribute("data", STR)
+ENRICHED: Final = Attribute("enriched", BOOL)
 FORM_ID: Final = Attribute("form_id", STR)
 ID: Final = Attribute("id", INT)
 LEAKED: Final = Attribute("leaked", BOOL)
@@ -243,7 +244,7 @@ def test_transformer_decorator_threads_enrich_config_and_extract_state_key():
     """@transformer forwards the same enrich_config / extract_state_key overrides as Transformer.of."""
 
     async def my_enrich_config(config):
-        config.raw["enriched"] = True
+        config[ENRICHED] = True
         return config
 
     def my_extract_state_key(msg):
@@ -1290,7 +1291,7 @@ def test_check_config_updates_applies_enriches_and_observes():
 
         class EnrichingLookup(ConfigLookupTransformer):
             async def enrich_config(self, config):
-                config.raw["enriched"] = True
+                config[ENRICHED] = True
                 return config
 
         t = EnrichingLookup()
@@ -1325,7 +1326,7 @@ def test_functional_transformer_with_enrich_config():
         yield  # pragma: no cover
 
     async def my_enrich_config(config):
-        config.raw["enriched"] = True
+        config[ENRICHED] = True
         return config
 
     t = Transformer.of(input_topics=["in"], transform=my_transform, enrich_config=my_enrich_config)

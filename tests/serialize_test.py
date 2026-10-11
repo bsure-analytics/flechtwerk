@@ -19,8 +19,7 @@ RESULT_IDS: Final = Attribute("result_ids", TUPLE(STR))
 
 
 def test_serialize_produces_compact_sorted_json():
-    state = State()
-    state.raw = {"b": 2, "a": 1}
+    state = State.wrap({"b": 2, "a": 1})
     assert serialize(state) == b'{"a":1,"b":2}'
 
 

@@ -335,9 +335,11 @@ site. A few rules keep that boundary honest:
   wire-format JSON (an API payload, a `.raw`), the `Record({ATTR: value})`
   constructor for typed literals. Wrapping raw source data verbatim is the
   extractor rule above; typed construction is for records you build yourself.
-- **Treat `.raw` as read-only from outside.** Read and write through attributes
-  (`record[ATTR]`), not by reaching into the underlying dict — that is what
-  keeps `.raw` JSON-native and the codecs in force.
+- **`.raw` is read-only.** It is a snapshot of the wire-form dict: read,
+  iterate, spread or `json.dumps` it freely, but every write goes through an
+  attribute (`record[ATTR] = value`) — that is what keeps the payload
+  JSON-native and the codecs in force. A dynamic key is still an attribute:
+  `state[Attribute(form_id, RECORD)] = form_state`.
 
 ## Handle Secrets at the Boundary
 

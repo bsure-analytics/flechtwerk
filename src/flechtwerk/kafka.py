@@ -48,7 +48,7 @@ def encode_json(value: bytes | str | Record) -> bytes:
     match value:
         case Record():
             return json.dumps(
-                value.raw,
+                value._raw,
                 allow_nan=False,
                 ensure_ascii=False,
                 separators=(",", ":"),

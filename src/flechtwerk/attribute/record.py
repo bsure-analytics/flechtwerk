@@ -1,6 +1,6 @@
 """A typed dict wrapper, keyed exclusively by `Attribute` objects.
 
-`Record` wraps an underlying `dict[str, Any]` (exposed as `raw`) whose
+`Record` wraps an underlying `dict[str, Any]` (exposed read-only as `raw`) whose
 string keys serialize directly to JSON. All public access uses
 `Attribute` instances:
 
@@ -27,7 +27,7 @@ Dict-spread is supported (`Record({**other_record, NEW_ATTR: value})`):
 spread roundtrip flows through the standard Record paths without any
 special-casing in Record itself.
 """
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from copy import deepcopy
 from datetime import date, datetime, time
 from typing import Any, Final, Self, overload
@@ -67,7 +67,7 @@ def _encode_any(v: Any) -> Any:
         return TIME.encode(v)
     if isinstance(v, Record):
         return RECORD.encode(v)
-    if isinstance(v, dict):
+    if isinstance(v, dict):  # a `.raw` snapshot too — it encodes to a plain dict
         return _DICT_OF_ANY.encode(v)
     if isinstance(v, list):
         return _LIST_OF_ANY.encode(v)
@@ -78,20 +78,54 @@ def _encode_any(v: Any) -> Any:
     raise TypeError(f"no encoder for {type(v).__name__}: {v!r}")
 
 
+class _ReadOnlyDict(dict):
+    """The type of `Record.raw`: a `dict` snapshot that refuses mutation.
+
+    A `dict` subclass rather than a `MappingProxyType`, because callers hand
+    `.raw` to code that wants a real dict — `json.dumps`, `isinstance(x, dict)`,
+    `copy.deepcopy`, the `ANY` codec — and a proxy fails all four. Copies
+    (`copy.copy`, `copy.deepcopy`, `dict(...)`, `{**...}`, `|`) are plain,
+    writable dicts.
+    """
+
+    def _refuse(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError("Record.raw is read-only: write through an Attribute, e.g. record[ATTR] = value")
+
+    __delitem__ = __ior__ = __setitem__ = clear = pop = popitem = setdefault = update = _refuse
+
+    def __copy__(self) -> RawDict:
+        return dict(self)
+
+    def __deepcopy__(self, memo: dict) -> RawDict:
+        return deepcopy(dict(self), memo)
+
+
 class Record:
     """Wrapper around a `RawDict` with `Attribute`-only access."""
 
-    raw: RawDict
+    _raw: RawDict
+
+    @property
+    def raw(self) -> Mapping[str, Any]:
+        """Read-only snapshot of the wire-form dict.
+
+        A shallow copy that is a real `dict` for every reading purpose, but
+        refuses top-level writes with a `TypeError` — every write goes through
+        an `Attribute`, so the codecs stay in force (a dynamic key is still an
+        attribute: `record[Attribute(key, RECORD)] = value`). Nested containers
+        are shared with the record and must not be mutated either.
+        """
+        return _ReadOnlyDict(self._raw)
 
     def __init__(self, source: "Record | dict[Attribute, Any] | None" = None, /) -> None:
-        self.raw = {}
+        self._raw = {}
         if source is None:
             return
         if isinstance(source, Record):
-            self.raw = source.raw.copy()
+            self._raw = source._raw.copy()
             return
         for k, v in source.items():
-            k.write_to(self.raw, v)
+            k.write_to(self._raw, v)
 
     @classmethod
     def wrap(cls, source: RawDict, /) -> Self:
@@ -110,30 +144,30 @@ class Record:
         """
         self = cls()
         for k, v in source.items():
-            self.raw[k] = _encode_any(v)
+            self._raw[k] = _encode_any(v)
         return self
 
     # --- indexing ---
 
     def __getitem__[V](self, attr: Attribute[V]) -> V:
-        return attr.read_from(self.raw)
+        return attr.read_from(self._raw)
 
     def __setitem__[V](self, attr: Attribute[V], value: V | None) -> None:
-        attr.write_to(self.raw, value)
+        attr.write_to(self._raw, value)
 
     def __delitem__(self, attr: Attribute) -> None:
         """Remove the key from the underlying dict. Raises `KeyError` if absent."""
-        attr.delete_from(self.raw)
+        attr.delete_from(self._raw)
 
     def __contains__(self, attr: Attribute) -> bool:
         """Check key presence — kind-agnostic, since a question neither decodes
         a value nor mutates the absence contract."""
-        return attr.present_in(self.raw)
+        return attr.present_in(self._raw)
 
     # --- container protocol ---
 
     def __len__(self) -> int:
-        return len(self.raw)
+        return len(self._raw)
 
     def __iter__(self) -> Iterator[Attribute[Any]]:
         """Yield a `ViewAttribute` per key in `raw`, lazily.
@@ -143,7 +177,7 @@ class Record:
         `__iter__` is the fundamental lazy walk and `keys()` is the
         view-returning convenience.
         """
-        for name in self.raw:
+        for name in self._raw:
             yield ViewAttribute(name)
 
     def keys(self) -> Iterable[Attribute[Any]]:
@@ -157,25 +191,25 @@ class Record:
         return list(self)
 
     def __bool__(self) -> bool:
-        return bool(self.raw)
+        return bool(self._raw)
 
     # --- equality, repr, copy, hash ---
 
     def __eq__(self, other: object) -> bool:
-        return type(other) is type(self) and self.raw == other.raw  # type: ignore[attr-defined]
+        return type(other) is type(self) and self._raw == other._raw  # type: ignore[attr-defined]
 
     # Defining `__eq__` implicitly sets `__hash__ = None`, marking the class
     # unhashable — no need to spell it out.
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}({self.raw!r})"
+        return f"{type(self).__name__}({self._raw!r})"
 
     def __copy__(self) -> "Record":
         return type(self)(self)
 
     def __deepcopy__(self, memo: dict) -> "Record":
         new = type(self)()
-        new.raw = deepcopy(self.raw, memo)
+        new._raw = deepcopy(self._raw, memo)
         return new
 
     # --- Pythonic helpers ---
@@ -190,7 +224,7 @@ class Record:
 
     def get[V](self, attr: Attribute[V], default: V | None = None) -> V | None:
         """Return the decoded value, or `default` if missing or `None`."""
-        return attr.get_from(self.raw, default)
+        return attr.get_from(self._raw, default)
 
     def pop[V](self, attr: Attribute[V], /, *default: V) -> V | None:
         """Remove and return the decoded value; raise KeyError if missing and no default given.
@@ -199,7 +233,7 @@ class Record:
         mirroring `dict.pop` semantics and matching how an optional attribute's
         `write_to` allows `None` writes.
         """
-        return attr.pop_from(self.raw, *default)
+        return attr.pop_from(self._raw, *default)
 
     def coalesce[V](self, *attrs: Attribute[V]) -> V | None:
         """Return the first non-`None` decoded value among the given attributes.
@@ -211,14 +245,14 @@ class Record:
         `pages` vs `total_page` vs `total_pages`).
         """
         for attr in attrs:
-            v = attr.get_from(self.raw)
+            v = attr.get_from(self._raw)
             if v is not None:
                 return v
         return None
 
     def update(self, other: "Record") -> None:
         """Merge another `Record` into this one."""
-        self.raw.update(other.raw)
+        self._raw.update(other._raw)
 
 
 def record_codec[T: Record](cls: type[T]) -> Codec[T]:
@@ -228,11 +262,11 @@ def record_codec[T: Record](cls: type[T]) -> Codec[T]:
     `.raw`. Top-level isolation is preserved (the new owner gets its own
     dict to mutate via `__setitem__`); nested dicts/lists are shared,
     matching the framework's "treat `.raw` as immutable from outside"
-    contract.
+    contract (which `raw` enforces at the top level).
     """
     return Codec(
         decode=cls.wrap,
-        encode=lambda r: r.raw.copy(),
+        encode=lambda r: r._raw.copy(),
     )
 
 

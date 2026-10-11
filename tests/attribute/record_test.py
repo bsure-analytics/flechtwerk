@@ -1,4 +1,5 @@
 import copy
+import json
 
 import pytest
 
@@ -44,8 +45,48 @@ def test_construct_from_another_dict():
     a = Record.wrap({"count": "42"})
     b = Record(a)
     assert b.raw == a.raw
-    a.raw["count"] = "100"
+    a[COUNT] = 100
     assert b.raw["count"] == "42"
+
+
+def test_raw_is_a_read_only_dict_snapshot():
+    """Every write goes through an `Attribute` so the codecs stay in force —
+    `raw` reads the wire form but refuses top-level writes."""
+    d = Record.wrap({"count": "42"})
+    raw = d.raw
+    for write in (
+        lambda: raw.__setitem__("count", "100"),
+        lambda: raw.__delitem__("count"),
+        lambda: raw.update(count="100"),
+        lambda: raw.pop("count"),
+        lambda: raw.setdefault("x", 1),
+        lambda: raw.clear(),
+    ):
+        with pytest.raises(TypeError, match="read-only"):
+            write()
+    with pytest.raises(AttributeError):
+        d.raw = {}  # type: ignore[misc]
+    assert raw == {"count": "42"}
+    d[COUNT] = 7
+    assert d.raw == {"count": 7}
+    assert raw == {"count": "42"}
+
+
+def test_raw_reads_like_a_plain_dict():
+    """`.raw` is handed to code that wants a real dict — JSON, isinstance
+    checks, deep copies, nesting through `ANY` — and copies are writable."""
+    d = Record.wrap({"nested": {"a": 1}})
+    assert isinstance(d.raw, dict)
+    assert json.loads(json.dumps(d.raw)) == {"nested": {"a": 1}}
+    for copied in (copy.copy(d.raw), copy.deepcopy(d.raw), dict(d.raw), {**d.raw}, d.raw | {}):
+        assert type(copied) is dict
+        copied["b"] = 2
+    deep = copy.deepcopy(d.raw)
+    deep["nested"]["a"] = 99
+    assert d.raw == {"nested": {"a": 1}}
+    outer = Record.wrap({"inner": d.raw})
+    assert type(outer.raw["inner"]) is dict
+    assert outer.raw == {"inner": {"nested": {"a": 1}}}
 
 
 def test_construct_from_subclass_to_subclass():

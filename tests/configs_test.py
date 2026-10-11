@@ -1,14 +1,20 @@
 """Tests for ConfigStore and the config-topic bootstrap/drain machinery."""
 import logging
+from typing import Final
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiokafka import TopicPartition
 
+from flechtwerk.attribute import Attribute, BOOL, INT, STR
 from flechtwerk.configs import ConfigStore, bootstrap_config_store, drain_config_updates
 from flechtwerk.kafka import encode_json
 from flechtwerk.testing import make_record
 from flechtwerk.types import Config, Event, InvalidMessageError
+
+A: Final = Attribute("a", INT)
+ENRICHED: Final = Attribute("enriched", BOOL)
+TOP: Final = Attribute("top", STR)
 
 
 async def identity(config: Config) -> Config:
@@ -59,7 +65,7 @@ def test_get_missing_key_returns_none():
 def test_get_returns_a_fresh_config_per_call():
     store = ConfigStore.of({"k1": Config.wrap({"a": 1})})
     first = store.get("k1")
-    first.raw["a"] = 666
+    first[A] = 666
     assert store.get("k1") == Config.wrap({"a": 1})
 
 
@@ -208,7 +214,7 @@ async def test_bootstrap_enriches_once_per_surviving_entry():
 
     async def spy_enrich_config(config: Config) -> Config:
         calls.append(dict(config.raw))
-        config.raw["enriched"] = True
+        config[ENRICHED] = True
         return config
 
     store = ConfigStore()
@@ -296,7 +302,7 @@ async def test_bootstrap_skip_leaves_the_key_absent():
 
 async def test_bootstrap_substitute_lands_enriched_in_the_store():
     async def tagging_enrich_config(config: Config) -> Config:
-        config.raw["enriched"] = True
+        config[ENRICHED] = True
         return config
 
     store = ConfigStore()
@@ -374,7 +380,7 @@ async def test_bootstrap_rejects_key_substitution():
 
 async def test_drain_applies_enriches_and_returns_records():
     async def tagging_enrich_config(config: Config) -> Config:
-        config.raw["enriched"] = True
+        config[ENRICHED] = True
         return config
 
     store = ConfigStore.of({"gone": Config.wrap({"a": 1})})
@@ -432,7 +438,7 @@ async def test_returned_value_is_pre_enrichment_even_for_nested_edits():
     plain `Config(value)` would share nested structure with it."""
     async def nesting_enrich_config(config: Config) -> Config:
         config.raw["nested"]["added"] = True
-        config.raw["top"] = "added"
+        config[TOP] = "added"
         return config
 
     store = ConfigStore()
