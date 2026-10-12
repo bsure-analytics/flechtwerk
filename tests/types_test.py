@@ -28,6 +28,19 @@ def test_message_accepts_every_payload_shape():
         assert msg.value is payload
 
 
+def test_message_value_none_is_a_tombstone():
+    """A None value is a Kafka tombstone — the one way to delete a row from a
+    compacted output topic (b"" is an ordinary empty value, not a tombstone)."""
+    msg = Message(key="k", topic="t", value=None)
+    assert msg.value is None
+
+
+def test_message_rejects_none_key():
+    """Only the value may be null: a key is partitioning and state identity."""
+    with pytest.raises(TypeError, match="Only the value may be None"):
+        Message(key=None, topic="t", value=Event())  # type: ignore[arg-type]
+
+
 def test_message_rejects_state_with_yield_guidance():
     """A State inside a Message would be emitted, not persisted — the error teaches the fix."""
     with pytest.raises(TypeError, match="emitted, not persisted"):

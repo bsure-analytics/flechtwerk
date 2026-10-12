@@ -246,7 +246,8 @@ def test_changelog_delete_writes_tombstone():
         assert len(producer.sent) == 2
         topic, payload = producer.sent[1]
         assert topic == "test-changelog"
-        assert payload["value"] == b""
+        # NULL, never b"": only null is a tombstone compaction removes.
+        assert payload["value"] is None
 
     asyncio.run(run())
 
@@ -338,7 +339,7 @@ def test_changelog_put_observes_the_serialized_size():
 
 
 def test_changelog_delete_observes_nothing():
-    """A tombstone is ``b""`` — no size signal, so no observation."""
+    """A tombstone is a null value — no size signal, so no observation."""
     async def run():
         observer = RecordingObserver()
         store = ChangelogStateStore()

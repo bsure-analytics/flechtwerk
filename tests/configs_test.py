@@ -396,10 +396,10 @@ async def test_drain_applies_enriches_and_returns_records():
     drained = await drain_config_updates(consumer, store, tagging_enrich_config, raising)
 
     consumer.getmany.assert_awaited_once_with(timeout_ms=0)
-    # Decoded, in arrival order — a tombstone comes back with an empty value.
+    # Decoded, in arrival order — a tombstone comes back with a None value.
     assert [(msg.key, msg.value) for msg in drained] == [
         ("k1", Event.wrap({"a": 1})),
-        ("gone", Event.wrap({})),
+        ("gone", None),
     ]
     assert store.get("k1") == Config.wrap({"a": 1, "enriched": True})
     assert "gone" not in store

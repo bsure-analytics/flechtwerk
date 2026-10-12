@@ -13,7 +13,7 @@ from aiokafka.abc import ConsumerRebalanceListener
 from reactor_di import lookup
 
 from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_config_updates
-from .kafka import encode_json, datetime_to_millis, parse_message
+from .kafka import datetime_to_millis, encode_json, encode_value, parse_message
 from .observer import Observer
 from .stage import ExtractStateKeyFn, OnInvalidMessageFn, Stage, counting_on_invalid
 from .state import ChangelogStateStore, StateStore
@@ -136,6 +136,10 @@ class Transformer(Stage, ABC):
         is persisted (stateless behavior). Yielding an empty/falsy State deletes
         the entry from the state store (and writes a Kafka tombstone to the
         changelog) atomically with the output messages.
+
+        ``msg.value`` is ``None`` for a tombstone (a null wire value) — a
+        stage reading a compacted table sees deletions this way, and one that
+        writes such a table deletes a row by yielding ``Message(value=None)``.
 
         Both parameters are read-only. The runner hands ``state`` a defensive
         copy and never reuses ``msg`` after the call, so mutating either in
@@ -526,14 +530,14 @@ class TransformerRunner:
                 # yield site, which would cost a second serialization per
                 # message. Key + value, because aiokafka's `max_request_size`
                 # check estimates the whole record.
-                key_bytes, value_bytes = encode_json(msg.key), encode_json(msg.value)
+                key_bytes, value_bytes = encode_json(msg.key), encode_value(msg.value)
                 await task.producer.send(
                     msg.topic,
                     key=key_bytes,
                     value=value_bytes,
                     timestamp_ms=datetime_to_millis(msg.timestamp),
                 )
-                self.observer.message_out_bytes(msg.topic, len(key_bytes) + len(value_bytes))
+                self.observer.message_out_bytes(msg.topic, len(key_bytes) + len(value_bytes or b""))
             for key, new_state in state_changes.items():
                 if new_state:
                     await task.store.put(key, new_state)

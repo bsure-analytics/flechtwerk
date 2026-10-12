@@ -190,10 +190,15 @@ class ChangelogStateStore(StateStore):
 
     async def delete(self, key: str) -> None:
         await self.inner.delete(key)
+        # A NULL value, never b"": only null is a Kafka tombstone. Log
+        # compaction retains an empty value as the key's latest record
+        # forever, so every deleted key would linger in the changelog and be
+        # replayed by every restore. (Restore still reads a legacy b"" as a
+        # deletion — see `is_tombstone`.)
         await self.producer.send(
             self.topic,
             key=key.encode("utf-8"),
-            value=b"",
+            value=None,
             partition=self.partition,
         )
 

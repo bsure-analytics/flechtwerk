@@ -157,7 +157,8 @@ async def apply_config_record(
     (the key stays absent during a bootstrap, keeps its previous value during
     a drain). The returned value is post-substitution but PRE-enrichment: the
     enriched config is what the store holds, and callers that want it read it
-    back with `ConfigStore.get`. A tombstone's value is ``Event.wrap({})``.
+    back with `ConfigStore.get`. A tombstone's value is ``None`` — for all three
+    forms `is_tombstone` accepts, since on a config topic each one deletes.
     """
     key = decode_key_mediated(msg, on_invalid)
     if key is None:
@@ -167,9 +168,10 @@ async def apply_config_record(
                     msg.topic, msg.offset)
     # Tombstone check BEFORE the value decode: a tombstone's value is raw
     # emptiness by definition, never garbage, so it must not reach the handler.
+    value: Event | None
     if is_tombstone(msg.value):
         store._delete(key)
-        value = Event.wrap({})
+        value = None
     else:
         decoded = decode_event_mediated(msg, on_invalid)
         if decoded is None:

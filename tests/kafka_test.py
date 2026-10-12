@@ -343,11 +343,32 @@ def test_parse_message_rejects_a_non_record_substitute():
 def test_parse_message_empty_value_needs_no_handler():
     """Empty is not an error: {} means "empty value", never "garbage"."""
     handler, seen = recording(raising)
-    for empty in (b"", None):
+    for empty in (b"", b"{}"):
         msg = parse_message(_raw(key=None, value=empty), handler)
         assert msg.key == ""
         assert msg.value == Event({})
     assert seen == []
+
+
+def test_parse_message_null_value_is_a_tombstone():
+    """Only a REAL null reads back as None — and never reaches the handler.
+
+    ``b""`` is an ordinary empty value (compaction retains it), so the two
+    must stay distinguishable on a data topic.
+    """
+    handler, seen = recording(raising)
+    msg = parse_message(_raw(key=b"gone", value=None), handler)
+    assert msg is not None
+    assert msg.key == "gone"
+    assert msg.value is None
+    assert seen == []
+
+
+def test_parse_message_null_value_with_bad_key_still_mediates_the_key():
+    """Key before value holds for tombstones too: a broken key costs one call."""
+    handler, seen = recording(skipping)
+    assert parse_message(_raw(key=b"\xff", value=None), handler) is None
+    assert [e.part for e in seen] == ["key"]
 
 
 # --- restore_changelog ---

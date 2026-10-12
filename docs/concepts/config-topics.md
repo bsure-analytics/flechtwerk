@@ -28,6 +28,12 @@ For extractors this is not an extra mechanism but the baseline: config topics ar
 
 The source topics are their own changelog — compacted, small, re-read on every startup — and lookups are eventually consistent, outside the task transaction (the GlobalKTable caveat). A stage can also *maintain* a config topic instead of only reading one — see [Writing to a Config Topic](#writing-to-a-config-topic).
 
+## Deleting a Config
+
+A record with a **null** value — a Kafka tombstone — deletes its key from every instance's store. Because tooling such as Kafka UI often cannot produce a real null, an empty value (`b""`) and an empty JSON object (`{}`) delete the key too: on a config topic the framework defines what a value means, and an empty config means none. Only the null, however, lets log compaction remove the key from the *topic*; an empty value is retained forever as the key's latest record, harmless but never cleaned up. Send a real null wherever your tooling can — a stage writing the topic does so with `Message(value=None)`.
+
+A deletion never surfaces as a value: a config is a *store* view, like `State`, so a deleted config is simply absent — `self.configs.get(key)` returns `None`, and an extractor stops polling it.
+
 ## Enrichment on the Way In
 
 `Stage.enrich_config(config)` hooks one-time derivation (e.g. an API lookup) into the config path: the framework applies it **once per config record** — never per poll tick or lookup — and both stage kinds inherit it.
@@ -82,7 +88,7 @@ class Memoizing(Transformer):
             self.recent.popitem(last=False)
 ```
 
-The write rides the task transaction like any other output — the runner does not care which topic a yielded `Message` names — so the new row, the output derived from it, and the input offsets commit atomically. And because the config consumer runs `read_committed`, an aborted transaction's row never reaches any instance's store.
+The write rides the task transaction like any other output — the runner does not care which topic a yielded `Message` names — so the new row, the output derived from it, and the input offsets commit atomically. And because the config consumer runs `read_committed`, an aborted transaction's row never reaches any instance's store. To remove a row, yield `Message(key=key, topic="my-observations", value=None)` — a real tombstone (see [Deleting a Config](#deleting-a-config)).
 
 !!! warning "What a Stage-Maintained Table Must Not Assume"
 

@@ -271,6 +271,34 @@ def test_poll_one_weighs_produced_messages():
     asyncio.run(run())
 
 
+def test_poll_one_sends_a_none_value_as_a_tombstone():
+    """Message(value=None) reaches the wire as a real null — the way an
+    extractor deletes a row from a compacted table it maintains."""
+
+    async def run():
+        async def poll(config, state):
+            yield Message(key="row", topic="test-output", value=None)
+
+        record = json_record(key="k", value={"api_key": "key123"})
+        producer = FakeKafkaProducer()
+        mod = make_module(
+            Extractor.of(config_topics=["test-config"], poll=poll),
+            FakeKafkaConsumer([record]),
+            producer,
+        )
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+        await runner.load_initial_configs()
+
+        await runner.poll_one(runner.entries["k"])
+
+        topic, payload = producer.sent[0]
+        assert (topic, payload["key"], payload["value"]) == ("test-output", b"row", None)
+        assert ("message_out_bytes", topic, len(b"row")) in mod.observer.calls
+
+    asyncio.run(run())
+
+
 def test_poll_config_mutation_does_not_leak_across_polls():
     """A poll() that mutates its config in place must not corrupt the cached
     config: the runner hands each poll a private copy, so the mutation is

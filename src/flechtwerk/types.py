@@ -45,6 +45,14 @@ codec validation. ``State`` and ``Config`` are excluded on purpose — a
 ``State`` inside a ``Message`` would be *emitted*, not persisted (yield it
 bare to persist it), and a ``Config`` travels as data (wrap it in
 ``Event(config)``); the explicit conversion marks the semantic handoff.
+
+A `Message` *value* may additionally be ``None`` — a Kafka **tombstone**,
+the one thing the wire does type by itself. Log compaction removes a key
+whose latest value is null; ``b""`` is NOT a tombstone but an ordinary,
+zero-length value that compaction retains forever. The two are never
+conflated in either direction: ``None`` round-trips as
+`IncomingMessage.value` ``None``, ``b""`` reads back as ``Event({})``.
+Keys stay non-null — a null key is a partitioning decision, not a value.
 """
 
 
@@ -91,14 +99,21 @@ class InvalidMessageError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class IncomingMessage:
-    """A message read from Kafka."""
+    """A message read from Kafka.
+
+    ``value`` is ``None`` exactly when the record's wire value is null — a
+    tombstone (see `Payload`). An empty wire value (``b""``) is not a
+    tombstone and decodes to ``Event({})``, like ``b"{}"``. Only the wire
+    views carry ``None``: `State` and `Config` are store views, where a
+    deletion is absence, never a null value.
+    """
 
     key: str
     offset: int
     partition: int
     timestamp: datetime | None
     topic: str
-    value: Event
+    value: Event | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,14 +121,15 @@ class Message:
     """A message to be written to Kafka.
 
     ``key`` and ``value`` each accept any `Payload` — see its docs for the
-    encoding rules and for how to express other shapes. Construction
+    encoding rules and for how to express other shapes — and ``value``
+    additionally accepts ``None``, which produces a Kafka tombstone. Construction
     validates both fields so a mistake fails at the yield site, not inside
     the runner's transactional send path.
     """
 
     key: Payload
     topic: str
-    value: Payload
+    value: Payload | None
     timestamp: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -121,6 +137,14 @@ class Message:
             v = getattr(self, name)
             if isinstance(v, (bytes, str, Event)):
                 continue
+            if v is None:
+                if name == "value":
+                    continue  # a tombstone
+                raise TypeError(
+                    "Message.key must not be None: Flechtwerk always writes keyed"
+                    " records — a key is partitioning and, downstream, state identity."
+                    " Only the value may be None, which writes a Kafka tombstone."
+                )
             if isinstance(v, Config):
                 raise TypeError(
                     f"Message.{name} must not be a Config: on the wire it travels as"

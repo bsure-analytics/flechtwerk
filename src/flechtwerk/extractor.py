@@ -17,7 +17,7 @@ from reactor_di import lookup
 
 from flechtwerk.attribute import Attribute, BOOL
 from .configs import ConfigStore, EnrichConfigFn, bootstrap_config_store, drain_config_updates
-from .kafka import encode_json, datetime_to_millis, restore_changelog
+from .kafka import datetime_to_millis, encode_json, encode_value, restore_changelog
 from .observer import Observer
 from .stage import ExtractStateKeyFn, OnInvalidMessageFn, Stage, counting_on_invalid
 from .state import ChangelogStateStore, StatelessStateStore, StateStore
@@ -819,9 +819,10 @@ class ExtractorRunner:
     async def load_initial_configs(self) -> None:
         """Read all existing configs from the config topics on startup.
 
-        `bootstrap_config_store` compacts by wire key, treating empty
-        values as tombstones that remove the key entirely — matching Kafka
-        log compaction — reads to the end offsets captured at entry, and
+        `bootstrap_config_store` compacts by wire key, treating null and
+        empty values as tombstones that remove the key entirely (Kafka log
+        compaction itself removes only the null ones), reads to the end
+        offsets captured at entry, and
         enriches once per surviving entry. Every surviving entry becomes
         a config.
 
@@ -954,7 +955,7 @@ class ExtractorRunner:
                                 if not in_transaction:
                                     await task.producer.begin_transaction()
                                     in_transaction = True
-                                key_bytes, value_bytes = encode_json(item.key), encode_json(item.value)
+                                key_bytes, value_bytes = encode_json(item.key), encode_value(item.value)
                                 deliveries.append(await task.producer.send(
                                     item.topic,
                                     key=key_bytes,
@@ -962,7 +963,7 @@ class ExtractorRunner:
                                     timestamp_ms=datetime_to_millis(item.timestamp),
                                 ))
                                 self.observer.message_out(item.topic)
-                                self.observer.message_out_bytes(item.topic, len(key_bytes) + len(value_bytes))
+                                self.observer.message_out_bytes(item.topic, len(key_bytes) + len(value_bytes or b""))
                             else:
                                 raise TypeError(f"poll() yielded {type(item).__name__}, expected Message or State")
                     finally:

@@ -92,10 +92,11 @@ is the usual choice — and the framework retypes it for the topic it came from.
 
 ## What never reaches the hook
 
-- **An empty or absent value.** It decodes to `Event.wrap({})`, as it always
-  did. `{}` therefore means "empty value" unambiguously — never "garbage".
+- **An empty value.** It decodes to `Event.wrap({})`, as it always did.
+  `{}` therefore means "empty value" unambiguously — never "garbage".
 - **A tombstone's value.** The tombstone check runs on raw bytes, before any
-  value decode. A tombstone whose *key* is undecodable does fire the hook with
+  value decode: a null value on a data topic reads as `msg.value is None`,
+  and on a config topic (where `b""` and `{}` delete too) it removes the key. A tombstone whose *key* is undecodable does fire the hook with
   `part="key"`; skipping there means the deletion is not applied.
 - **State and changelog records.** Changelog keys and `State` bytes are written
   by the framework itself, so corruption there is not a policy question — it is

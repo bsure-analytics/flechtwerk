@@ -66,6 +66,12 @@ What each yield does here:
   Key and value each accept any `Payload` (`bytes | str | Event`) — an
   `Event` is the common case; `str` writes plain UTF-8 text and `bytes`
   passes through pre-encoded, for output topics read by foreign consumers.
+  The value may also be `None`: a Kafka tombstone, the way to delete a key
+  from a compacted output topic. (An empty value, `b""`, is *not* a
+  tombstone — log compaction keeps it as the key's latest record.)
+  Symmetrically, `msg.value` is `None` when an input record's value is null,
+  so a stage reading a compacted table sees deletions; an empty input value
+  reads as `Event({})`.
 - `yield State(...)` persists the running count for `msg.key`. On the next
   record for that key, `state.get(SEEN)` reads it back.
 

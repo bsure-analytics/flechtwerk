@@ -1062,6 +1062,36 @@ def test_run_bootstraps_config_store_and_subscribes_input_topics_only():
     asyncio.run(run())
 
 
+def test_tombstones_round_trip_through_a_transformer():
+    """A null input value reads as None, and Message(value=None) writes a real
+    null — a stage mirroring a compacted table propagates deletions, while an
+    empty value (b"") stays an ordinary record in both directions."""
+    async def mirror(msg, state):
+        yield Message(key=msg.key, topic="output", value=msg.value)
+
+    async def run():
+        from flechtwerk.testing import RecordingObserver
+
+        consumer = FakeKafkaConsumer([
+            make_record(key=b"gone", value=None, topic="input-topic", offset=0),
+            make_record(key=b"empty", value=b"", topic="input-topic", offset=1),
+        ])
+        producer = FakeKafkaProducer()
+        mod = make_module(Transformer.of(input_topics=["input-topic"], transform=mirror), consumer, producer)
+        mod.observer = RecordingObserver()
+        runner = mod.runner
+
+        records = await runner.consumer.getmany(timeout_ms=1000)
+        await runner.process_batch(records)
+
+        sent = {payload["key"]: payload["value"] for _, payload in producer.sent}
+        assert sent == {b"gone": None, b"empty": b"{}"}
+        # A tombstone weighs its key alone.
+        assert ("message_out_bytes", "output", len(b"gone")) in mod.observer.calls
+
+    asyncio.run(run())
+
+
 def test_process_batch_weighs_messages_and_state_records():
     """The runner observes bytes in both directions and for every changelog
     write — the operator's early warning that a record is nearing the ~1 MiB

@@ -62,6 +62,17 @@ def encode_json(value: bytes | str | Record) -> bytes:
             raise TypeError(f"Expected bytes | str | Record, got {type(value).__name__}")
 
 
+def encode_value(value: bytes | str | Record | None) -> bytes | None:
+    """Encode a `Message` value: ``None`` stays null — a Kafka tombstone.
+
+    Separate from `encode_json` on purpose: that one must stay
+    `Record`-level (``serialize`` routes `State` through it, and a state is
+    never null — a falsy one is deleted), whereas a message value is the one
+    place a null is a legitimate payload.
+    """
+    return None if value is None else encode_json(value)
+
+
 def datetime_to_millis(dt: datetime | None) -> int | None:
     """Convert a datetime to Kafka millisecond epoch, or None."""
     if dt is None:
@@ -211,13 +222,19 @@ def parse_message(
 
     The key is decoded FIRST and a key failure short-circuits: the value is
     never attempted, so one broken record costs one handler call, not two.
+
+    A null wire value — a tombstone — becomes ``value=None`` without any
+    decode, so it never reaches the handler (there is nothing invalid about
+    it). Only a REAL null does: ``b""`` is an ordinary empty value and decodes
+    to ``Event({})``, because compaction retains it, unlike a tombstone.
     """
     key = decode_key_mediated(msg, on_invalid)
     if key is None:
         return None
-    value = decode_event_mediated(msg, on_invalid)
-    if value is None:
-        return None
+    if msg.value is None:
+        value = None
+    elif (value := decode_event_mediated(msg, on_invalid)) is None:
+        return None  # skipped by the handler
     return IncomingMessage(
         key=key,
         offset=msg.offset,
@@ -232,11 +249,17 @@ def parse_message(
 
 
 def is_tombstone(raw: bytes | str | None) -> bool:
-    """True for an empty Kafka value or a serialized falsy record.
+    """True for a value that deletes its key from a framework-defined STORE.
 
-    Covers ``b""``/``None`` (a real Kafka tombstone) and ``b"{}"`` (a falsy
-    Record serialized to JSON). Accepts ``str`` like the decode helpers —
-    aiokafka delivers bytes, test doubles may carry strings.
+    Covers ``None`` (a real Kafka tombstone), ``b""`` and ``b"{}"`` (a falsy
+    Record serialized to JSON). The leniency is for the store views only —
+    config topics and changelogs, where the framework defines what a value
+    means and ops tooling such as Kafka UI often cannot produce a real null.
+    Data-topic reads (`parse_message`) treat only ``None`` as a tombstone.
+    Note that only ``None`` lets compaction remove the key from the topic;
+    the framework therefore writes ``None`` for every deletion. Accepts
+    ``str`` like the decode helpers — aiokafka delivers bytes, test doubles
+    may carry strings.
     """
     return not raw or raw in (b"{}", "{}")
 
