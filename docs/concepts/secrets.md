@@ -14,8 +14,10 @@ was; non-secret fields remain readable and editable in any topic UI.
 
 !!! note "The `flechtwerk[secrets]` extra"
 
-    Encrypted attributes require `pip install "flechtwerk[secrets]"` (it pulls
-    `joserfc`). `flechtwerk.secrets` is the only module that imports it, so a
+    Encrypted attributes require `pip install "flechtwerk[secrets]"`, which
+    installs the companion package [`flechtctl`](../guides/flechtctl.md) (pinned to
+    the same version) and through it `joserfc`. The token format lives in
+    `flechtctl`, whose `tokens` module is the only one that imports joserfc, so a
     stage without encrypted attributes never loads it. The generated surface is
     in the [API reference](../api/index.md#secrets); the [appendix](#why-attribute-level-encryption)
     records why this approach over a proxy or secret references.
@@ -431,7 +433,18 @@ half is refused on first use.
 Encryption uses the scope's sealing key and stamps its `kid`; decryption uses
 whatever key the token's `kid` names. `Keyring` is a pure value object — key
 bytes plus the scope mappings, nothing else; no crypto, no `joserfc` import — built
-via `Keyring.of(...)` (raw bytes) or `Keyring.from_json(...)` (the JWK Set). The
+via `Keyring.of(...)` (raw bytes) or `Keyring.from_json(...)` (the JWK Set), and
+written back with `Keyring.to_json()`, the exact inverse. It lives in the
+[`flechtctl`](../guides/flechtctl.md) package and is importable from
+`flechtwerk.keyring` all the same. Moving one entry between parties is
+`Keyring.public_jwk(kid)` (the public half as a single JWK, never a private half)
+and `Keyring.with_jwk(jwk)` (a new keyring with one more entry) — what
+`flechtctl keyring export` and `import` do. A keyring file can also be kept
+**password-protected**, as an encrypted JWK Set (RFC 7517 §7: a compact JWE over
+the JWK Set, `PBES2-HS512+A256KW` + `A256GCM`); that form is for the operator's
+master copy, only `flechtctl` opens it, and a stage reads plain JSON (see
+[Protecting the Master Keyring](../guides/flechtctl.md#protecting-the-master-keyring)
+for why). The
 framework never learns *where* the document came from: the application
 constructs the keyring and injects it via `Flechtwerk.of(keyring=...)`, exactly
 as it injects broker settings.
@@ -546,8 +559,12 @@ A sweep re-produces records, which has sharp edges the tooling must respect:
 
 ## Tooling
 
-`flechtwerk.secrets` ships the primitives the runbooks build on (no CLI — those
-belong in application tooling per the framework's boundary rule):
+`flechtwerk.secrets` ships the primitives the runbooks build on, and the
+[`flechtctl`](../guides/flechtctl.md) package puts the same primitives on the
+command line — `flechtctl keyring …` to create and edit keyrings, `encrypt`,
+`decrypt`, `sign`, `verify` and `reencrypt` for values and tokens, `inspect` for
+a token's header (the Kafka topic scan stays here, since it needs the Kafka
+client):
 
 - `encrypt_value(attribute, value) -> str` — the token a typed write would
   store, for writers that build their JSON without a `Record`.
@@ -741,11 +758,16 @@ joserfc can encrypt it, as one more `alg` beside the two.
 
 ## Where It Lives
 
-`flechtwerk.secrets` (the extra, the only `joserfc` importer) holds the codec,
-tooling, and exceptions; `flechtwerk.keyring` holds the joserfc-free `Keyring`
-value object and the process-global runtime — so `module.py` can annotate its
-`keyring` slot at decoration time without importing joserfc (the same discipline
-paho follows in `flechtwerk.mqtt`). The decade-scale commitment is to the
+The **format** lives in the standalone `flechtctl` package: `flechtctl.tokens`
+(the only `joserfc` importer) holds seal, open, sign, verify and the pinned
+registries, `flechtctl.keyring` the joserfc-free `Keyring` value object, and
+`flechtctl.errors` the exceptions; `flechtwerk[secrets]` installs it, pinned to
+the same version. `flechtwerk.secrets` is the framework layer over it — the
+codecs, the process keyring, the telemetry and the topic scan — and
+`flechtwerk.keyring` holds the process-global runtime and the joserfc-free seam,
+so `module.py` can annotate its `keyring` slot at decoration time without
+importing joserfc (the same discipline paho follows in `flechtwerk.mqtt`), with
+or without `flechtctl` installed. The decade-scale commitment is to the
 *format*, not the library: two JWE generations and one JWS form. joserfc could
 be replaced by a vendored implementation of the three pinned forms (`dir`+A256GCM,
 `ECDH-ES+A256KW`+A256GCM over X25519, Ed25519 JWS) without a wire change, which

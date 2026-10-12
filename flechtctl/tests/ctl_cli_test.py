@@ -455,6 +455,18 @@ def test_walkthrough(run, monkeypatch, tmp_path):
     assert (code, out) == (1, "") and "can seal but not open" in err
 
 
+def test_the_guide_prints_the_walkthrough():
+    guide = (Path(__file__).parents[2] / "docs" / "guides" / "flechtctl.md").read_text()
+    for step in WALKTHROUGH:
+        assert f"flechtctl {step}\n" in guide, step
+    for line in (
+        "TOKEN=$(flechtctl sign -k writer.json --scope demo --string hello | flechtctl encrypt -k writer.json --scope demo --string)",
+        'flechtctl inspect "$TOKEN"',
+        'flechtctl decrypt -k reader.json --scope demo --string "$TOKEN" | flechtctl verify -k reader.json --scope demo --string',
+    ):
+        assert line + "\n" in guide, line
+
+
 # --- the installed console script ---
 
 

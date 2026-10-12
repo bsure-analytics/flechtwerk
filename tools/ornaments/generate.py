@@ -24,7 +24,8 @@ LAPIS = "39,74,122"
 GARNET = "124,45,58"
 VERDIGRIS = "47,109,94"
 
-# One DISTINCT (style, accent) per page slug — no two pages share a style.
+# One DISTINCT (style, accent) per page slug. Every style is taken once; further
+# pages reuse a style with an accent it does not wear yet.
 PAGES = {
     "index": ("plait", LAPIS),
     "concepts-index": ("spiral", VERDIGRIS),
@@ -36,6 +37,7 @@ PAGES = {
     "guides-index": ("twistknot", GARNET),
     "guides-getting-started": ("stepfret", VERDIGRIS),
     "guides-extractor": ("braid4", GARNET),
+    "guides-flechtctl": ("braid4", VERDIGRIS),
     "guides-mqtt": ("weave", LAPIS),
     "guides-transformer": ("chevron", VERDIGRIS),
     "guides-best-practices": ("twill", GARNET),

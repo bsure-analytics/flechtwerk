@@ -18,7 +18,7 @@ Wiring is done through **reactor-di**. `Flechtwerk.of(...)` returns a private `_
 !!! note "When a Transport Belongs in the Framework"
     A transport adapter earns a place in the framework only when its correctness depends on runner delivery semantics. MQTT qualifies because its manual-ACK protocol (ACK only after Kafka durability) leans on the extractor runner's re-entry contract; a plain HTTP poller does not, and stays in application code.
 
-The framework has no CLI, no module-level `os.getenv`, no `load_dotenv`, and no opinions about how applications are packaged or deployed — one stage per process or [several](../guides/getting-started.md#several-stages-in-one-process). All configuration is injected by the caller.
+The framework has no CLI of its own (the companion `flechtctl` package has one, for [keyrings and secret tokens](../guides/flechtctl.md)), no module-level `os.getenv`, no `load_dotenv`, and no opinions about how applications are packaged or deployed — one stage per process or [several](../guides/getting-started.md#several-stages-in-one-process). All configuration is injected by the caller.
 
 ## Module Map
 

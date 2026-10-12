@@ -47,7 +47,7 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [src]
+          paths: [flechtctl/src, src]
           options:
             docstring_section_style: table
             heading_level: 3
@@ -86,6 +86,7 @@ nav:
       - Transformers: guides/transformer.md
       - Best Practices: guides/best-practices.md
       - Observability: guides/observability.md
+      - Keyrings & Secret Tokens: guides/flechtctl.md
   - Concepts:
       - concepts/index.md
       - "Typed Attributes & Records": concepts/typed-attributes.md

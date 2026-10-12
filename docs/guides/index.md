@@ -16,9 +16,11 @@ source into Kafka (with **MQTT Extractors** as the push-driven variant), and
 **Transformers** consume topics and publish derived records with exactly-once
 delivery. **Best practices** then shows how to combine an extractor and a
 transformer so you can reprocess without re-ingesting, and **Observability**
-covers the Prometheus metrics. The concept pages fill in the rest: typed
-attributes and records, config topics as shared lookup tables, and exactly-once
-delivery.
+covers the Prometheus metrics. **Keyrings & Secret Tokens** introduces
+`flechtctl`, the small companion tool for creating keyrings and for sealing,
+opening, signing and checking secret values outside a running stage. The concept
+pages fill in the rest: typed attributes and records, config topics as shared
+lookup tables, and exactly-once delivery.
 
 !!! tip "The Whole Contract Is Two `yield` Statements"
 

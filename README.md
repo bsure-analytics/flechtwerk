@@ -30,7 +30,8 @@ It exists because the existing Python options each miss a constraint that matter
 ```bash
 pip install flechtwerk            # or: uv add flechtwerk
 pip install "flechtwerk[mqtt]"    # with the MQTT→Kafka bridge (paho-mqtt)
-pip install "flechtwerk[secrets]" # with field-level secret encryption (joserfc)
+pip install "flechtwerk[secrets]" # with field-level secret encryption (installs flechtctl)
+uvx flechtctl --help              # keyring and secret-token tooling, without the framework
 ```
 
 Python 3.12+. Runtime dependencies: `aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`. Run it on `uvloop` for best throughput — the framework works on stock `asyncio` (and therefore on Windows), but the event loop is the application's choice.
