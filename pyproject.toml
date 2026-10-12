@@ -12,6 +12,7 @@ dev = [
     "joserfc~=1.7",  # tests/secrets_test.py imports joserfc directly
     "paho-mqtt~=2.1",
     "poethepoet>=0.29",
+    "pyright>=1.1.400",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
     "testcontainers[kafka]>=4.8",
@@ -95,6 +96,7 @@ docs-build = { cmd = "uv run --group docs mkdocs build --strict", help = "Build 
 test = { cmd = "pytest", help = "Run the unit tests (Docker-free)" }
 test-all = { cmd = "pytest -m 'integration or not integration'", help = "Run unit + integration tests (needs Docker)" }
 test-integration = { cmd = "pytest -m integration", help = "Run only the integration tests (needs Docker)" }
+typecheck = { cmd = "pyright", help = "Type-check both source trees" }
 
 [tool.poe.tasks.cov]
 help = "Run the full test suite with coverage, then print the report"
@@ -102,6 +104,13 @@ sequence = [
     { cmd = "coverage run -m pytest -m 'integration or not integration'" },
     { cmd = "coverage report" },
 ]
+
+[tool.pyright]
+# Source trees only: the tests lean on duck-typed fakes and deliberate type
+# violations (rejection tests), which a checker would flag by design.
+include = ["flechtctl/src", "src"]
+venv = ".venv"
+venvPath = "."
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"

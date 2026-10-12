@@ -24,6 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 uv sync                        # venv + all dependencies
+uv run poe typecheck           # pyright over src/ and flechtctl/src/ — CI gates on zero errors
 uv run pytest                  # unit tier — Docker-free
 uv run pytest -m integration   # integration tier — ephemeral Kafka/Mosquitto via testcontainers; skips when Docker is unreachable
 uv run coverage run -m pytest -m "integration or not integration" && uv run coverage report   # both tiers, matching CI
