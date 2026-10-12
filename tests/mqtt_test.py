@@ -789,6 +789,36 @@ def test_extractor_is_abstract():
         MqttExtractor()
 
 
+def test_extractor_of_binds_the_optional_hooks():
+    """``of`` shadows each hook it is given and leaves the others at their
+    class defaults — mirroring ``Extractor.of``."""
+
+    async def enrich(config: Config) -> Config:
+        return config
+
+    def state_key(msg) -> str:
+        return msg.key
+
+    def on_invalid(error):
+        return None
+
+    ext = MqttExtractor.of(
+        config_topics=["cfg"],
+        relay=forward_relay,
+        enrich_config=enrich,
+        extract_state_key=state_key,
+        on_invalid_message=on_invalid,
+    )
+    assert ext.enrich_config is enrich
+    assert ext.extract_state_key is state_key
+    assert ext.on_invalid_message is on_invalid
+
+    bare = MqttExtractor.of(config_topics=["cfg"], relay=forward_relay)
+    assert "enrich_config" not in vars(bare)
+    assert "extract_state_key" not in vars(bare)
+    assert "on_invalid_message" not in vars(bare)
+
+
 @pytest.mark.asyncio
 async def test_extractor_aenter_without_settings_raises():
     ext = MqttExtractor.of(config_topics=["cfg"], relay=forward_relay)
