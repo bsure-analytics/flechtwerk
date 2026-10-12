@@ -8,6 +8,13 @@ plan_file: 2026-10-11-flechtctl-plan.md
 
 ## Failing check
 
+**Check:** Pre-Flight step 2, the fixture-copy privilege ("The sibling repository's fixture
+can be copied (task 2 needs it) … A denial is a pre-flight failure (blocked report,
+`next: relaunch`)"). The plan itself classes a denial of this copy as a pre-flight
+failure. The probe form of the check (copy into a `mktemp` directory) passed at the start
+of this session; the real copy that task 2 needs — into `flechtctl/tests/fixtures/` — is
+the form that was refused, so the privilege the check exists to guarantee is not there.
+
 Task 2 requires the sibling project's committed token vector to be copied byte for
 byte into `flechtctl/tests/fixtures/face_vector_token.txt` (the camera-inference
 compatibility test, `ctl_tokens_test.py`). This session ran that copy and the
