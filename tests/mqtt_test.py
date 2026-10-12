@@ -1,6 +1,7 @@
 """Tests for flechtwerk.mqtt — connection machinery and the relay template."""
 import asyncio
 import json
+import ssl
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -141,6 +142,34 @@ async def test_skips_credentials_when_username_empty(mock_client):
     make_connection(asyncio.get_running_loop(), broker=MqttBrokerConfig(broker="b", port=1883, qos=1))
 
     client.username_pw_set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_applies_tls_context_when_set(mock_client):
+    _, client = mock_client
+    context = ssl.create_default_context()
+    make_connection(
+        asyncio.get_running_loop(),
+        broker=MqttBrokerConfig(broker="b", port=8883, qos=1, tls=context),
+    )
+
+    client.tls_set_context.assert_called_once_with(context)
+
+
+@pytest.mark.asyncio
+async def test_skips_tls_when_context_is_none(mock_client):
+    _, client = mock_client
+    make_connection(asyncio.get_running_loop(), broker=MqttBrokerConfig(broker="b", port=1883, qos=1))
+
+    client.tls_set_context.assert_not_called()
+
+
+def test_broker_config_refuses_an_unauthenticating_tls_context():
+    """Refused at construction, before any connection exists."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    with pytest.raises(ValueError, match=r"mqtt\.tls would not authenticate"):
+        MqttBrokerConfig(broker="b", port=8883, tls=context)
 
 
 @pytest.mark.asyncio
@@ -696,6 +725,33 @@ async def test_on_socket_open_registers_reader(mock_client):
     with patch.object(loop, "add_reader") as add_reader:
         conn.on_socket_open(client, None, mock_sock)
         add_reader.assert_called_once_with(mock_sock, client.loop_read)
+
+    if conn.misc_task:
+        conn.misc_task.cancel()
+        try:
+            await conn.misc_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_on_socket_open_tls_reader_drains_openssl_buffer(mock_client):
+    """Decrypted bytes buffered inside OpenSSL never make the fd readable
+    again, so the TLS reader keeps reading while ``pending()`` reports any."""
+    _, client = mock_client
+    loop = asyncio.get_running_loop()
+    conn = make_connection(loop)
+    tls_sock = MagicMock(spec=ssl.SSLSocket)
+    tls_sock.pending.side_effect = [2, 1, 0]
+    client.socket.return_value = tls_sock
+
+    with patch.object(loop, "add_reader") as add_reader:
+        conn.on_socket_open(client, None, tls_sock)
+        (registered_sock, reader), _ = add_reader.call_args
+        assert registered_sock is tls_sock
+        reader()
+
+    assert client.loop_read.call_count == 3
 
     if conn.misc_task:
         conn.misc_task.cancel()

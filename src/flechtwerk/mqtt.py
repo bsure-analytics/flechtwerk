@@ -125,6 +125,7 @@ three on the stage verbatim before startup.
 import asyncio
 import json
 import logging
+import ssl
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
@@ -236,11 +237,19 @@ class MqttConnection:
 
         if broker.username:
             self.client.username_pw_set(broker.username, broker.password)
+        if broker.tls is not None:
+            # Must precede connect(); paho wraps the socket with
+            # server_hostname=broker and runs the handshake inside connect().
+            # The context was validated at MqttBrokerConfig construction, so
+            # paho's own hostname fallback (ssl.match_hostname, gone since
+            # Python 3.12) is unreachable.
+            self.client.tls_set_context(broker.tls)
 
     async def __aenter__(self) -> Self:
         log.info(
-            "Connecting to MQTT %s:%d as %s (group %s, session expiry %s)",
-            self.broker.broker, self.broker.port, self.client_id, self.group, self.broker.session_expiry,
+            "Connecting to MQTT %s:%d over %s as %s (group %s, session expiry %s)",
+            self.broker.broker, self.broker.port, "TLS" if self.broker.tls is not None else "plaintext",
+            self.client_id, self.group, self.broker.session_expiry,
         )
         # clean_start=False resumes the existing session; the expiry property
         # is what keeps that session — and everything queued into it while
@@ -249,9 +258,10 @@ class MqttConnection:
         # value above it is honored, so this is the single source of truth.
         properties = Properties(PacketTypes.CONNECT)
         properties.SessionExpiryInterval = int(self.broker.session_expiry.total_seconds())
-        # Blocking TCP handshake + MQTT CONNECT packet queued. The socket
-        # callbacks (on_socket_open, on_socket_register_write) fire during this
-        # call, registering the socket with the event loop.
+        # Blocking TCP handshake (plus the TLS handshake when broker.tls is
+        # set) + MQTT CONNECT packet queued. The socket callbacks
+        # (on_socket_open, on_socket_register_write) fire during this call,
+        # registering the socket with the event loop.
         self.client.connect(
             self.broker.broker, self.broker.port, clean_start=False, properties=properties,
         )
@@ -421,8 +431,31 @@ class MqttConnection:
     # -- Socket callbacks: drive paho I/O from the asyncio event loop ---------
 
     def on_socket_open(self, client: Client, _userdata: object, sock: "SocketLike") -> None:
-        self.loop.add_reader(sock, client.loop_read)  # noqa
+        if isinstance(sock, ssl.SSLSocket):
+            self.loop.add_reader(sock, self._tls_reader(client, sock))
+        else:
+            self.loop.add_reader(sock, client.loop_read)  # noqa
         self.misc_task = self.loop.create_task(self.run_misc_loop())
+
+    @staticmethod
+    def _tls_reader(client: Client, sock: ssl.SSLSocket) -> Callable[[], None]:
+        """A reader callback that drains what OpenSSL has already decrypted.
+
+        ``loop_read`` reads a bounded number of packets per call, and bytes
+        OpenSSL has already decrypted into its own buffer never make the fd
+        readable again — so the rest of a multi-packet TLS record could sit
+        unread until the next network event, up to a whole keepalive away.
+        paho's own ``_loop`` guards this with ``sock.pending()``; this is the
+        same guard for the asyncio integration. Mosquitto writes one record
+        per MQTT packet, so the stall did not reproduce there, but nothing
+        obliges an MQTT broker to. The identity check stops the loop once
+        the read closed or replaced the socket.
+        """
+        def read() -> None:
+            client.loop_read()
+            while client.socket() is sock and sock.pending() > 0:
+                client.loop_read()
+        return read
 
     def on_socket_close(self, _client: Client, _userdata: object, sock: "SocketLike") -> None:
         self.loop.remove_reader(sock)

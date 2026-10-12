@@ -111,13 +111,32 @@ class MqttBrokerConfig:
     which paho then neither delivers nor PUBCOMPs, so an in-flight message
     is lost instead of redelivered. See the MQTT guide's "Quality of
     Service".
+
+    ``tls`` is a stdlib ``ssl.SSLContext`` for connecting over TLS; ``None``,
+    the default, connects in plaintext. The caller builds the context, so the
+    caller owns the trust and the policy: ``ssl.create_default_context()`` for
+    an MQTT broker with a publicly trusted certificate,
+    ``create_default_context(cafile=...)`` for one signed by a private CA, and
+    ``load_cert_chain(...)`` on top for mutual TLS — a context that carries a
+    client certificate presents it, and nothing else changes. A context that
+    would not authenticate the MQTT broker (``verify_mode`` other than
+    ``CERT_REQUIRED``, or ``check_hostname`` off) is refused here, at
+    construction: encryption without authentication is not offered. The port
+    stays the caller's to set — 8883 is the TLS convention, and no default
+    changes with ``tls``. A context reads its certificate files once, so a
+    rotated certificate takes effect at the next process start. See the MQTT
+    guide's "TLS".
     """
     broker: str
     port: int
     password: str = ""
     qos: int = 1
     session_expiry: timedelta = timedelta(hours=24)
+    tls: ssl.SSLContext | None = None
     username: str = ""
+
+    def __post_init__(self) -> None:
+        validate_tls(self.tls, "mqtt.tls")
 
 
 def validate_topics(stage: Extractor | Transformer) -> None:

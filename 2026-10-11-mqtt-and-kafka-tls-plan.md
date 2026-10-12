@@ -365,7 +365,7 @@ they describe what was actually built.
     a non-context raises `TypeError`.
   - Commit.
 
-- [ ] **2. MQTT broker TLS**
+- [x] **2. MQTT broker TLS**
   - `MqttBrokerConfig.tls: ssl.SSLContext | None = None` (slot between
     `session_expiry` and `username`), a `__post_init__` calling the validator
     with `"mqtt.tls"`, and a docstring paragraph in the existing style: what
@@ -742,3 +742,11 @@ judge.
   `__all__`); 5 tests in `tests/module_test.py` (None/default pass,
   CERT_NONE/CERT_OPTIONAL/check_hostname=False → ValueError, str → TypeError).
   `uv run pytest -q` → `673 passed, 22 deselected`.
+- Task 2 started.
+- Task 2 done: `MqttBrokerConfig.tls` (+ `__post_init__` → `validate_tls`
+  with `"mqtt.tls"`, docstring paragraph); `MqttConnection.__init__` calls
+  `tls_set_context`; the connect log names the transport; `on_socket_open`
+  registers a `_tls_reader` pending-drain wrapper for `ssl.SSLSocket` and
+  `client.loop_read` otherwise (the pinned test untouched). 4 tests added in
+  `tests/mqtt_test.py`. `uv run pytest -q` → `677 passed, 22 deselected`;
+  paho import probe exit 0.
