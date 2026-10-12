@@ -433,7 +433,7 @@ they describe what was actually built.
     with `ValueError` before any Kafka client is built.
   - Commit.
 
-- [ ] **4. Integration tests: `tests/integration/tls_test.py` (new file)**
+- [x] **4. Integration tests: `tests/integration/tls_test.py` (new file)**
   - `pytestmark = pytest.mark.integration`; skip like the existing fixtures
     when Docker is unreachable.
   - A session-scoped fixture generating a throwaway PKI with `cryptography`
@@ -761,3 +761,14 @@ judge.
   and got `mod.kafka_tls = None`; `"kafka_tls"` added to the bare-constructor
   name tuple. 3 wiring tests added. `uv run pytest -q` → `680 passed, 22
   deselected`; bootstrap grep → `1`.
+- Task 4 started.
+- Task 4 done: `tests/integration/tls_test.py` — session PKI (EC P-256;
+  BasicConstraints/SKI/AKI/critical KeyUsage; server SANs `DNS:localhost`,
+  `IP:127.0.0.1`), mTLS Mosquitto (8883, `require_certificate true`) and mTLS
+  Kafka (`TLS` listener, PEM stores via `create_file`) fixtures, and the four
+  behaviours: MQTT/Kafka reject a client without a certificate, a 300-message
+  MQTT backlog drains over mTLS within 10 s, and three stages (MqttExtractor
+  relay → stateful transformer, plus a stateful sharded extractor) flow end
+  to end over mTLS on both brokers. `uv run pytest -q -m integration
+  tests/integration/tls_test.py -rs` → `4 passed in 14.52s`; full tier
+  `uv run pytest -q -m integration -rs` → `26 passed, 680 deselected`.
