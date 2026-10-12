@@ -51,12 +51,11 @@ def test_the_only_requirement_is_joserfc():
 
 def test_every_module_declares_all_alphabetically():
     for path in SRC.glob("*.py"):
-        if path.name == "__main__.py":
-            continue
         tree = ast.parse(path.read_text())
         declared = next(
             node.value for node in tree.body
-            if isinstance(node, ast.Assign) and node.targets[0].id == "__all__"  # type: ignore[attr-defined]
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and (node.target if isinstance(node, ast.AnnAssign) else node.targets[0]).id == "__all__"  # type: ignore[attr-defined]
         )
         names = [element.value for element in declared.elts]  # type: ignore[attr-defined]
         assert names == sorted(names), path
