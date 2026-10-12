@@ -1,5 +1,4 @@
 ---
-blocked_report: 2026-10-11-flechtctl-plan.BLOCKED.md
 branch: main
 closeout_push: false
 created: 2026-10-11
@@ -18,7 +17,7 @@ plugin_url: https://github.com/christian-schlichtherle/cs7-claude-plugins
 plugin_version: 0.16.1
 review_rounds: 10
 sources: []
-status: blocked
+status: done
 ticket: none
 ---
 
@@ -402,7 +401,7 @@ Run `uv run pytest -q` after every task — it must stay green (plus new tests).
     commit, `uv lock --check` exits 0 (the lock must not churn per commit).
   - Commit: "Add the flechtctl workspace member and pin it from the secrets extra".
 
-- [ ] **2. Move the keyring model and the token format into `flechtctl`**
+- [x] **2. Move the keyring model and the token format into `flechtctl`**
   - `flechtctl/src/flechtctl/keyring.py` (joserfc-free, stdlib only): move from
     `flechtwerk/keyring.py`, verbatim, `KEY_BYTES`, `KeyringError`, `UnknownKeyError`,
     `_decode_key`, `_B64URL_TO_STD`, `Ed25519Key`, `X25519Key`, `Keyring` (all
@@ -548,7 +547,7 @@ Run `uv run pytest -q` after every task — it must stay green (plus new tests).
     the code coexist for one commit; the suite stays green.
   - Commit: "Move the keyring model and the token format into flechtctl".
 
-- [ ] **3. Rewire `flechtwerk.keyring` and `flechtwerk.secrets` onto `flechtctl`**
+- [x] **3. Rewire `flechtwerk.keyring` and `flechtwerk.secrets` onto `flechtctl`**
   - `src/flechtwerk/keyring.py`: delete the moved definitions; import them:
 
     ```python
@@ -611,7 +610,7 @@ Run `uv run pytest -q` after every task — it must stay green (plus new tests).
     `git diff --diff-filter=M --name-only e88d511 -- tests` prints nothing.
   - Commit: "Build flechtwerk.keyring and flechtwerk.secrets on flechtctl".
 
-- [ ] **4. The `flechtctl` command**
+- [x] **4. The `flechtctl` command**
   - `flechtctl/src/flechtctl/cli.py` (`__all__ = ["main"]`) + `__main__.py`
     (`python -m flechtctl`). Stdlib `argparse` with subparsers; no other dependency.
     `main(argv: list[str] | None = None) -> int`; the console script calls
@@ -711,7 +710,7 @@ Run `uv run pytest -q` after every task — it must stay green (plus new tests).
     put the sequence in the test as a list and reference the test from the guide).
   - Commit: "Add the flechtctl command".
 
-- [ ] **5. CLAUDE.md**
+- [x] **5. CLAUDE.md**
   - Architecture: add a `flechtctl/` bullet (the standalone distribution: modules
     `keyring` / `errors` / `tokens` / `cli`, explicit-keyring API, lazy joserfc via
     PEP 562, never imports flechtwerk, one runtime dependency, exact-version pin from
@@ -732,7 +731,7 @@ Run `uv run pytest -q` after every task — it must stay green (plus new tests).
     `publish.yaml`, environment `pypi`) — otherwise `uv publish` fails for it.
   - Commit: "Document flechtctl in CLAUDE.md".
 
-- [ ] **6. User docs**
+- [x] **6. User docs**
   - `flechtctl/README.md` — the PyPI page: what it is; install (`uvx flechtctl --help`,
     `uv tool install flechtctl`, `pip install flechtctl`); CLI quick start (keyring
     new → encrypt → decrypt); library quick start (`Keyring.from_json`, `encrypt`,
@@ -977,3 +976,11 @@ the file, so it would have nothing to judge.
 - 2026-10-12 Task 2 started: wrote flechtctl/src/flechtctl/{keyring,errors,tokens,__init__}.py (uncommitted), smoke-tested by hand; tests not yet written.
 - 2026-10-12 BLOCKED at task 2: the copy of ../../livia-nt/camera-inference/tests/fixtures/face_vector_token.txt into flechtctl/tests/fixtures/ was denied by the auto-mode classifier ([Sensitive-Source Provenance]). The Pre-Flight probe copying it into a mktemp dir had passed. No workaround attempted. See 2026-10-11-flechtctl-plan.BLOCKED.md; next: relaunch.
 \n- 2026-10-12 Report amended after a Stop-hook review: the plan's Pre-Flight step 2 classes a denial of the fixture copy as a pre-flight failure, so the report now cites that rule.\n
+- 2026-10-12 Resumed after the user wrote "permission granted". Folded in the earlier blocked report (date 2026-10-12; check: Pre-Flight step 2 fixture copy into flechtctl/tests/fixtures/ denied by the auto-mode classifier, [Sensitive-Source Provenance]; tried: one compound cp + git log command, no workaround; next: relaunch). Report file deleted, blocked_report removed, status back to executing. Uncommitted task-2 files from before the block are inspected and kept.
+- 2026-10-12 Fixture copied (sha256 16ee8450…, 3988 bytes, matches). Task 2 finished: keyring/errors/tokens/__init__ + 4 ctl test files; `uv run pytest -q` 750 passed. Committed (the blocked report removal separately).
+- 2026-10-12 Task 3 started and finished: flechtwerk.keyring/secrets rewired (placeholder seam, wrappers, SIGNED.encode via sign_bytes), tests/flechtctl_interop_test.py added; `uv run pytest -q` 780 passed, `git diff --diff-filter=M --name-only e88d511 -- tests` empty. Committed.
+- 2026-10-12 Task 4 started and finished: cli.py + __main__.py + ctl_cli_test.py (incl. the walkthrough list WALKTHROUGH, to be mirrored by the guide); `uv run pytest -q` 820 passed; criteria 8 and 9 command lines run by hand and printed hello / ey,hello,{. Committed.
+- 2026-10-12 Task 5 started and finished: CLAUDE.md (flechtctl bullet, keyring/secrets bullets, joserfc invariant renamed to flechtctl.tokens, Commands, Releasing incl. the pending trusted publisher note). Committed.
+- 2026-10-12 Task 6 started and finished: flechtctl/README.md, docs/guides/flechtctl.md (+ nav, guides index, a guide-sync test in ctl_cli_test.py), secrets concept page, API reference, root README, architecture one-liner, mkdocs paths; a page ornament pair for guides-flechtctl (braid4 + verdigris, generate.py PAGES entry — every style was already taken, so this page reuses one with a new accent). `uv run poe docs-build` exit 0, the new api entries rendered. Committed.
+- 2026-10-12 Final re-run after the last work commit (c13d771), all shown in the session: criterion 1 lock --check 0 and sync 0; 2 no modified test files vs e88d511; 3 `821 passed, 26 deselected`; 4 `26 passed, 821 deselected` (first run, no setup errors); 5 docs-build exit 0; 6 both wheels Version 0.15.1.dev10+gc13d771b9.d20261012, `Requires-Dist: flechtctl==<that>; extra == 'secrets'`, no joserfc line for flechtwerk, flechtctl only `joserfc~=1.7`; 7 `uvx --python 3.15 … flechtctl --version` printed `flechtctl 0.15.1.dev10+gc13d771b9.d20261012`; 8 inspect JSON kid k1 / flenc_scope demo, then hello; 9 `ey`, `hello`, `{`; 10 `[]`.
+- 2026-10-12 Outcome: done. Deviations worth knowing: one block mid-run (fixture copy denied by the auto-mode classifier, then permission granted by the user — see the 2026-10-12 entries above); the page ornament for docs/guides/flechtctl.md reuses style braid4 with another accent (all 16 styles were taken); the interop test file is tests/flechtctl_interop_test.py and flechtctl/tests holds ctl_{cli,hygiene,keyring,keyring_file,tokens}_test.py. Nothing pushed, nothing tagged, no branch created.
