@@ -258,6 +258,7 @@ def test_ensure_changelog_creates_the_topic_and_closes_its_admin(monkeypatch):
         mod = _FlechtwerkModule()
         mod.application_id = "app"
         mod.bootstrap_servers = "localhost:9092"
+        mod.kafka_tls = None
 
         await mod.ensure_changelog()
 
@@ -279,6 +280,7 @@ def test_ensure_changelog_creates_the_topic_and_closes_its_admin(monkeypatch):
         mod = _FlechtwerkModule()
         mod.application_id = "app"
         mod.bootstrap_servers = "localhost:9092"
+        mod.kafka_tls = None
 
         await mod.ensure_changelog()
 
@@ -299,6 +301,7 @@ def test_aenter_calls_ensure_topics_under_admin_try_finally(monkeypatch):
         mod.application_id = "app"
         mod.bootstrap_servers = "localhost:9092"
         mod.client_id = "pod-0"
+        mod.kafka_tls = None
         mod.keyring = None
         mod.metrics_port = 0
         mod.mqtt = None
@@ -324,6 +327,7 @@ def test_membership_consumer_exists_only_for_extractors():
         mod.application_id = "app"
         mod.bootstrap_servers = "localhost:9092"
         mod.client_id = "pod-0"
+        mod.kafka_tls = None
         mod.stage = stage
         return mod
 
@@ -337,6 +341,113 @@ def test_membership_consumer_exists_only_for_extractors():
         await consumer.stop()  # never started; stop() keeps the double-check ledger clean
 
     asyncio.run(run())
+
+
+# -- kafka_tls -----------------------------------------------------------------
+
+
+def _record_kafka_clients(monkeypatch) -> list[tuple[str, dict]]:
+    """Replace every aiokafka client class the container builds with a kwargs recorder."""
+    calls: list[tuple[str, dict]] = []
+
+    class _Client:
+        kind = ""
+
+        def __init__(self, **kwargs):
+            calls.append((self.kind, kwargs))
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    class _Consumer(_Client):
+        kind = "consumer"
+
+    class _Producer(_Client):
+        kind = "producer"
+
+    def admin(**kwargs):
+        calls.append(("admin", kwargs))
+        return _FakeAdmin({"cfg": 1, "in": 2})
+
+    monkeypatch.setattr("flechtwerk.module.AIOKafkaAdminClient", admin)
+    monkeypatch.setattr("flechtwerk.module.AIOKafkaConsumer", _Consumer)
+    monkeypatch.setattr("flechtwerk.module.AIOKafkaProducer", _Producer)
+    return calls
+
+
+def _build_every_kafka_client(kafka_tls: ssl.SSLContext | None) -> None:
+    """Reach all nine construction sites: the startup admin, main and config
+    consumers (``__aenter__``), restore consumer, task producer, membership
+    consumer, token and instance producers, and the changelog admin."""
+    from flechtwerk.module import Flechtwerk
+
+    async def run():
+        transformer = Transformer.of(input_topics=["in"], transform=noop_transform)
+        transformer.config_topics = ["cfg"]
+        mod = Flechtwerk.of(
+            application_id="app", bootstrap_servers="k:9093", client_id="pod-0", kafka_tls=kafka_tls,
+            stage=transformer,
+        )
+        await mod.__aenter__()
+        mod.create_restore_consumer()
+        mod.create_task_producer(0)
+        await mod.__aexit__(None, None, None)
+
+        extractor = Flechtwerk.of(
+            application_id="app", bootstrap_servers="k:9093", client_id="pod-0", kafka_tls=kafka_tls,
+            poll_interval=timedelta(seconds=1), stage=Extractor.of(config_topics=["cfg"], poll=noop_poll),
+        )
+        _ = extractor.membership_consumer
+        extractor.create_token_producer(0)
+        extractor.create_instance_producer()
+        await extractor.ensure_changelog()
+
+    asyncio.run(run())
+
+
+def test_kafka_tls_reaches_every_kafka_client(monkeypatch):
+    """One shared kwargs helper feeds all nine sites, so none can drift."""
+    calls = _record_kafka_clients(monkeypatch)
+    context = ssl.create_default_context()
+
+    _build_every_kafka_client(context)
+
+    assert sorted(kind for kind, _ in calls) == ["admin"] * 2 + ["consumer"] * 4 + ["producer"] * 3
+    for kind, kwargs in calls:
+        assert kwargs["bootstrap_servers"] == "k:9093", kind
+        assert kwargs["security_protocol"] == "SSL", kind
+        assert kwargs["ssl_context"] is context, kind
+
+
+def test_without_kafka_tls_every_kafka_client_stays_plaintext(monkeypatch):
+    calls = _record_kafka_clients(monkeypatch)
+
+    _build_every_kafka_client(None)
+
+    assert len(calls) == 9
+    for kind, kwargs in calls:
+        assert kwargs["bootstrap_servers"] == "k:9093", kind
+        assert "security_protocol" not in kwargs, kind
+        assert "ssl_context" not in kwargs, kind
+
+
+def test_aenter_refuses_an_unauthenticating_kafka_tls_before_any_kafka_client(monkeypatch):
+    from flechtwerk.module import Flechtwerk
+
+    calls = _record_kafka_clients(monkeypatch)
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    mod = Flechtwerk.of(
+        application_id="app", bootstrap_servers="k:9093", client_id="pod-0", kafka_tls=context,
+        stage=Transformer.of(input_topics=["in"], transform=noop_transform),
+    )
+
+    with pytest.raises(ValueError, match="kafka_tls would not authenticate"):
+        asyncio.run(mod.__aenter__())
+    assert calls == []
 
 
 # -- batch cap -----------------------------------------------------------------

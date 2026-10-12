@@ -404,7 +404,7 @@ they describe what was actually built.
     unchanged.
   - Commit.
 
-- [ ] **3. Kafka broker TLS** — see the `kafka_tls` bullet in Constraints
+- [x] **3. Kafka broker TLS** — see the `kafka_tls` bullet in Constraints
   for the required-lookup decision and the one-line test additions it
   entails; make those additions in this task's commit.
   - `Flechtwerk.of(..., kafka_tls: ssl.SSLContext | None = None)` (alphabetical
@@ -750,3 +750,14 @@ judge.
   `client.loop_read` otherwise (the pinned test untouched). 4 tests added in
   `tests/mqtt_test.py`. `uv run pytest -q` → `677 passed, 22 deselected`;
   paho import probe exit 0.
+- Task 3 started.
+- Task 3 done: `Flechtwerk.of(kafka_tls=...)`, `kafka_tls:
+  lookup[ssl.SSLContext | None]`, the `kafka_client_kwargs` cached_property
+  (`dict(bootstrap_servers=…, **tls)`) spread into all nine sites (4
+  consumers, 3 producers, 2 admins), `validate_tls(self.kafka_tls,
+  "kafka_tls")` in `__aenter__` after `validate_poll_interval`. Exactly the
+  four predicted tests failed with `AttributeError: … 'kafka_tls'` (the
+  duplicated `test_ensure_changelog_…` name means only one of the two runs)
+  and got `mod.kafka_tls = None`; `"kafka_tls"` added to the bare-constructor
+  name tuple. 3 wiring tests added. `uv run pytest -q` → `680 passed, 22
+  deselected`; bootstrap grep → `1`.

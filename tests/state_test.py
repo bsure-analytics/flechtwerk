@@ -489,6 +489,7 @@ def test_module_wires_extractor_runner_state_collaborators():
         mod.bootstrap_servers = "localhost:9092"
         mod.client_id = "test-app"
         mod.compression_type = None
+        mod.kafka_tls = None
         mod.metrics_port = 0
         mod.stage = StubExtractor()
 
@@ -641,6 +642,7 @@ def test_bare_constructor_leaves_every_lookup_unbound_for_parent():
         "bootstrap_servers",
         "client_id",
         "compression_type",
+        "kafka_tls",
         "metrics_labels",
         "metrics_port",
         "mqtt",

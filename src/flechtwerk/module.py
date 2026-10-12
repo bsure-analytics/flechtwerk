@@ -315,6 +315,7 @@ class Flechtwerk(ABC):
         client_id: str,
         stage: Extractor | Transformer,
         compression_type: CompressionType | None = "zstd",
+        kafka_tls: ssl.SSLContext | None = None,
         keyring: Keyring | None = None,
         max_poll_records: int = 500,
         metrics_labels: dict[str, str] | None = None,
@@ -334,7 +335,12 @@ class Flechtwerk(ABC):
         lets a restarted replica resume its own session and its own
         undelivered tail). ``compression_type`` defaults to ``"zstd"`` because
         Flechtwerk outputs JSON everywhere (encode_json) and JSON
-        compresses ~13×; pass ``None`` to disable. ``keyring`` carries the
+        compresses ~13×; pass ``None`` to disable. ``kafka_tls`` is a stdlib
+        ``ssl.SSLContext`` for reaching the Kafka broker over TLS — mutual TLS
+        when it carries a client certificate — and applies to every Kafka
+        client this module opens; ``None``, the default, is plaintext, and a
+        context that would not authenticate the Kafka broker is refused at
+        startup (``__aenter__``). ``keyring`` carries the
         process keyring for ``flechtwerk.secrets`` encrypted attributes — it is
         installed once per process at stage startup (``__aenter__``; a
         conflicting second install raises) and may be left ``None`` by stages
@@ -369,6 +375,7 @@ class Flechtwerk(ABC):
         instance.bootstrap_servers = bootstrap_servers
         instance.client_id = client_id
         instance.compression_type = compression_type
+        instance.kafka_tls = kafka_tls
         instance.keyring = keyring
         instance.max_poll_records = max_poll_records
         instance.metrics_labels = dict(metrics_labels) if metrics_labels else {}
@@ -421,6 +428,7 @@ class _FlechtwerkModule(Flechtwerk):
     compression_type: lookup[CompressionType | None]
     extractor_runner: ExtractorRunner
     inner_store: RocksDBStateStore
+    kafka_tls: lookup[ssl.SSLContext | None]
     keyring: lookup[Keyring | None]
     max_poll_records: lookup[int]
     metrics: Metrics
@@ -447,7 +455,7 @@ class _FlechtwerkModule(Flechtwerk):
         if not (isinstance(self.stage, Transformer) and self.stage.config_topics):
             return None
         return AIOKafkaConsumer(
-            bootstrap_servers=self.bootstrap_servers,
+            **self.kafka_client_kwargs,
             client_id=self.client_id + "-config",
             group_id=None,
             isolation_level="read_committed",
@@ -496,7 +504,7 @@ class _FlechtwerkModule(Flechtwerk):
         # max_poll_records bounds every getmany() batch (aiokafka's default
         # is UNBOUNDED, unlike the Java client's 500) — see Flechtwerk.of.
         return AIOKafkaConsumer(
-            bootstrap_servers=self.bootstrap_servers,
+            **self.kafka_client_kwargs,
             auto_offset_reset="earliest",
             client_id=self.client_id,
             enable_auto_commit=False,
@@ -520,7 +528,7 @@ class _FlechtwerkModule(Flechtwerk):
         the container's, and one short-lived connection once per process is
         cheaper than holding an admin client open for the run.
         """
-        admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
+        admin = AIOKafkaAdminClient(**self.kafka_client_kwargs)
         await admin.start()
         try:
             await ensure_changelog_topic(admin, self.changelog_topic)
@@ -543,7 +551,7 @@ class _FlechtwerkModule(Flechtwerk):
         headroom.
         """
         kwargs: dict = {
-            "bootstrap_servers": self.bootstrap_servers,
+            **self.kafka_client_kwargs,
             "client_id": self.client_id,
             "transaction_timeout_ms": 600_000,
             "transactional_id": f"{self.application_id}-{self.client_id}",
@@ -559,7 +567,7 @@ class _FlechtwerkModule(Flechtwerk):
         sees writes of in-flight (or fenced-and-aborted) transactions.
         """
         return AIOKafkaConsumer(
-            bootstrap_servers=self.bootstrap_servers,
+            **self.kafka_client_kwargs,
             client_id=self.client_id,
             group_id=None,
             isolation_level="read_committed",
@@ -574,7 +582,7 @@ class _FlechtwerkModule(Flechtwerk):
         KIP-447 generation fencing).
         """
         kwargs: dict = {
-            "bootstrap_servers": self.bootstrap_servers,
+            **self.kafka_client_kwargs,
             "client_id": f"{self.client_id}-{partition}",
             "transactional_id": f"{self.application_id}-{partition}",
         }
@@ -612,7 +620,7 @@ class _FlechtwerkModule(Flechtwerk):
         default ``transaction.max.timeout.ms`` cap of 15.
         """
         kwargs: dict = {
-            "bootstrap_servers": self.bootstrap_servers,
+            **self.kafka_client_kwargs,
             "client_id": f"{self.client_id}-{token}",
             "transaction_timeout_ms": 600_000,
             "transactional_id": f"{self.application_id}-{token}",
@@ -638,6 +646,19 @@ class _FlechtwerkModule(Flechtwerk):
         return acquire_exporter(self.metrics_port, self.metrics, self.metrics_labels)
 
     @cached_property
+    def kafka_client_kwargs(self) -> dict[str, Any]:
+        """The connection settings every aiokafka client of this stage shares.
+
+        The one place ``bootstrap_servers`` and the TLS settings are named, so
+        no consumer, producer or admin client can drift from the others: with
+        ``kafka_tls`` set they all speak ``SSL`` over that context (mutual TLS
+        when it carries a client certificate), without it all plaintext.
+        Spread with ``**`` at each construction site, never mutated.
+        """
+        tls = {} if self.kafka_tls is None else {"security_protocol": "SSL", "ssl_context": self.kafka_tls}
+        return dict(bootstrap_servers=self.bootstrap_servers, **tls)
+
+    @cached_property
     def membership_consumer(self) -> AIOKafkaConsumer | None:
         """Consumer holding an extractor's group membership (None for transformers).
 
@@ -659,7 +680,7 @@ class _FlechtwerkModule(Flechtwerk):
         if not isinstance(self.stage, Extractor):
             return None
         return AIOKafkaConsumer(
-            bootstrap_servers=self.bootstrap_servers,
+            **self.kafka_client_kwargs,
             auto_offset_reset="latest",
             client_id=self.client_id + "-membership",
             enable_auto_commit=False,
@@ -724,7 +745,8 @@ class _FlechtwerkModule(Flechtwerk):
 
         validate_topics(self.stage)
         validate_poll_interval(self.stage, self.poll_interval)
-        admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
+        validate_tls(self.kafka_tls, "kafka_tls")
+        admin = AIOKafkaAdminClient(**self.kafka_client_kwargs)
         await admin.start()
         try:
             await ensure_topics(admin, self.stage, self.changelog_topic, self.application_id)
