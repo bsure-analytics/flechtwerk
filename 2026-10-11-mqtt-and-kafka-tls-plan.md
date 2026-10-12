@@ -17,7 +17,7 @@ plugin_url: https://github.com/christian-schlichtherle/cs7-claude-plugins
 plugin_version: 0.16.1
 review_rounds: 10
 sources: []
-status: executing
+status: done
 ticket: none
 ---
 
@@ -544,7 +544,7 @@ they describe what was actually built.
   - Verify: `uv run poe docs-build` exits 0.
   - Commit.
 
-- [ ] **6. Final verification** — run every work criterion below and show the
+- [x] **6. Final verification** — run every work criterion below and show the
   output (Execution Protocol step 5), and run `graphify update .` only if
   `graphify-out/graph.json` exists (it does not as of planning).
 
@@ -783,3 +783,25 @@ judge.
   and the closing injected-configuration sentence with the shared refusal
   rule. `uv run poe docs-build` → `Documentation built`, exit 0; `uv run
   pytest -q` → `680 passed, 26 deselected`.
+- Task 6 started. `graphify-out/graph.json` exists, so `graphify update .`
+  ran → `Rebuilt: 2550 nodes, 5527 edges, 215 communities`; the working tree
+  stayed clean (graphify-out is gitignored).
+- Task 6 done — final re-run of every work criterion after the last work
+  commit (`c1cca54`):
+  1. `uv run pytest -q` → `680 passed, 26 deselected`, exit 0 (> 668).
+  2. `uv run pytest -q -m integration tests/integration/tls_test.py -rs` →
+     `4 passed in 15.50s`, exit 0, nothing skipped.
+  3. `uv run pytest -q -m integration` → `26 passed, 680 deselected`,
+     exit 0, 0 skipped.
+  4. `uv run poe docs-build` → `Documentation built`, exit 0.
+  5. bootstrap grep → `1`; `tls_set_context` grep → lines 21 and 249.
+  6. paho import probe → exit 0.
+- Outcome: DONE. Work commits `3e75e69` (validator), `6e75af2` (MQTT TLS),
+  `cdb91f3` (Kafka TLS), `7410184` (integration tests), `c1cca54` (docs) on
+  `worktree-mqtts`, all signed, nothing pushed. Decisions made in the run:
+  the kwargs helper is a `cached_property` named `kafka_client_kwargs`; the
+  TLS reader is a `_tls_reader` staticmethod closure; test 4 keys relayed
+  records by the MQTT topic, and the integration certificates carry no
+  ExtendedKeyUsage (as in the spikes). Run Log entries were committed with
+  each task's work commit; this final state is the preservation commit, and
+  the file is removed in a separate commit after it.
