@@ -20,6 +20,7 @@ functions for the shell (`flechtctl --help`).
 eagerly, every `flechtctl.tokens` name lazily on first access (PEP 562).
 """
 import importlib
+from typing import TYPE_CHECKING
 
 from .errors import (
     PlaintextSecretError,
@@ -39,6 +40,36 @@ from .keyring import (
     is_encrypted_keyring,
     keyring_from_jwk,
 )
+
+if TYPE_CHECKING:
+    # The lazy names, for type checkers and IDEs only: at runtime they resolve
+    # through `__getattr__` below, so `import flechtctl` still loads no joserfc.
+    from .tokens import (
+        PREFIX,
+        SCHEME,
+        SIGNATURE_PREFIX,
+        SIGNATURE_SCHEME,
+        canonical_json,
+        decrypt,
+        decrypt_bytes,
+        decrypt_keyring,
+        encrypt,
+        encrypt_bytes,
+        encrypt_keyring,
+        generate_ed25519_key,
+        generate_oct_key,
+        generate_x25519_key,
+        is_encrypted,
+        is_signed,
+        kid_of,
+        read_header,
+        reencrypt,
+        sign,
+        sign_bytes,
+        signer_of,
+        verify,
+        verify_bytes,
+    )
 
 __all__ = [
     "Ed25519Key",

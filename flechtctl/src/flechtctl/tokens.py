@@ -32,6 +32,7 @@ import base64
 import functools
 import json
 import secrets
+from typing import Literal
 
 from joserfc import jwe, jws
 from joserfc.jwk import OctKey, OKPKey
@@ -251,6 +252,7 @@ def _okp_private_key(kid: str, crv: str, public: bytes, private: bytes) -> OKPKe
     `KeyringError`, unwrapped.
     """
     key = OKPKey.import_key({"crv": crv, "d": _b64url(private), "kty": "OKP", "x": _b64url(public)})
+    assert key.private_key is not None, "imported with its private half"
     if key.private_key.public_key().public_bytes_raw() != public:
         raise KeyringError(f"{crv} key {kid!r}: the private key does not match its public key")
     return key
@@ -359,6 +361,7 @@ def decrypt_bytes(keyring: Keyring, token: str, *, scope: str = "", topic: str |
             scope=scope, kid=kid, topic=topic, wire_key=wire_key,
             reason=f"key {kid!r} is bound to scopes {sorted(bound)}; token stamped {stamped!r}",
         )
+    assert obj.plaintext is not None, "a decrypted JWE always carries its plaintext"
     return obj.plaintext
 
 
@@ -476,6 +479,7 @@ def decrypt_keyring(text: str, password: str) -> Keyring:
     message = "cannot open the password-protected keyring — wrong password or damaged file"
     try:
         obj = jwe.decrypt_compact(text.strip(), _password_key(password), registry=_KEYRING_REGISTRY)
+        assert obj.plaintext is not None, "a decrypted JWE always carries its plaintext"
         plaintext = obj.plaintext.decode("utf-8")
     except Exception as e:
         raise KeyringError(message) from e
@@ -497,9 +501,11 @@ def generate_oct_key() -> bytes:
     return secrets.token_bytes(KEY_BYTES)
 
 
-def _generate_okp(crv: str) -> tuple[bytes, bytes]:
+def _generate_okp(crv: Literal["Ed25519", "X25519"]) -> tuple[bytes, bytes]:
     jwk = OKPKey.generate_key(crv).as_dict(private=True)
-    return _decode_key(jwk["x"], "x"), _decode_key(jwk["d"], "d")
+    x, d = jwk["x"], jwk["d"]
+    assert isinstance(x, str) and isinstance(d, str), "OKP members are base64url strings"
+    return _decode_key(x, "x"), _decode_key(d, "d")
 
 
 def generate_x25519_key() -> X25519Key:

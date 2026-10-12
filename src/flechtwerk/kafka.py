@@ -364,7 +364,7 @@ async def restore_changelog(
         # application policy question. Same reason `state.deserialize` has no
         # fallback.
         key = decode_key(msg.key)
-        if is_tombstone(msg.value):
+        if msg.value is None or is_tombstone(msg.value):
             await delete(key)
         else:
             await put_raw(key, msg.value)

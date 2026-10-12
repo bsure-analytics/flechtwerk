@@ -163,13 +163,13 @@ class Extractor(Stage, ABC):
         """
         instance = _FunctionalExtractor()
         instance.config_topics = config_topics
-        instance.poll = poll
+        instance.poll = poll  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if enrich_config is not None:
-            instance.enrich_config = enrich_config
+            instance.enrich_config = enrich_config  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if extract_state_key is not None:
-            instance.extract_state_key = extract_state_key
+            instance.extract_state_key = extract_state_key  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if on_invalid_message is not None:
-            instance.on_invalid_message = on_invalid_message
+            instance.on_invalid_message = on_invalid_message  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         return instance
 
     async def on_active_configs(self, configs: dict[str, Config]) -> None:
@@ -337,7 +337,8 @@ class TokenRebalanceListener(ConsumerRebalanceListener):
     def __init__(self, runner: "ExtractorRunner") -> None:
         self.runner = runner
 
-    async def on_partitions_revoked(self, revoked: set[TopicPartition]) -> None:
+    # aiokafka awaits a coroutine callback; its stub declares the method sync.
+    async def on_partitions_revoked(self, revoked: set[TopicPartition]) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
         try:
             # Runs before the group re-forms (aiokafka's protocol is eager):
             # cancelling the cycle, flushing straggler changelog writes, and
@@ -418,7 +419,7 @@ class ExtractorRunner:
     ensure_changelog: Callable[[], Awaitable[None]]
     create_restore_consumer: Callable[[], AIOKafkaConsumer]
     create_token_producer: Callable[[int], AIOKafkaProducer]
-    extractor: lookup[Extractor, "configured_stage"]  # noqa: PyUnresolvedReferences
+    extractor: lookup[Extractor, "configured_stage"]  # pyright: ignore[reportInvalidTypeForm, reportUndefinedVariable]  # noqa: PyUnresolvedReferences
     inner_store: StateStore
     membership_consumer: AIOKafkaConsumer
     observer: Observer
@@ -614,7 +615,7 @@ class ExtractorRunner:
         missing = sorted(topic for topic, p in partitions.items() if not p)
         if missing:
             raise RuntimeError(f"no partitions known for config topic(s) {missing}")
-        counts = {topic: len(p) for topic, p in partitions.items()}
+        counts = {topic: len(p) for topic, p in partitions.items() if p}
         if len(set(counts.values())) != 1:
             raise ValueError(
                 "config topics of a token-sharded extractor must have equal partition "

@@ -234,7 +234,7 @@ def SET[V](inner: Codec[V]) -> Codec[set[V]]:
     """
     return Codec(
         decode=lambda items: {inner.decode(x) for x in items},
-        encode=lambda s: [inner.encode(x) for x in sorted(s)],
+        encode=lambda s: [inner.encode(x) for x in sorted(s)],  # pyright: ignore[reportArgumentType] — comparable by contract
     )
 
 

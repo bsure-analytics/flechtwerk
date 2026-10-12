@@ -25,57 +25,64 @@ raises a `ModuleNotFoundError` that says to install `flechtwerk[secrets]`.
 """
 import logging
 from contextvars import ContextVar, Token
+from typing import TYPE_CHECKING
 
 from .observer import Observer
 
-try:
+if TYPE_CHECKING:
+    # The checker sees the real value objects; the fallback below exists only
+    # so the names resolve at runtime without flechtctl.
     from flechtctl.keyring import KEY_BYTES, Ed25519Key, Keyring, KeyringError, UnknownKeyError, X25519Key
-except ModuleNotFoundError as e:
-    if e.name is None or e.name.partition(".")[0] != "flechtctl":
-        raise
+else:
+    try:
+        from flechtctl.keyring import KEY_BYTES, Ed25519Key, Keyring, KeyringError, UnknownKeyError, X25519Key
+    except ModuleNotFoundError as e:
+        if e.name is None or e.name.partition(".")[0] != "flechtctl":
+            raise
 
-    # flechtwerk without the [secrets] extra. reactor-di resolves module.py's
-    # `keyring: lookup[Keyring | None]` annotation at decoration time, so the
-    # names must exist; a keyring can only be built with flechtctl installed.
-    KEY_BYTES = 32
+        # flechtwerk without the [secrets] extra. reactor-di resolves module.py's
+        # `keyring: lookup[Keyring | None]` annotation at decoration time, so the
+        # names must exist; a keyring can only be built with flechtctl installed.
+        KEY_BYTES = 32
 
-    class KeyringError(Exception):  # type: ignore[no-redef]
-        """Base class for keyring problems (construction, install, key lookup)."""
+        class KeyringError(Exception):
+            """Base class for keyring problems (construction, install, key lookup)."""
 
-    class UnknownKeyError(KeyringError):  # type: ignore[no-redef]
-        """A token names a `kid` absent from the active keyring."""
+        class UnknownKeyError(KeyringError):
+            """A token names a `kid` absent from the active keyring."""
 
-        def __init__(self, kid: str) -> None:
-            super().__init__(f"no key {kid!r} in the active keyring")
-            self.kid = kid
+            def __init__(self, kid: str) -> None:
+                super().__init__(f"no key {kid!r} in the active keyring")
+                self.kid = kid
 
-    def _needs_flechtctl(name: str) -> ModuleNotFoundError:
-        return ModuleNotFoundError(
-            f"{name} needs the flechtctl package — install flechtwerk[secrets]", name="flechtctl",
-        )
+        def _needs_flechtctl(name: str) -> ModuleNotFoundError:
+            return ModuleNotFoundError(
+                f"{name} needs the flechtctl package — install flechtwerk[secrets]", name="flechtctl",
+            )
 
-    class _Placeholder:
-        """Stands in for a flechtctl key-material class; every way of building one raises."""
+        class _Placeholder:
+            """Stands in for a flechtctl key-material class; every way of building one raises."""
 
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            raise _needs_flechtctl(type(self).__name__)
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                raise _needs_flechtctl(type(self).__name__)
 
-        @classmethod
-        def from_json(cls, text: str) -> "_Placeholder":
-            raise _needs_flechtctl(cls.__name__)
+            @classmethod
+            def from_json(cls, text: str) -> "_Placeholder":
+                raise _needs_flechtctl(cls.__name__)
 
-        @classmethod
-        def of(cls, *args: object, **kwargs: object) -> "_Placeholder":
-            raise _needs_flechtctl(cls.__name__)
+            @classmethod
+            def of(cls, *args: object, **kwargs: object) -> "_Placeholder":
+                raise _needs_flechtctl(cls.__name__)
 
-    class Ed25519Key(_Placeholder):  # type: ignore[no-redef]
-        pass
+        class Ed25519Key(_Placeholder):
+            pass
 
-    class Keyring(_Placeholder):  # type: ignore[no-redef]
-        pass
+        class Keyring(_Placeholder):
+            pass
 
-    class X25519Key(_Placeholder):  # type: ignore[no-redef]
-        pass
+        class X25519Key(_Placeholder):
+            pass
+
 
 log = logging.getLogger(__name__)
 

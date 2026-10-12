@@ -771,10 +771,10 @@ class _FlechtwerkModule(Flechtwerk):
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.consumer.stop()
-        if self.__dict__.get("config_consumer") is not None:
-            await self.config_consumer.stop()
-        if self.__dict__.get("membership_consumer") is not None:
-            await self.membership_consumer.stop()
+        if (config_consumer := self.__dict__.get("config_consumer")) is not None:
+            await config_consumer.stop()
+        if (membership_consumer := self.__dict__.get("membership_consumer")) is not None:
+            await membership_consumer.stop()
         if self.__dict__.get("inner_store") is not None:
             # Token producers are runner-owned (stopped in its teardown); the
             # shared inner store just needs its final wipe. Close what was

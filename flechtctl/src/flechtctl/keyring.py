@@ -21,7 +21,9 @@ one, and `flechtctl.tokens.decrypt_keyring` opens it.
 """
 import base64
 import json
+from collections.abc import Mapping, Set
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 __all__ = [
     "Ed25519Key",
@@ -191,7 +193,7 @@ class Keyring:
         primary: str,
         primaries: dict[str, str] | None = None,
         recipients: dict[str, X25519Key] | None = None,
-        scopes: dict[str, set[str] | frozenset[str]] | None = None,
+        scopes: Mapping[str, Set[str]] | None = None,
         signers: dict[str, Ed25519Key] | None = None,
         signing: dict[str, str] | None = None,
     ) -> "Keyring":
@@ -201,7 +203,8 @@ class Keyring:
             primary=primary,
             primaries=dict(primaries or {}),
             recipients=dict(recipients or {}),
-            scopes={kid: bound if isinstance(bound, str) else frozenset(bound) for kid, bound in (scopes or {}).items()},
+            # `__post_init__` normalizes every bound to a frozenset.
+            scopes=dict(scopes or {}),  # pyright: ignore[reportArgumentType]
             signers=dict(signers or {}),
             signing=dict(signing or {}),
         )
@@ -240,15 +243,15 @@ class Keyring:
         scopes: dict[str, frozenset[str]] = {}
         signers: dict[str, Ed25519Key] = {}
         for jwk in raw_keys:
-            kind, kid, material, bound = _parse_jwk(jwk, held=frozenset([*keys, *recipients, *signers]))
+            kid, material, bound = _parse_jwk(jwk, held=frozenset([*keys, *recipients, *signers]))
             if bound is not None:
                 scopes[kid] = bound
-            if kind == "oct":
-                keys[kid] = material
-            elif kind == "X25519":
+            if isinstance(material, X25519Key):
                 recipients[kid] = material
-            else:
+            elif isinstance(material, Ed25519Key):
                 signers[kid] = material
+            else:
+                keys[kid] = material
         if "primary" not in doc:
             raise KeyringError("keyring document has no top-level 'primary' member")
         return cls(
@@ -268,7 +271,7 @@ class Keyring:
         `Keyring.from_json(k.to_json()) == k` for every valid keyring. The private
         halves are included — this is the file form, not a shareable one (see `public_jwk`).
         """
-        jwks = [
+        jwks: list[dict[str, Any]] = [
             {"k": _encode_key(key), "kid": kid, "kty": "oct"} for kid, key in self.keys.items()
         ] + [
             _okp_jwk("X25519", kid, key) for kid, key in self.recipients.items()
@@ -309,13 +312,13 @@ class Keyring:
         The private half is kept if the JWK carries one, and so are its scopes.
         A kid already held raises `KeyringError`; the constructor's validation runs.
         """
-        kind, kid, material, bound = _parse_jwk(jwk, held=frozenset(self.kids()))
+        kid, material, bound = _parse_jwk(jwk, held=frozenset(self.kids()))
         return replace(
             self,
-            keys={**self.keys, kid: material} if kind == "oct" else self.keys,
-            recipients={**self.recipients, kid: material} if kind == "X25519" else self.recipients,
+            keys={**self.keys, kid: material} if isinstance(material, bytes) else self.keys,
+            recipients={**self.recipients, kid: material} if isinstance(material, X25519Key) else self.recipients,
             scopes={**self.scopes, kid: bound} if bound is not None else self.scopes,
-            signers={**self.signers, kid: material} if kind == "Ed25519" else self.signers,
+            signers={**self.signers, kid: material} if isinstance(material, Ed25519Key) else self.signers,
         )
 
     def key_for(self, kid: str) -> bytes:
@@ -398,13 +401,13 @@ def keyring_from_jwk(jwk: dict) -> Keyring:
 
     An Ed25519 entry cannot be primary, so the constructor's own validation rejects it.
     """
-    kind, kid, material, bound = _parse_jwk(jwk, held=frozenset())
+    kid, material, bound = _parse_jwk(jwk, held=frozenset())
     return Keyring(
-        keys={kid: material} if kind == "oct" else {},
+        keys={kid: material} if isinstance(material, bytes) else {},
         primary=kid,
-        recipients={kid: material} if kind == "X25519" else {},
+        recipients={kid: material} if isinstance(material, X25519Key) else {},
         scopes={kid: bound} if bound is not None else {},
-        signers={kid: material} if kind == "Ed25519" else {},
+        signers={kid: material} if isinstance(material, Ed25519Key) else {},
     )
 
 
@@ -418,8 +421,8 @@ def _okp_jwk(crv: str, kid: str, key: X25519Key | Ed25519Key) -> dict:
 
 def _parse_jwk(
     jwk: object, *, held: frozenset[str],
-) -> tuple[str, str, bytes | X25519Key | Ed25519Key, frozenset[str] | None]:
-    """Parse one JWK into `(kind, kid, material, scopes)`; kind is `oct`, `X25519` or `Ed25519`.
+) -> tuple[str, bytes | X25519Key | Ed25519Key, frozenset[str] | None]:
+    """Parse one JWK into `(kid, material, scopes)`; the material's type is the key's kind.
 
     Checks in order: object, `kty`, `kid`, a kid already in `held`, scopes, key
     material — so a duplicate kid with malformed material still reports the duplicate.
@@ -438,15 +441,15 @@ def _parse_jwk(
         raise KeyringError(f"duplicate kid {kid!r} in the keyring")
     bound = _parse_scopes(kid, jwk["flenc_scopes"]) if "flenc_scopes" in jwk else None
     if kty == "oct":
-        return "oct", kid, _decode_member(kid, jwk, "k"), bound
+        return kid, _decode_member(kid, jwk, "k"), bound
     crv = jwk.get("crv")
     if crv not in ("Ed25519", "X25519"):
         raise KeyringError(f"JWK {kid!r} has unsupported curve {crv!r} — only X25519 and Ed25519 are used")
     public = _decode_member(kid, jwk, "x")
     private = _decode_member(kid, jwk, "d") if "d" in jwk else None
     if crv == "X25519":
-        return "X25519", kid, X25519Key(public=public, private=private), bound
-    return "Ed25519", kid, Ed25519Key(public=public, private=private), bound
+        return kid, X25519Key(public=public, private=private), bound
+    return kid, Ed25519Key(public=public, private=private), bound
 
 
 def _decode_member(kid: str, jwk: dict, member: str) -> bytes:

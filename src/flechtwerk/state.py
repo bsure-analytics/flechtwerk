@@ -135,7 +135,7 @@ class RocksDBStateStore(StateStore):
         self.db.close()
         # Drop the cached_property so the next access reopens a fresh, empty
         # store — close() must be a wipe, not an end-of-life (see class doc).
-        del self.__dict__["db"]
+        del self.db
         shutil.rmtree(self.path, ignore_errors=True)
         log.info("Closed and removed RocksDB state store at %s", self.path)
 
@@ -165,11 +165,11 @@ class ChangelogStateStore(StateStore):
     doing forensics after the fall.
     """
 
-    inner: lookup[StateStore, "inner_store"]  # noqa: PyUnresolvedReferences
+    inner: lookup[StateStore, "inner_store"]  # pyright: ignore[reportInvalidTypeForm, reportUndefinedVariable]  # noqa: PyUnresolvedReferences
     observer: Observer = Observer()
     partition: int | None = None
     producer: AIOKafkaProducer
-    topic: lookup[str, "changelog_topic"]  # noqa: PyUnresolvedReferences
+    topic: lookup[str, "changelog_topic"]  # pyright: ignore[reportInvalidTypeForm, reportUndefinedVariable]  # noqa: PyUnresolvedReferences
 
     async def get(self, key: str) -> State | None:
         return await self.inner.get(key)

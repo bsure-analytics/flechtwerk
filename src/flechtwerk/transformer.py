@@ -112,13 +112,13 @@ class Transformer(Stage, ABC):
         """
         instance = _FunctionalTransformer()
         instance.input_topics = input_topics
-        instance.transform = transform
+        instance.transform = transform  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if enrich_config is not None:
-            instance.enrich_config = enrich_config
+            instance.enrich_config = enrich_config  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if extract_state_key is not None:
-            instance.extract_state_key = extract_state_key
+            instance.extract_state_key = extract_state_key  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if on_invalid_message is not None:
-            instance.on_invalid_message = on_invalid_message
+            instance.on_invalid_message = on_invalid_message  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         return instance
 
     @abstractmethod
@@ -216,7 +216,8 @@ class TaskRebalanceListener(ConsumerRebalanceListener):
     def __init__(self, runner: "TransformerRunner") -> None:
         self.runner = runner
 
-    async def on_partitions_revoked(self, revoked: set[TopicPartition]) -> None:
+    # aiokafka awaits a coroutine callback; its stub declares the method sync.
+    async def on_partitions_revoked(self, revoked: set[TopicPartition]) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
         try:
             # The batch lock guarantees no transaction is in flight while
             # tasks are torn down; the rebalance blocks until the current
@@ -267,7 +268,7 @@ class TransformerRunner:
     create_restore_consumer: Callable[[], AIOKafkaConsumer]
     create_task_producer: Callable[[int], AIOKafkaProducer]
     create_task_store: Callable[[int, AIOKafkaProducer], ChangelogStateStore]
-    transformer: lookup[Transformer, "configured_stage"]  # noqa: PyUnresolvedReferences
+    transformer: lookup[Transformer, "configured_stage"]  # pyright: ignore[reportInvalidTypeForm, reportUndefinedVariable]  # noqa: PyUnresolvedReferences
 
     def __init__(self) -> None:
         self.batch_lock = asyncio.Lock()

@@ -91,7 +91,7 @@ class _ReadOnlyDict(dict):
     def _refuse(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError("Record.raw is read-only: write through an Attribute, e.g. record[ATTR] = value")
 
-    __delitem__ = __ior__ = __setitem__ = clear = pop = popitem = setdefault = update = _refuse
+    __delitem__ = __ior__ = __setitem__ = clear = pop = popitem = setdefault = update = _refuse  # pyright: ignore[reportAssignmentType]
 
     def __copy__(self) -> RawDict:
         return dict(self)

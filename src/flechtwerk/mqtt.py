@@ -134,7 +134,8 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import TYPE_CHECKING, AsyncIterator, Final, Never, Self
 
-from paho.mqtt.client import CallbackAPIVersion, Client, MQTTMessage, MQTTv5, topic_matches_sub
+from paho.mqtt.client import Client, MQTTMessage, MQTTv5, topic_matches_sub
+from paho.mqtt.enums import CallbackAPIVersion
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 from paho.mqtt.reasoncodes import ReasonCode
@@ -686,7 +687,7 @@ class MqttExtractor(Extractor, ABC):
     default."""
 
     @classmethod
-    def of(
+    def of(  # pyright: ignore[reportIncompatibleMethodOverride] — relays, not polls
             cls,
             *,
             config_topics: list[str],
@@ -710,13 +711,13 @@ class MqttExtractor(Extractor, ABC):
         instance = _FunctionalMqttExtractor()
         instance.config_topics = config_topics
         instance.drain_limit = drain_limit
-        instance.relay = relay
+        instance.relay = relay  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if enrich_config is not None:
-            instance.enrich_config = enrich_config
+            instance.enrich_config = enrich_config  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if extract_state_key is not None:
-            instance.extract_state_key = extract_state_key
+            instance.extract_state_key = extract_state_key  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         if on_invalid_message is not None:
-            instance.on_invalid_message = on_invalid_message
+            instance.on_invalid_message = on_invalid_message  # pyright: ignore[reportAttributeAccessIssue] — instance shadow of the method
         return instance
 
     async def __aenter__(self) -> Self:
@@ -753,6 +754,7 @@ class MqttExtractor(Extractor, ABC):
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
+        assert self.connection is not None, "__aexit__ follows __aenter__, which opens the connection"
         await self.connection.__aexit__(*exc_info)
 
     async def _run_in(self, runner: ExtractorRunner) -> Never:
@@ -768,6 +770,7 @@ class MqttExtractor(Extractor, ABC):
 
     def subscribe(self, topic: str) -> MqttSubscription:
         """The per-topic subscription for `topic` over the shared connection."""
+        assert self.connection is not None, "subscribe runs after __aenter__ opened the connection"
         return self.connection.subscribe(topic)
 
     async def on_active_configs(self, configs: dict[str, Config]) -> None:
@@ -784,6 +787,7 @@ class MqttExtractor(Extractor, ABC):
         config-driven (tombstoned, suspended, or rewritten), never a
         consequence of membership changing.
         """
+        assert self.connection is not None, "the runner reconciles only after __aenter__ opened the connection"
         self.connection.reconcile({config[TOPIC] for config in configs.values()})
 
     @abstractmethod

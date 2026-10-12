@@ -190,7 +190,7 @@ def ENCRYPTED[V](inner: Codec[V], *, scope: str = "", read_plaintext: bool = Fal
     ``secret_plaintext_read``; off, a plaintext value raises
     ``PlaintextSecretError``.
     """
-    def encode(value: object) -> str:
+    def encode(value: V) -> str:
         return _encrypt_payload(scope, canonical_json(inner.encode(value)))
 
     def decode(value: object) -> object:
@@ -232,7 +232,7 @@ def SIGNED[V](inner: Codec[V], *, scope: str, read_unsigned: bool = False) -> Co
     if not scope:
         raise ValueError("SIGNED needs a non-empty scope — a signature always names the compartment it vouches for")
 
-    def encode(value: object) -> str:
+    def encode(value: V) -> str:
         return sign_bytes(active_keyring(), canonical_json(inner.encode(value)), scope=scope)
 
     def decode(value: object) -> object:

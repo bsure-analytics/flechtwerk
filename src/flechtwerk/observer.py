@@ -73,9 +73,9 @@ class Observer:
     def mqtt_message_dropped(self, topic: str, reason: str) -> None: pass
     def mqtt_message_in(self, topic: str) -> None: pass
 
-    def dispatch_scope(self) -> AbstractContextManager[None]: return nullcontext()
-    def batch_scope(self, size: int) -> AbstractContextManager[None]: return nullcontext()
-    def poll_cycle_scope(self) -> AbstractContextManager[None]: return nullcontext()
+    def dispatch_scope(self) -> AbstractContextManager[object]: return nullcontext()
+    def batch_scope(self, size: int) -> AbstractContextManager[object]: return nullcontext()
+    def poll_cycle_scope(self) -> AbstractContextManager[object]: return nullcontext()
 
 
 class PrometheusObserver(Observer):
@@ -190,12 +190,12 @@ class PrometheusObserver(Observer):
     def mqtt_message_in(self, topic: str) -> None:
         self.metrics.mqtt_messages_in_total.labels(**self.metrics_labels, topic=topic).inc()
 
-    def dispatch_scope(self) -> AbstractContextManager[None]:
+    def dispatch_scope(self) -> AbstractContextManager[object]:
         return self.metrics.message_processing_seconds.labels(**self.metrics_labels).time()
 
-    def batch_scope(self, size: int) -> AbstractContextManager[None]:
+    def batch_scope(self, size: int) -> AbstractContextManager[object]:
         self.metrics.batch_size.labels(**self.metrics_labels).observe(size)
         return self.metrics.batch_processing_seconds.labels(**self.metrics_labels).time()
 
-    def poll_cycle_scope(self) -> AbstractContextManager[None]:
+    def poll_cycle_scope(self) -> AbstractContextManager[object]:
         return self.metrics.poll_cycle_seconds.labels(**self.metrics_labels).time()
