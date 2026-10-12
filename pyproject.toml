@@ -7,8 +7,9 @@ dev = [
     "aiokafka[lz4,snappy,zstd]~=0.13",
     "coverage>=7.6",
     "cryptography>=44",  # secrets_test.py's independent AES-GCM oracle (not via joserfc)
+    "flechtctl",
     "hypothesis>=6.100",
-    "joserfc~=1.7",
+    "joserfc~=1.7",  # tests/secrets_test.py imports joserfc directly
     "paho-mqtt~=2.1",
     "poethepoet>=0.29",
     "pytest>=9.0.3",
@@ -17,7 +18,7 @@ dev = [
 ]
 docs = [
     "black>=24",
-    "joserfc~=1.7",  # mkdocstrings imports flechtwerk.secrets to document it
+    "flechtctl",  # mkdocstrings imports flechtctl (and through it joserfc) to document it
     "mkdocs-material~=9.5",
     "mkdocstrings[python]~=0.27",
 ]
@@ -46,7 +47,7 @@ dependencies = [
     "rocksdict~=0.3",
 ]
 description = "Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data."
-dynamic = ["version"]
+dynamic = ["optional-dependencies", "version"]
 keywords = ["aiokafka", "asyncio", "exactly-once", "kafka", "kafka-streams", "mqtt", "stream-processing"]
 license = { text = "MIT" }
 maintainers = [
@@ -55,14 +56,6 @@ maintainers = [
 name = "flechtwerk"
 readme = "README.md"
 requires-python = ">=3.12"
-
-[project.optional-dependencies]
-mqtt = [
-    "paho-mqtt~=2.1",
-]
-secrets = [
-    "joserfc~=1.7",
-]
 
 [project.urls]
 Documentation = "https://bsure-analytics.github.io/flechtwerk/"
@@ -85,16 +78,18 @@ omit = [
     "*/tests/*",
     "*_test.py",
 ]
-source = ["src"]
+source = ["flechtctl/src", "src"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/flechtwerk"]
+
+[tool.hatch.metadata.hooks.custom]
 
 [tool.hatch.version]
 source = "vcs"
 
 [tool.poe.tasks]
-build = { cmd = "uv build", help = "Build the sdist and wheel" }
+build = { cmd = "uv build --all-packages", help = "Build the sdist and wheel of every package" }
 docs = { cmd = "uv run --group docs mkdocs serve", help = "Serve the docs locally with live reload" }
 docs-build = { cmd = "uv run --group docs mkdocs build --strict", help = "Build the docs site (strict)" }
 test = { cmd = "pytest", help = "Run the unit tests (Docker-free)" }
@@ -120,4 +115,10 @@ filterwarnings = [
 markers = [
     "integration: tests that require Docker-based testcontainers (Kafka, Mosquitto, etc.; run with `-m integration`)",
 ]
-testpaths = ["tests"]
+testpaths = ["flechtctl/tests", "tests"]
+
+[tool.uv.sources]
+flechtctl = { workspace = true }
+
+[tool.uv.workspace]
+members = ["flechtctl"]
