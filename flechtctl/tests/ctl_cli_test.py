@@ -1,6 +1,8 @@
 import getpass
 import io
 import json
+import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -453,6 +455,36 @@ def test_walkthrough(run, monkeypatch, tmp_path):
     # the writer can seal and sign but cannot open
     code, out, err = run("decrypt", "-k", "writer.json", "--scope", "demo", "--string", token)
     assert (code, out) == (1, "") and "can seal but not open" in err
+
+
+def test_a_failed_write_leaves_neither_a_temporary_file_nor_a_changed_keyring(run, keyring, monkeypatch):
+    before = keyring.read_bytes()
+
+    def disk_full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", disk_full)
+    code, _, err = run("keyring", "add", str(keyring), "--kid", "k2")
+    assert code == 1 and "disk full" in err
+    assert keyring.read_bytes() == before
+    assert [path.name for path in keyring.parent.iterdir()] == [keyring.name]
+
+
+def test_import_of_a_jwk_file_that_is_not_an_object_is_an_error(run, keyring, tmp_path):
+    (tmp_path / "list.jwk").write_text("[]")
+    code, _, err = run("keyring", "import", str(keyring), str(tmp_path / "list.jwk"))
+    assert code == 1 and "each JWK must be a JSON object, got list" in err
+
+
+def test_python_dash_m_runs_main_and_exits_with_its_status(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", ["flechtctl", "keyring", "new", str(tmp_path / "k.json"), "--kid", "k1"])
+    with pytest.raises(SystemExit) as exit_:
+        runpy.run_module("flechtctl", run_name="__main__")
+    assert exit_.value.code == 0 and (tmp_path / "k.json").exists()
+    monkeypatch.setattr(sys, "argv", ["flechtctl", "keyring", "show", str(tmp_path / "missing.json")])
+    with pytest.raises(SystemExit) as exit_:
+        runpy.run_module("flechtctl", run_name="__main__")
+    assert exit_.value.code == 1
 
 
 def test_the_guide_prints_the_walkthrough():

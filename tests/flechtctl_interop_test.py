@@ -5,8 +5,11 @@ classes are the same objects, and `flechtctl.encrypt(k, v, scope=s)` is what
 `ENCRYPTED(inner, scope=s)` writes for `v == inner.encode(x)`.
 """
 import base64
+import importlib.abc
+import importlib.util
 import subprocess
 import sys
+from pathlib import Path
 
 import flechtctl
 import flechtwerk.keyring
@@ -152,3 +155,68 @@ def test_importing_secrets_without_flechtctl_says_what_to_install():
     )
     assert result.returncode == 0, result.stderr
     assert "flechtwerk[secrets]" in result.stdout
+
+
+# --- the absent-flechtctl seams, executed in-process ---
+#
+# The subprocess tests above prove the behaviour; these load a private COPY of the
+# module under another name (the real modules, and the class identities everything
+# else relies on, stay untouched) so that coverage sees the fallback branches run.
+
+
+class RefuseImport(importlib.abc.MetaPathFinder):
+    """Fails an import of `blocked` with a ModuleNotFoundError that names `culprit`."""
+
+    def __init__(self, blocked: str, culprit: str) -> None:
+        self.blocked, self.culprit = blocked, culprit
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname == self.blocked:
+            raise ModuleNotFoundError(f"cannot import {fullname}", name=self.culprit)
+        return None
+
+
+def load_copy(monkeypatch, module: str, *, hide: tuple[str, ...], refuse: RefuseImport | None = None):
+    for name in hide:
+        monkeypatch.setitem(sys.modules, name, None)
+    if refuse is not None:
+        for name in ("flechtctl", "flechtctl.errors", "flechtctl.keyring", "flechtctl.tokens"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.setattr(sys, "meta_path", [refuse, *sys.meta_path])
+    path = Path(flechtwerk.keyring.__file__).with_name(f"{module}.py")
+    spec = importlib.util.spec_from_file_location(f"flechtwerk.{module}_probe", path)
+    copy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(copy)
+    return copy
+
+
+def test_keyring_placeholders_stand_in_without_flechtctl(monkeypatch):
+    copy = load_copy(monkeypatch, "keyring", hide=("flechtctl", "flechtctl.keyring"))
+    assert copy.Keyring is not flechtctl.Keyring and copy.KEY_BYTES == 32
+    for placeholder in (copy.Keyring, copy.Ed25519Key, copy.X25519Key):
+        for build in (lambda: placeholder(), lambda: placeholder.of({}), lambda: placeholder.from_json("{}")):
+            with pytest.raises(ModuleNotFoundError, match="flechtwerk\\[secrets\\]") as error:
+                build()
+            assert error.value.name == "flechtctl" and placeholder.__name__ in str(error.value)
+    assert issubclass(copy.UnknownKeyError, copy.KeyringError)
+    assert issubclass(copy.KeyringConflictError, copy.KeyringError)
+    unknown = copy.UnknownKeyError("k1")
+    assert unknown.kid == "k1" and "'k1'" in str(unknown)
+
+
+def test_a_foreign_import_failure_in_keyring_is_not_swallowed(monkeypatch):
+    with pytest.raises(ModuleNotFoundError) as error:
+        load_copy(monkeypatch, "keyring", hide=(), refuse=RefuseImport("flechtctl", culprit="something_else"))
+    assert error.value.name == "something_else"
+
+
+def test_secrets_names_what_to_install_when_flechtctl_is_missing(monkeypatch):
+    with pytest.raises(ModuleNotFoundError, match="flechtwerk\\[secrets\\]") as error:
+        load_copy(monkeypatch, "secrets", hide=("flechtctl", "flechtctl.errors", "flechtctl.tokens"))
+    assert error.value.name.startswith("flechtctl") and isinstance(error.value.__cause__, ModuleNotFoundError)
+
+
+def test_a_foreign_import_failure_in_secrets_is_not_swallowed(monkeypatch):
+    with pytest.raises(ModuleNotFoundError) as error:
+        load_copy(monkeypatch, "secrets", hide=(), refuse=RefuseImport("flechtctl.errors", culprit="something_else"))
+    assert error.value.name == "something_else" and "flechtwerk[secrets]" not in str(error.value)

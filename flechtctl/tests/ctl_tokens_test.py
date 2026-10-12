@@ -208,6 +208,12 @@ def test_read_header_of_both_envelopes_and_garbage():
         read_header("flenc:jwt:abc")
 
 
+def test_a_header_that_is_not_a_json_object_is_malformed():
+    header = base64.urlsafe_b64encode(b"[1]").rstrip(b"=").decode()
+    with pytest.raises(SecretFormatError, match="expected a JSON object, got list"):
+        read_header(f"flenc:jwe:{header}.x.y.z.w")
+
+
 # --- generators ---
 
 
