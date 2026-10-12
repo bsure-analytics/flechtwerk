@@ -17,6 +17,9 @@ thread, so messages accumulate in plain lists without synchronization.
 The MQTT broker floor is MQTT 5 **with shared subscriptions** (EMQX 3.0+,
 Mosquitto 2.0+). There is no protocol fallback and no mode flag.
 
+TLS (and mutual TLS) rides ``MqttBrokerConfig.tls``, a caller-built
+``ssl.SSLContext`` handed to paho's ``tls_set_context`` before connecting.
+
 Session-pinned shared subscriptions — how replicas divide the work:
 
 - Every replica subscribes ``$share/{group}/{filter}``, the group being the

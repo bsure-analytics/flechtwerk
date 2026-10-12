@@ -69,6 +69,41 @@ See [Getting Started → Running a Stage](getting-started.md#running-a-stage) fo
 
     `MqttBrokerConfig` carries the broker settings, and paho stays confined to `flechtwerk.mqtt` — `import flechtwerk` never loads it, and the dependency ships as the optional `flechtwerk[mqtt]` extra (see [Getting Started](getting-started.md#installation)).
 
+## TLS
+
+To reach the MQTT broker over TLS, hand `MqttBrokerConfig` a standard-library `ssl.SSLContext` as `tls=`. You build the context, so trust and policy stay yours: which CA to trust, whether to present a client certificate, which TLS versions to allow. The framework reads no certificate files of its own. Leave `tls` at `None`, the default, and the connection stays plaintext.
+
+Server authentication only — the MQTT broker proves who it is, the client authenticates with username and password (or not at all):
+
+```python
+import ssl
+
+context = ssl.create_default_context(cafile="/etc/mqtt/ca.pem")  # omit cafile for a publicly trusted certificate
+
+mqtt = MqttBrokerConfig(broker="mqtt.example.com", port=8883, tls=context)
+```
+
+Mutual TLS — the same context, plus the client certificate it presents:
+
+```python
+context = ssl.create_default_context(cafile="/etc/mqtt/ca.pem")
+context.load_cert_chain("/etc/mqtt/client.pem", "/etc/mqtt/client.key")
+
+mqtt = MqttBrokerConfig(broker="mqtt.example.com", port=8883, tls=context)
+```
+
+The port is still yours to set: 8883 is the TLS convention, and nothing defaults differently because `tls` is set.
+
+!!! warning "A Context That Doesn't Authenticate the MQTT Broker Is Refused"
+
+    `MqttBrokerConfig` raises `ValueError` at construction when the context's `verify_mode` is not `ssl.CERT_REQUIRED` or its `check_hostname` is off. Encryption without authentication hands the session to whoever answers on the address, so it is not offered at all. An MQTT broker with a self-signed or private-CA certificate is trusted by loading that CA (`cafile=`). One reached by IP address needs an IP entry in its certificate's subject alternative names, not a disabled hostname check. `ssl.create_default_context()` passes as it comes.
+
+!!! note "Private CAs and Python ≥ 3.13"
+
+    Since Python 3.13, `ssl.create_default_context()` sets `VERIFY_X509_STRICT`, which rejects private-CA certificates that older tooling happily issued. A CA or leaf certificate without an Authority Key Identifier fails with `Missing Authority Key Identifier`; a CA certificate without a Key Usage extension fails with `CA cert does not include key usage extension`. Reissue the certificates with both extensions (plus a Subject Key Identifier, and a critical Key Usage: `keyCertSign` + `cRLSign` on the CA, `digitalSignature` on the leaves) rather than clearing the flag.
+
+A context reads its certificate files once, when you build it, so a rotated certificate takes effect at the next process start. Nothing reloads it in place — roll the deployment after rotating. The same `ssl.SSLContext` can also serve the Kafka broker when one CA and one client certificate cover both; see [Getting Started → TLS to the Kafka Broker](getting-started.md#tls-to-the-kafka-broker).
+
 ## Quality of Service
 
 `MqttBrokerConfig.qos` is the QoS the stage *subscribes* with — the ceiling

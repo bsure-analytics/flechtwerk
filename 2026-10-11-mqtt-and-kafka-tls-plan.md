@@ -519,7 +519,7 @@ they describe what was actually built.
     → all passed, nothing skipped.
   - Commit.
 
-- [ ] **5. Documentation**
+- [x] **5. Documentation**
   - `docs/guides/mqtt.md`: a `## TLS` section after "Running It" — a
     server-auth example and an mTLS example
     (`ssl.create_default_context(cafile=...)`, `load_cert_chain(...)`,
@@ -772,3 +772,14 @@ judge.
   to end over mTLS on both brokers. `uv run pytest -q -m integration
   tests/integration/tls_test.py -rs` → `4 passed in 14.52s`; full tier
   `uv run pytest -q -m integration -rs` → `26 passed, 680 deselected`.
+- Task 5 started.
+- Task 5 done: `docs/guides/mqtt.md` `## TLS` after "Running It"
+  (server-auth + mTLS examples, refusal warning, Python ≥ 3.13
+  strict-verification note with both error strings, rotation-at-restart);
+  `docs/guides/getting-started.md` `kafka_tls` in the optional knobs and a
+  `### TLS to the Kafka Broker` subsection (mTLS example, shared-context
+  note, embedding note); `Flechtwerk` embedding paragraph names `kafka_tls`;
+  `mqtt.py` module docstring TLS line; `CLAUDE.md` module.py/mqtt.py bullets
+  and the closing injected-configuration sentence with the shared refusal
+  rule. `uv run poe docs-build` → `Documentation built`, exit 0; `uv run
+  pytest -q` → `680 passed, 26 deselected`.

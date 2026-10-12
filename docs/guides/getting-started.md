@@ -101,7 +101,9 @@ only the `stage` you pass changes. The required knobs:
 - **`stage`** — the `Extractor` or `Transformer` you've built.
 
 Optional knobs: `compression_type` (defaults to `"zstd"` — JSON compresses ~13×;
-pass `None` to disable), `max_poll_records` (caps the records per consumer
+pass `None` to disable), `kafka_tls` (an `ssl.SSLContext` for
+[TLS to the Kafka broker](#tls-to-the-kafka-broker); plaintext while `None`),
+`max_poll_records` (caps the records per consumer
 fetch — Kafka's `max.poll.records`, same default of 500; the cap is what makes
 a backlog drain as many ordinary batches instead of one giant one),
 `metrics_port` / `metrics_labels`
@@ -124,6 +126,49 @@ See the [API reference](../api/index.md) for the full signature.
     Give each instance a `client_id` that is unique per instance but stable
     across restarts (in Kubernetes, the pod name works well). It anchors the
     transactional producer's fencing and the MQTT session identity.
+
+### TLS to the Kafka Broker
+
+Pass a standard-library `ssl.SSLContext` as `kafka_tls` and every Kafka client
+the stage opens — consumers, transactional producers, admin clients — connects
+over TLS with it. The context presents a client certificate if you load one,
+which turns it into mutual TLS:
+
+```python
+import ssl
+
+kafka_tls = ssl.create_default_context(cafile="/etc/kafka/ca.pem")
+kafka_tls.load_cert_chain("/etc/kafka/client.pem", "/etc/kafka/client.key")  # mutual TLS
+
+await Flechtwerk.of(
+    application_id="my-stage",
+    bootstrap_servers="kafka.example.com:9093",   # the Kafka broker's TLS listener
+    client_id="my-stage-0",
+    kafka_tls=kafka_tls,
+    stage=stage,
+).run()
+```
+
+You build the context, so trust and TLS version policy stay yours; the
+framework reads no certificate files. A context that would not authenticate
+the Kafka broker — `verify_mode` other than `ssl.CERT_REQUIRED`, or
+`check_hostname` off — is refused with a `ValueError` at startup: trust a
+private CA with `cafile=`, and give a Kafka broker reached by IP address an IP
+subject alternative name instead of disabling the check. On Python ≥ 3.13,
+private-CA certificates also need an Authority Key Identifier and a Key Usage
+extension — see the [MQTT guide's TLS section](mqtt.md#tls), whose rules are
+the same. A context reads its files once, so a rotated certificate takes
+effect at the next process start. SASL authentication is not supported.
+
+When one CA and one client certificate serve both the MQTT broker and the
+Kafka broker, a single context can be passed to both:
+`Flechtwerk.of(kafka_tls=context, mqtt=MqttBrokerConfig(..., tls=context), ...)`.
+
+!!! note "Embedding in a Parent Module"
+
+    A parent reactor-di module that embeds the container via
+    `make[Flechtwerk, _FlechtwerkModule]` must wire `kafka_tls` like every
+    other lookup — to `None` for plaintext.
 
 ### Several Stages in One Process
 

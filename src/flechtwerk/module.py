@@ -295,7 +295,8 @@ class Flechtwerk(ABC):
     To embed Flechtwerk as a component of a larger reactor-di module, wire
     the concrete container directly — declare ``make[Flechtwerk,
     _FlechtwerkModule]`` and let the parent module fill every ``lookup``
-    field by attribute name.
+    field by attribute name. That includes ``kafka_tls``, which every Kafka
+    client build reads: wire it to ``None`` for plaintext.
 
     Several stages may share one process: build one handle per stage and
     run them as sibling tasks (``asyncio.TaskGroup``, so one stage's crash
