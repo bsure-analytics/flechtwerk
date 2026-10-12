@@ -1,4 +1,5 @@
 ---
+blocked_report: 2026-10-11-flechtctl-plan.BLOCKED.md
 branch: main
 closeout_push: false
 created: 2026-10-11
@@ -17,7 +18,7 @@ plugin_url: https://github.com/christian-schlichtherle/cs7-claude-plugins
 plugin_version: 0.16.1
 review_rounds: 10
 sources: []
-status: handed-off
+status: blocked
 ticket: none
 ---
 
@@ -357,7 +358,7 @@ later task imports; task 2 moves the core before task 3 rewires flechtwerk onto 
 the CLI (task 4) uses the finished library API; docs (task 6) describe what exists.
 Run `uv run pytest -q` after every task — it must stay green (plus new tests).
 
-- [ ] **1. Create the `flechtctl` workspace member and wire packaging**
+- [x] **1. Create the `flechtctl` workspace member and wire packaging**
   - Create:
     - `flechtctl/pyproject.toml` — hatchling + hatch-vcs build system;
       `[project]` with `name = "flechtctl"`, `dynamic = ["version"]`,
@@ -971,4 +972,7 @@ the file, so it would have nothing to judge.
 ```
 
 ## Run Log
-
+- 2026-10-12 Pre-Flight passed: goal met:false naming this plan, model claude-sonnet-5-5, permissionMode auto, effort high; SIGN-OK, DOCKER-OK, python3.15 found, fixture copy hash 16ee8450… COPY-OK; branch main, tree clean, flechtctl ABSENT, 680 passed, to_json count 0.
+- 2026-10-12 Task 1 started and finished: workspace member, hatch metadata hook, publish.yaml; sync ok, both wheels same version, flechtctl==<ver>; extra == 'secrets', 680 passed, lock --check 0. Plan file deliberately left uncommitted until Closeout.
+- 2026-10-12 Task 2 started: wrote flechtctl/src/flechtctl/{keyring,errors,tokens,__init__}.py (uncommitted), smoke-tested by hand; tests not yet written.
+- 2026-10-12 BLOCKED at task 2: the copy of ../../livia-nt/camera-inference/tests/fixtures/face_vector_token.txt into flechtctl/tests/fixtures/ was denied by the auto-mode classifier ([Sensitive-Source Provenance]). The Pre-Flight probe copying it into a mktemp dir had passed. No workaround attempted. See 2026-10-11-flechtctl-plan.BLOCKED.md; next: relaunch.
