@@ -17,7 +17,7 @@ plugin_url: https://github.com/christian-schlichtherle/cs7-claude-plugins
 plugin_version: 0.16.1
 review_rounds: 10
 sources: []
-status: handed-off
+status: executing
 ticket: none
 ---
 
@@ -349,7 +349,7 @@ The order matters: task 1 creates the validator that tasks 2 and 3 call;
 task 4's integration tests exercise what 2 and 3 build; docs come last so
 they describe what was actually built.
 
-- [ ] **1. Shared TLS validator in `module.py`**
+- [x] **1. Shared TLS validator in `module.py`**
   - `import ssl`; add an internal function (not in `__all__`), e.g.
     `validate_tls(context: ssl.SSLContext | None, name: str) -> None`:
     `None` passes; a non-`SSLContext` raises `TypeError`;
@@ -720,3 +720,25 @@ judge.
 ## Run Log
 
 <Appended by the execution session.>
+
+- 2026-10-12 — Pre-Flight gate PASSED (fresh start; no `blocked_report`).
+  1. Transcript found (`…/b9544bfe-….jsonl`); last goal record `"met":false`
+     with a condition naming this plan; model `claude-opus-5-5`;
+     `effort=high`. The transcript's `permissionMode` grep printed nothing
+     and the argv walk from `$PPID` reached a daemon spare
+     (`claude bg-spare …`, no mode flag); the job's launch record
+     (`$CLAUDE_JOB_DIR/state.json` `respawnFlags`) reads
+     `--permission-mode auto --model opus --effort high` — mode `auto`.
+  2. `docker info` → `29.8.2`; gpg detach-sign probe exit 0;
+     `uv run pytest -q` → `668 passed, 22 deselected`.
+  3. Plan file present; toplevel `…/.claude/worktrees/mqtts`; branch
+     `worktree-mqtts`; `git status --porcelain` empty.
+  4. `Python 3.14.7`; bootstrap_servers grep → `9`; `tls` grep → nothing.
+  - Contradiction (minor, Goal unaffected): `graphify-out/graph.json` now
+    EXISTS (the plan says it did not at planning). Only task 6's conditional
+    `graphify update .` depends on it — it will be run there.
+- Task 1 started.
+- Task 1 done: `validate_tls(context, name)` in `module.py` (not in
+  `__all__`); 5 tests in `tests/module_test.py` (None/default pass,
+  CERT_NONE/CERT_OPTIONAL/check_hostname=False → ValueError, str → TypeError).
+  `uv run pytest -q` → `673 passed, 22 deselected`.

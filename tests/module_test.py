@@ -1,5 +1,6 @@
 """Tests for flechtwerk.module topic-declaration validation and MQTT wiring."""
 import asyncio
+import ssl
 from datetime import timedelta
 from typing import AsyncIterator
 
@@ -12,6 +13,7 @@ from flechtwerk.module import (
     _FlechtwerkModule,
     ensure_topics,
     validate_poll_interval,
+    validate_tls,
     validate_topics,
 )
 from flechtwerk.mqtt import MqttExtractor
@@ -73,6 +75,36 @@ def test_poll_interval_optional_for_transformer_positive_for_extractor():
     validate_poll_interval(Transformer.of(input_topics=["in"], transform=noop_transform), None)
     # a positive duration satisfies an extractor
     validate_poll_interval(Extractor.of(config_topics=["cfg"], poll=noop_poll), timedelta(seconds=60))
+
+
+# -- validate_tls (shared by mqtt.tls and kafka_tls) -----------------------------------
+
+
+def test_validate_tls_accepts_none_and_a_default_context():
+    validate_tls(None, "kafka_tls")
+    validate_tls(ssl.create_default_context(), "kafka_tls")
+
+
+def _unverifying_contexts() -> list[ssl.SSLContext]:
+    no_verify = ssl.create_default_context()
+    no_verify.check_hostname = False  # CERT_NONE is refused while hostnames are checked
+    no_verify.verify_mode = ssl.CERT_NONE
+    optional = ssl.create_default_context()
+    optional.verify_mode = ssl.CERT_OPTIONAL
+    no_hostname = ssl.create_default_context()
+    no_hostname.check_hostname = False
+    return [no_verify, optional, no_hostname]
+
+
+@pytest.mark.parametrize("context", _unverifying_contexts(), ids=["cert-none", "cert-optional", "no-hostname"])
+def test_validate_tls_refuses_an_unauthenticating_context(context):
+    with pytest.raises(ValueError, match=r"mqtt\.tls would not authenticate the remote broker.*cafile"):
+        validate_tls(context, "mqtt.tls")
+
+
+def test_validate_tls_rejects_a_non_context():
+    with pytest.raises(TypeError, match="kafka_tls must be an ssl.SSLContext"):
+        validate_tls("/etc/ssl/ca.pem", "kafka_tls")  # noqa: the point of the test
 
 
 def test_broker_config_is_keyword_only():

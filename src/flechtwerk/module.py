@@ -23,6 +23,7 @@ why such a stage is stateless by contract; its per-page transactions are
 otherwise identical.
 """
 import logging
+import ssl
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -145,6 +146,36 @@ def validate_poll_interval(stage: Extractor | Transformer, poll_interval: timede
     """
     if isinstance(stage, Extractor) and (poll_interval is None or poll_interval <= timedelta(0)):
         raise ValueError("an extractor needs a positive poll_interval")
+
+
+def validate_tls(context: ssl.SSLContext | None, name: str) -> None:
+    """A TLS context must authenticate the remote broker — no broker needed.
+
+    Shared by both transports: ``MqttBrokerConfig.tls`` (checked at
+    construction, ``name="mqtt.tls"``) and ``Flechtwerk.of(kafka_tls=...)``
+    (checked in ``__aenter__``, ``name="kafka_tls"``). ``None`` means
+    plaintext and passes. A context that would accept any certificate
+    (``verify_mode != CERT_REQUIRED``) or any host name (``check_hostname``
+    false) is refused: encryption without authentication hands the session to
+    whoever answers on the address, so it is not offered at all. A broker with
+    a private CA is trusted by loading that CA (``cafile=``), and a broker
+    reached by IP address needs an IP SAN in its certificate — never a disabled
+    check. ``ssl.create_default_context()`` satisfies this as it comes.
+
+    Stdlib-only on purpose, so ``module.py`` stays paho-free.
+    """
+    if context is None:
+        return
+    if not isinstance(context, ssl.SSLContext):
+        raise TypeError(f"{name} must be an ssl.SSLContext or None, got {type(context).__name__}")
+    if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+        raise ValueError(
+            f"{name} would not authenticate the remote broker "
+            f"(verify_mode={context.verify_mode.name}, check_hostname={context.check_hostname}) — "
+            "trust a private CA via ssl.create_default_context(cafile=...) instead of disabling "
+            "verification, and give a broker reached by IP address an IP SAN rather than turning "
+            "off check_hostname"
+        )
 
 
 async def partition_counts(admin: Any, topics: list[str]) -> dict[str, int]:
