@@ -4,7 +4,7 @@ requires = ["hatchling", "hatch-vcs"]
 
 [dependency-groups]
 dev = [
-    "aiokafka[lz4,snappy,zstd]~=0.13",
+    "aiokafka[lz4,snappy,zstd]~=0.15",
     "coverage>=7.6",
     "cryptography>=44",  # secrets_test.py's independent AES-GCM oracle (not via joserfc)
     "flechtctl",
@@ -42,7 +42,7 @@ classifiers = [
     "Topic :: System :: Distributed Computing",
 ]
 dependencies = [
-    "aiokafka[zstd]~=0.13",
+    "aiokafka[zstd]~=0.15",
     "prometheus-client~=0.21",
     "reactor-di~=0.6",
     "rocksdict~=0.3",
