@@ -270,7 +270,7 @@ def test_bytes_composes_with_the_container_constructors():
     assert DICT(BYTES).encode({"k": b"AB"}) == {"k": "QUI="}
 
 
-@pytest.mark.parametrize("key", ["Europe/Berlin", "UTC", "CET", "America/Argentina/Buenos_Aires"])
+@pytest.mark.parametrize("key", ["Europe/Berlin", "UTC", "Asia/Kolkata", "America/Argentina/Buenos_Aires"])
 def test_zone_info_round_trip(key):
     decoded = ZONE_INFO.decode(key)
     assert decoded == ZoneInfo(key)

@@ -201,12 +201,15 @@ FLOAT: Final = Codec[float](_validate(float), _validate(float))
 DATETIME: Final = Codec[datetime](datetime.fromisoformat, _encode_datetime)
 TIME: Final = Codec[time](time.fromisoformat, time.isoformat)
 ZONE_INFO: Final = Codec[ZoneInfo](_decode_zone_info, _encode_zone_info)
-"""Codec for an IANA time zone (`Europe/Berlin`, `UTC`, `CET`) as its key string.
+"""Codec for an IANA time zone (`Europe/Berlin`, `UTC`) as its key string.
 
 Fixed-offset `datetime.timezone` values are out of scope: they have no IANA
 key, and an offset is not a zone (it knows nothing about DST). `ZoneInfo`
 reads the host's tz database, falling back to the `tzdata` package — an
-image without either rejects every key.
+image without either rejects every key. Legacy aliases (`CET`, `US/Eastern`)
+are a packaging choice of the host: Ubuntu 26.04 moved them to the optional
+`tzdata-legacy` package, so they decode on 24.04 and fail on 26.04. Write
+canonical `Area/Location` keys.
 
 Like `BYTES`, the zone is deliberately absent from the `ANY` walker: its wire
 form is a plain string that would read back as text.
