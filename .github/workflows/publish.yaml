@@ -24,6 +24,66 @@ jobs:
         run: uv build --all-packages
       - name: Publish to PyPI
         run: uv publish
+  release-notes:
+    name: Draft release notes
+    needs: publish
+    permissions:
+      contents: write # creates the draft release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the notes cover every commit since the previous tag
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        id: range
+        name: Collect context
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*.*.*' "$TAG^")
+          mkdir -p .release
+          # The three latest published releases serve as the style reference.
+          for t in $(gh release list --exclude-drafts --limit 3 --json tagName -q '.[].tagName'); do
+            gh release view "$t" --json name,body -q '"# " + .name + "\n\n" + .body + "\n"' >> .release/examples.md
+          done
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --model opus
+            --allowedTools "Read,Glob,Grep,Write,Bash(git log:*),Bash(git show:*),Bash(git diff:*)"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: |
+            Draft the GitHub release notes for ${{ github.ref_name }} of this repository, which
+            releases two PyPI distributions, flechtwerk and flechtctl. The release covers the
+            commits ${{ steps.range.outputs.prev }}..${{ github.ref_name }}: read them with
+            `git log` and `git show`, and read the code and docs they touch until you
+            understand what changed for a user of the framework.
+
+            .release/examples.md holds the notes of the latest releases. Match their style
+            exactly: a bold one-sentence verdict on compatibility (API, wire format, behavior)
+            opening a short first paragraph, then `## Added`, `## Changed`, `## Fixed`,
+            `## Removed` and `## Caveats` sections as needed, in that order, each entry
+            starting with a bold lead-in sentence. Write for users of the framework: explain
+            what changed and why it matters to them, with short code samples where they help,
+            not a list of commits. Leave out test-only and CI-only changes unless they change
+            a guarantee a user relies on. Link the docs site
+            (https://bsure-analytics.github.io/flechtwerk/) where a page covers the topic.
+
+            Write exactly two files and nothing else:
+            - .release/title.txt: one line, `${{ github.ref_name }} — <headline>`, the headline
+              a few lowercase words naming what the release is about.
+            - .release/notes.md: the body, without the title.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        name: Create draft release
+        run: |
+          test -s .release/title.txt && test -s .release/notes.md
+          gh release create "$TAG" --draft --verify-tag \
+            --notes-file .release/notes.md --title "$(head -n 1 .release/title.txt)"
 name: Publish to PyPI
 on:
   push:

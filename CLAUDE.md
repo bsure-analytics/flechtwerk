@@ -36,6 +36,8 @@ uv run flechtctl --help        # the flechtctl command from the workspace member
 
 Tag `vX.Y.Z` and push the tag; `.github/workflows/publish.yaml` runs the test suite, builds BOTH distributions (`uv build --all-packages`: `flechtwerk` and `flechtctl`) with the tag-derived version (hatch-vcs), and publishes them to PyPI via trusted publishing (`uv publish` uploads everything in `dist/`). Nothing else sets the version. Before the **first** tag that includes `flechtctl`, a PyPI *pending trusted publisher* for project `flechtctl` must exist (same repository, workflow `publish.yaml`, environment `pypi`) — otherwise `uv publish` fails for it.
 
+After a successful publish, the `release-notes` job drafts the GitHub release: `anthropics/claude-code-action` reads the commits since the previous `vX.Y.Z` tag, takes the three latest published releases as its style reference, and writes a title and body that a final step turns into a **draft** release (`gh release create --draft`). Review and publish it by hand. The job authenticates with the `CLAUDE_CODE_OAUTH_TOKEN` repository secret (from `claude setup-token`) or the `ANTHROPIC_API_KEY` one — one of them must exist. Claude only gets read-only `git` commands plus file writes; creating the release is the plain shell step's job.
+
 ## Architecture
 
 Flechtwerk is an async stream processing framework for Kafka with hexagonal architecture (ports and adapters), packaged under `src/flechtwerk/`. Applications build stages in two shapes:
