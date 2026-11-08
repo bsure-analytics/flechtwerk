@@ -33,7 +33,7 @@ from flechtwerk.configs import ConfigStore
 from flechtwerk.extractor import Extractor, ExtractorRunner, token_for
 from flechtwerk.module import Flechtwerk
 from flechtwerk.observer import Observer
-from flechtwerk.state import RocksDBStateStore
+from flechtwerk.state import RocksDBMemory, RocksDBStateStore
 from flechtwerk.types import Event, Message, State
 
 pytestmark = pytest.mark.integration
@@ -108,6 +108,7 @@ def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Ext
     """Wire a sharded ExtractorRunner against a real Kafka broker, mirroring Flechtwerk's DI."""
     inner = RocksDBStateStore()
     inner.path = state_path
+    inner.rocksdb_memory = RocksDBMemory()
 
     def make_token_producer(token: int) -> AIOKafkaProducer:
         return AIOKafkaProducer(

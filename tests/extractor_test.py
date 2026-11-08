@@ -1327,6 +1327,12 @@ def test_sharded_restore_precedes_polling():
             consumer=FakeKafkaConsumer([json_record(key=key, value={"api_key": "a"})]),
             restore_records=[make_record(key=key, value=b'{"cursor":7}', topic="test-changelog")],
         )
+        flushed_at: list[int] = []
+
+        async def flush() -> None:
+            flushed_at.append(len(runner.inner_store.store))
+
+        runner.inner_store.flush = flush
         runner.num_tokens = 1
         task = asyncio.create_task(runner.run())
         try:
@@ -1334,6 +1340,9 @@ def test_sharded_restore_precedes_polling():
             runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
             await asyncio.wait_for(cycled.wait(), 5)
             assert seen[0] == 7
+            # ...and the restored store handed its memtable back before polling
+            # began (see RocksDBStateStore.flush)
+            assert flushed_at == [1]
         finally:
             task.cancel()
             with suppress(asyncio.CancelledError):

@@ -717,6 +717,7 @@ class ExtractorRunner:
             )
         finally:
             await consumer.stop()
+        await self.inner_store.flush()  # hand the restore's memtable back (see RocksDBStateStore.flush)
         self.cycle = asyncio.create_task(self.cycle_loop())
         log.info("Acquired tokens %s (%d changelog records restored)", sorted(pending), entries)
 

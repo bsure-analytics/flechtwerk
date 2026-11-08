@@ -43,7 +43,7 @@ from .extractor import Extractor, ExtractorRunner
 from .keyring import Keyring, install_keyring, set_secret_observer
 from .metrics import Exporter, Metrics, acquire_exporter, release_exporter
 from .observer import Observer, PrometheusObserver
-from .state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic
+from .state import ChangelogStateStore, RocksDBMemory, RocksDBStateStore, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -438,6 +438,7 @@ class _FlechtwerkModule(Flechtwerk):
     mqtt: lookup[MqttBrokerConfig | None]
     poll_interval: lookup[timedelta | None]
     registry: CollectorRegistry = REGISTRY
+    rocksdb_memory: RocksDBMemory
     stage: lookup[Extractor | Transformer]
     transformer_runner: TransformerRunner
 
@@ -600,6 +601,7 @@ class _FlechtwerkModule(Flechtwerk):
         """
         inner = RocksDBStateStore()
         inner.path = self.path / str(partition)
+        inner.rocksdb_memory = self.rocksdb_memory  # one pool for every task of the stage
         store = ChangelogStateStore()
         store.inner = inner
         store.observer = self.observer

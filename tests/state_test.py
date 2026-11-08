@@ -7,7 +7,7 @@ import pytest
 
 from flechtwerk.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
 from flechtwerk.observer import Observer
-from flechtwerk.state import ChangelogStateStore, RocksDBStateStore, ensure_changelog_topic, serialize
+from flechtwerk.state import ChangelogStateStore, RocksDBMemory, RocksDBStateStore, ensure_changelog_topic, serialize
 from flechtwerk.testing import (
     FakeKafkaConsumer,
     FakeKafkaProducer,
@@ -98,10 +98,42 @@ def test_in_memory_nested_state():
     asyncio.run(run())
 
 
+def rocksdb_store(path, memory: RocksDBMemory | None = None) -> RocksDBStateStore:
+    store = RocksDBStateStore()
+    store.path = path
+    store.rocksdb_memory = memory or RocksDBMemory()
+    return store
+
+
+def test_rocksdb_stores_share_one_bounded_memtable_budget(tmp_path):
+    """Stores drawing on one pool charge ONE write-buffer manager, which caps
+    their memtables together: four stores written well past the budget never
+    hold more than it. Under RocksDB's per-database defaults each store would
+    keep up to 64 MiB of its own, so a replica's memory grew with the number of
+    tasks it held."""
+    async def run():
+        memory = RocksDBMemory()
+        stores = [rocksdb_store(tmp_path / str(i), memory) for i in range(4)]
+        _, manager = memory._pool
+        value = bytes(range(256)) * 4  # 1 KiB
+        written = peak = 0
+        try:
+            while written < memory.MEMTABLE_BYTES * 3 // 2:
+                for i, store in enumerate(stores):
+                    await store.put_bytes(f"k{written}-{i}", value)
+                written += len(value) * len(stores)
+                peak = max(peak, manager.get_usage())
+        finally:
+            for store in stores:
+                await store.close()
+        assert peak > memory.MEMTABLE_BYTES // 2  # the stores charge the shared manager...
+        assert peak <= memory.MEMTABLE_BYTES      # ...and it holds them to the budget
+    asyncio.run(run())
+
+
 def test_rocksdb_put_and_get(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore()
-        store.path = tmp_path / "test-db"
+        store = rocksdb_store(tmp_path / "test-db")
         try:
             await store.put("key1", State.wrap({"cursor": "2024-01-01", "count": 42}))
             result = await store.get("key1")
@@ -113,8 +145,7 @@ def test_rocksdb_put_and_get(tmp_path):
 
 def test_rocksdb_get_missing_returns_none(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore()
-        store.path = tmp_path / "test-db"
+        store = rocksdb_store(tmp_path / "test-db")
         try:
             assert await store.get("nonexistent") is None
         finally:
@@ -124,8 +155,7 @@ def test_rocksdb_get_missing_returns_none(tmp_path):
 
 def test_rocksdb_delete(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore()
-        store.path = tmp_path / "test-db"
+        store = rocksdb_store(tmp_path / "test-db")
         try:
             await store.put("key1", State.wrap({"x": 1}))
             await store.delete("key1")
@@ -137,8 +167,7 @@ def test_rocksdb_delete(tmp_path):
 
 def test_rocksdb_datetime_round_trip(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore()
-        store.path = tmp_path / "test-db"
+        store = rocksdb_store(tmp_path / "test-db")
         try:
             dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
             state = State()
@@ -157,8 +186,7 @@ def test_rocksdb_close_is_a_wipe_not_end_of_life(tmp_path):
     access lazily reopens a fresh, empty store — the sharded extractor
     runner wipes and re-restores on every token assignment."""
     async def run(tmp_path):
-        store = RocksDBStateStore()
-        store.path = tmp_path / "test-db"
+        store = rocksdb_store(tmp_path / "test-db")
         try:
             await store.put("k1", State.wrap({"x": 1}))
             await store.close()
@@ -173,8 +201,7 @@ def test_rocksdb_close_is_a_wipe_not_end_of_life(tmp_path):
 
 def test_rocksdb_set_round_trip(tmp_path):
     async def run(tmp_path):
-        store = RocksDBStateStore()
-        store.path = tmp_path / "test-db"
+        store = rocksdb_store(tmp_path / "test-db")
         try:
             state = State()
             state[HASHES] = {"abc", "def"}   # encoder runs → sorted list in raw
@@ -377,6 +404,64 @@ def test_changelog_restore_observes_nothing():
     asyncio.run(run())
 
 
+class FlushRecordingStore(InMemoryStateStore):
+    """Records how many entries the store held at each flush()."""
+
+    def __init__(self):
+        super().__init__()
+        self.flushed_at: list[int] = []
+
+    async def flush(self) -> None:
+        self.flushed_at.append(len(self.store))
+
+
+def test_changelog_restore_flushes_inner_store_after_replay():
+    """A transformer task's restore hands its memtable back once the replay
+    is complete — otherwise the restored-then-idle store would hold its share
+    of the stage's write budget for good (see RocksDBStateStore.flush)."""
+    async def run():
+        store = ChangelogStateStore()
+        store.inner = FlushRecordingStore()
+        store.producer = FakeKafkaProducer()
+        store.topic = "test-changelog"
+
+        await store.restore(FakeKafkaConsumer([
+            make_record(topic="test-changelog", key="k1", value='{"cursor":1}'),
+            make_record(topic="test-changelog", key="k2", value='{"cursor":2}'),
+        ]))
+
+        assert store.inner.flushed_at == [2]  # once, after the whole replay
+
+    asyncio.run(run())
+
+
+def test_rocksdb_flush_hands_the_memtable_back(tmp_path):
+    async def run():
+        memory = RocksDBMemory()
+        store = rocksdb_store(tmp_path / "test-db", memory)
+        _, manager = memory._pool
+        try:
+            for k in range(1000):
+                await store.put_bytes(f"k{k}", b"x" * 1024)
+            before = manager.get_usage()
+            await store.flush()
+            assert manager.get_usage() < before
+            assert store.db["k999"] == b"x" * 1024  # now served from disk
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
+def test_rocksdb_flush_never_opens_an_unopened_store(tmp_path):
+    """A stage that never touched state must not get a RocksDB file from a flush."""
+    async def run():
+        store = rocksdb_store(tmp_path / "test-db")
+        await store.flush()
+        assert "db" not in store.__dict__
+        assert not (tmp_path / "test-db").exists()
+    asyncio.run(run())
+
+
 def test_changelog_observer_defaults_to_the_no_op():
     """An unwired store must not blow up — the default is a bare `Observer`."""
     async def run():
@@ -444,6 +529,22 @@ def test_ensure_changelog_topic_returns_true_when_created():
     asyncio.run(run())
 
 
+def test_ensure_changelog_topic_bounds_the_uncompacted_history():
+    """Compaction alone never touches the active segment, which under Kafka's
+    defaults is a young changelog's whole history — so the topic is created
+    with a compaction lag that forces rolls and cleaning."""
+    async def run():
+        admin = _FakeAdmin([("cl", 0)])
+        await ensure_changelog_topic(admin, "cl", 2)
+        [[topic]] = admin.create_calls
+        assert topic.topic_configs == {
+            "cleanup.policy": "compact",
+            "max.compaction.lag.ms": "3600000",
+        }
+
+    asyncio.run(run())
+
+
 def test_ensure_changelog_topic_returns_false_when_already_exists():
     """A pre-existing topic reports False so the caller re-describes and validates."""
     async def run():
@@ -496,8 +597,10 @@ def test_module_wires_extractor_runner_state_collaborators():
 
         runner = mod.runner
 
-        # inner_store → ExtractorRunner.inner_store (name match)
+        # inner_store → ExtractorRunner.inner_store (name match), drawing on
+        # the stage's one RocksDB memory pool (name match again)
         assert runner.inner_store is mod.inner_store
+        assert mod.inner_store.rocksdb_memory is mod.rocksdb_memory
 
         # changelog_topic cached_property → ExtractorRunner.changelog_topic
         assert runner.changelog_topic == "test-app-changelog"
@@ -541,6 +644,10 @@ def test_module_wires_task_store_observer():
 
     assert store.observer is mod.observer
     assert store.partition == 2
+    # Every task draws on ONE pool: a pool per task would make a replica's
+    # memory grow with the number of tasks it holds again.
+    assert store.inner.rocksdb_memory is mod.rocksdb_memory
+    assert mod.create_task_store(5, FakeKafkaProducer()).inner.rocksdb_memory is mod.rocksdb_memory
 
 
 def test_module_lookups_resolve_from_parent():
