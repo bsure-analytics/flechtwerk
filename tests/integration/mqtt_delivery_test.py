@@ -72,7 +72,7 @@ def mosquitto_broker():
     if not _docker_available():
         pytest.skip("Docker not available — skipping integration tests")
 
-    from testcontainers.mqtt import MosquittoContainer
+    from testcontainers.community.mqtt import MosquittoContainer
 
     container = MosquittoContainer()
     container.with_exposed_ports(MosquittoContainer.MQTT_PORT)

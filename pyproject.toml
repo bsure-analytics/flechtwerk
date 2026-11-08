@@ -15,13 +15,13 @@ dev = [
     "pyright>=1.1.400",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
-    "testcontainers[kafka]>=4.8",
+    "testcontainers[kafka]>=4.15",  # the testcontainers.community.* import paths
 ]
 docs = [
     "black>=24",
     "flechtctl",  # mkdocstrings imports flechtctl (and through it joserfc) to document it
     "mkdocs-material~=9.5",
-    "mkdocstrings[python]~=0.27",
+    "mkdocstrings[python]~=1.0",
 ]
 
 [project]
@@ -116,10 +116,11 @@ venvPath = "."
 addopts = "-m 'not integration'"
 asyncio_mode = "auto"
 filterwarnings = [
-    # testcontainers.mqtt uses its own deprecated @wait_container_is_ready
-    # and wait_for_logs(...) helpers internally — not something we can fix
-    # from the call site. Mute only those specific module-scoped warnings.
-    "ignore::DeprecationWarning:testcontainers.mqtt",
+    # testcontainers.community.mqtt uses its own deprecated
+    # @wait_container_is_ready and wait_for_logs(...) helpers internally —
+    # not something we can fix from the call site. Mute only those specific
+    # module-scoped warnings.
+    "ignore::DeprecationWarning:testcontainers.community.mqtt",
 ]
 markers = [
     "integration: tests that require Docker-based testcontainers (Kafka, Mosquitto, etc.; run with `-m integration`)",

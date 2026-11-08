@@ -211,7 +211,7 @@ def tls_mosquitto(pki: Pki):
     if not _docker_available():
         pytest.skip("Docker not available — skipping integration tests")
 
-    from testcontainers.mqtt import MosquittoContainer
+    from testcontainers.community.mqtt import MosquittoContainer
 
     files = {
         "/tmp/mosquitto.conf": _MOSQUITTO_TLS_CONFIG,
@@ -292,7 +292,7 @@ def tls_kafka_bootstrap(pki: Pki) -> Iterator[str]:
     if not _docker_available():
         pytest.skip("Docker not available — skipping integration tests")
 
-    from testcontainers.kafka import KafkaContainer
+    from testcontainers.community.kafka import KafkaContainer
 
     class _TlsKafkaContainer(KafkaContainer):
         def tc_start(self) -> None:

@@ -35,7 +35,7 @@ def kafka_bootstrap() -> str:
     if not _docker_available():
         pytest.skip("Docker not available — skipping integration tests")
 
-    from testcontainers.kafka import KafkaContainer
+    from testcontainers.community.kafka import KafkaContainer
 
     kafka = (
         KafkaContainer()
