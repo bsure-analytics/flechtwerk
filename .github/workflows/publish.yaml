@@ -47,15 +47,13 @@ jobs:
             gh release view "$t" --json name,body -q '"# " + .name + "\n\n" + .body + "\n"' >> .release/examples.md
           done
           echo "prev=$prev" >> "$GITHUB_OUTPUT"
-      - uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: >-
-            --model opus
-            --allowedTools "Read,Glob,Grep,Write,Bash(git log:*),Bash(git show:*),Bash(git diff:*)"
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
-          prompt: |
+      # The Claude Code CLI, not anthropics/claude-code-action: the action
+      # refuses a tag push ("Unsupported event type: push" — it accepts only
+      # issue, pull-request, dispatch, schedule and workflow_run events).
+      - env:
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          PROMPT: |
             Draft the GitHub release notes for ${{ github.ref_name }} of this repository, which
             releases two PyPI distributions, flechtwerk and flechtctl. The release covers the
             commits ${{ steps.range.outputs.prev }}..${{ github.ref_name }}: read them with
@@ -76,6 +74,15 @@ jobs:
             - .release/title.txt: one line, `${{ github.ref_name }} — <headline>`, the headline
               a few lowercase words naming what the release is about.
             - .release/notes.md: the body, without the title.
+        name: Write release notes
+        run: |
+          # Export only the credential that is set: an empty one in the
+          # environment is still a credential to the CLI.
+          if [ -n "$OAUTH_TOKEN" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN"; fi
+          if [ -n "$API_KEY" ]; then export ANTHROPIC_API_KEY="$API_KEY"; fi
+          npm install --global @anthropic-ai/claude-code@2.1.319
+          claude -p "$PROMPT" --model opus \
+            --allowedTools "Read,Glob,Grep,Write,Bash(git log:*),Bash(git show:*),Bash(git diff:*)"
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
