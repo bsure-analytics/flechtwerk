@@ -107,10 +107,15 @@ def rocksdb_store(path, memory: RocksDBMemory | None = None) -> RocksDBStateStor
 
 def test_rocksdb_stores_share_one_bounded_memtable_budget(tmp_path):
     """Stores drawing on one pool charge ONE write-buffer manager, which caps
-    their memtables together: four stores written well past the budget never
-    hold more than it. Under RocksDB's per-database defaults each store would
-    keep up to 64 MiB of its own, so a replica's memory grew with the number of
-    tasks it held."""
+    their memtables together: four stores written to three times the budget
+    stay near it. Under RocksDB's per-database defaults each store would keep
+    up to 64 MiB of its own, so a replica's memory grew with the number of
+    tasks it held.
+
+    The cap is soft — a flush starts at 90% of the budget but writers are not
+    stalled, so what arrives during the flush overshoots. Locally the peak sat
+    at the budget; a loaded CI runner measured 1.09x. The assertion therefore
+    tells "bounded" from "grows with what is written", not an exact ceiling."""
     async def run():
         memory = RocksDBMemory()
         stores = [rocksdb_store(tmp_path / str(i), memory) for i in range(4)]
@@ -118,7 +123,7 @@ def test_rocksdb_stores_share_one_bounded_memtable_budget(tmp_path):
         value = bytes(range(256)) * 4  # 1 KiB
         written = peak = 0
         try:
-            while written < memory.MEMTABLE_BYTES * 3 // 2:
+            while written < memory.MEMTABLE_BYTES * 3:
                 for i, store in enumerate(stores):
                     await store.put_bytes(f"k{written}-{i}", value)
                 written += len(value) * len(stores)
@@ -127,7 +132,7 @@ def test_rocksdb_stores_share_one_bounded_memtable_budget(tmp_path):
             for store in stores:
                 await store.close()
         assert peak > memory.MEMTABLE_BYTES // 2  # the stores charge the shared manager...
-        assert peak <= memory.MEMTABLE_BYTES      # ...and it holds them to the budget
+        assert peak < memory.MEMTABLE_BYTES * 2   # ...and it holds them near the budget
     asyncio.run(run())
 
 

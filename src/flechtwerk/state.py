@@ -97,7 +97,9 @@ class RocksDBMemory:
     This pool caps the whole stage instead, the bounded-memory setup Kafka
     Streams documents: ONE block cache, and ONE write-buffer manager charging
     every memtable against that same cache, so the memtables cannot grow on
-    top of it. Index and filter blocks live in the cache too (level-0's
+    top of it. The cap is soft: a flush starts at 90% of the write budget,
+    writers are not stalled, and what arrives during a flush overshoots a
+    little (1.09x measured on a loaded CI runner). Index and filter blocks live in the cache too (level-0's
     pinned), so the bound covers the per-file metadata as well. Measured the
     same way, with each store flushed after its restore (see
     `RocksDBStateStore.flush` — without it, restores ran 4x slower): eight
