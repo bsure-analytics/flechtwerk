@@ -13,6 +13,8 @@ from flechtwerk.kafka import restore_changelog
 from flechtwerk.state import serialize
 from flechtwerk.types import State
 
+from .topics import create_topics
+
 pytestmark = pytest.mark.integration
 
 
@@ -20,7 +22,7 @@ async def _create_compacted_topic(bootstrap: str, topic: str) -> None:
     admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
     await admin.start()
     try:
-        await admin.create_topics([
+        await create_topics(admin, [
             NewTopic(
                 name=topic,
                 num_partitions=1,

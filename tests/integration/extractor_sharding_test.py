@@ -36,6 +36,8 @@ from flechtwerk.observer import Observer
 from flechtwerk.state import RocksDBMemory, RocksDBStateStore
 from flechtwerk.types import Event, Message, State
 
+from .topics import create_topics
+
 pytestmark = pytest.mark.integration
 
 COUNTER = Attribute("counter", INT)
@@ -46,7 +48,7 @@ async def _create_topics(bootstrap: str, *topics: str, num_partitions: int = 1, 
     admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
     await admin.start()
     try:
-        await admin.create_topics([
+        await create_topics(admin, [
             NewTopic(
                 name=t,
                 num_partitions=num_partitions,

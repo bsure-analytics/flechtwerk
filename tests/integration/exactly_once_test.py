@@ -16,6 +16,8 @@ from flechtwerk.testing import InMemoryStateStore
 from flechtwerk.transformer import Task, TransformerRunner
 from flechtwerk.types import Event, Message, State
 
+from .topics import create_topics
+
 pytestmark = pytest.mark.integration
 
 
@@ -32,7 +34,7 @@ async def _create_topics(bootstrap: str, *topics: str, compacted: tuple[str, ...
             )
             for t in topics
         ]
-        await admin.create_topics(new_topics)
+        await create_topics(admin, new_topics)
     finally:
         await admin.close()
 

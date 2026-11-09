@@ -16,6 +16,8 @@ from flechtwerk.testing import InMemoryStateStore, RecordingObserver
 from flechtwerk.transformer import Task, Transformer, TransformerRunner
 from flechtwerk.types import Message
 
+from .topics import create_topics
+
 pytestmark = pytest.mark.integration
 
 
@@ -37,7 +39,7 @@ async def _create_topics(bootstrap: str, *topics: str, compacted: tuple[str, ...
     admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
     await admin.start()
     try:
-        await admin.create_topics([
+        await create_topics(admin, [
             NewTopic(
                 name=t,
                 num_partitions=1,

@@ -32,6 +32,8 @@ from flechtwerk.testing import InMemoryStateStore
 from flechtwerk.transformer import Transformer, TransformerRunner
 from flechtwerk.types import Event, Message, State
 
+from .topics import create_topics
+
 pytestmark = pytest.mark.integration
 
 COUNT = Attribute("count", INT)
@@ -41,7 +43,7 @@ async def _create_topics(bootstrap: str, *topics: str, num_partitions: int = 1, 
     admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
     await admin.start()
     try:
-        await admin.create_topics([
+        await create_topics(admin, [
             NewTopic(
                 name=t,
                 num_partitions=num_partitions,

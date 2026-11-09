@@ -28,6 +28,8 @@ from flechtwerk.testing import fixture_keyring, installed_keyring
 from flechtwerk.transformer import Transformer
 from flechtwerk.types import Event, Message, State
 
+from .topics import create_topics
+
 pytestmark = pytest.mark.integration
 
 COUNT = Attribute("count", INT)
@@ -43,7 +45,7 @@ async def _create_topics(bootstrap: str, partitions: dict[str, int], compacted: 
     admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
     await admin.start()
     try:
-        await admin.create_topics([
+        await create_topics(admin, [
             NewTopic(
                 name=topic,
                 num_partitions=n,
