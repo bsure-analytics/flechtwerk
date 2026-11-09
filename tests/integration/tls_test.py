@@ -220,7 +220,7 @@ def tls_mosquitto(pki: Pki):
         "/tmp/tls/server.pem": pki.server_cert_pem,
     }
     writes = " && ".join(f"printf %s {shlex.quote(content)} > {path}" for path, content in files.items())
-    container = MosquittoContainer()
+    container = MosquittoContainer("eclipse-mosquitto:2.1.2-alpine")  # pinned, not :latest
     container.with_exposed_ports(MQTT_TLS_PORT)
     container.with_command([
         "sh", "-c",
@@ -301,7 +301,8 @@ def tls_kafka_bootstrap(pki: Pki) -> Iterator[str]:
             super().tc_start()
 
     kafka = (
-        _TlsKafkaContainer(listener_name="TLS", security_protocol="SSL")
+        _TlsKafkaContainer("confluentinc/cp-kafka:8.4.0", listener_name="TLS", security_protocol="SSL")
+        .with_kraft()  # same image as conftest.py's plaintext broker
         .with_env("KAFKA_SSL_CLIENT_AUTH", "required")
         .with_env("KAFKA_SSL_KEYSTORE_LOCATION", "/etc/kafka/tls/keystore.pem")
         .with_env("KAFKA_SSL_KEYSTORE_TYPE", "PEM")

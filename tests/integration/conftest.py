@@ -38,7 +38,13 @@ def kafka_bootstrap() -> str:
     from testcontainers.community.kafka import KafkaContainer
 
     kafka = (
-        KafkaContainer()
+        # Pinned rather than testcontainers' default (Confluent 7.6, i.e. Kafka 3.6 on
+        # ZooKeeper). KafkaContainer starts the broker through Confluent's entrypoint
+        # scripts, so it needs a cp-kafka image, not apache/kafka: Confluent Platform
+        # 8.4 ships Kafka 4.4. Kafka 4 has no ZooKeeper, hence KRaft. tls_test.py and
+        # its Mosquitto twins pin the same images.
+        KafkaContainer("confluentinc/cp-kafka:8.4.0")
+        .with_kraft()
         .with_env("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1")
         .with_env("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1")
         .with_env("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", "1")

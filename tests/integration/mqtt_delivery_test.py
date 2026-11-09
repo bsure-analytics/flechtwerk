@@ -74,7 +74,7 @@ def mosquitto_broker():
 
     from testcontainers.community.mqtt import MosquittoContainer
 
-    container = MosquittoContainer()
+    container = MosquittoContainer("eclipse-mosquitto:2.1.2-alpine")  # pinned, not :latest
     container.with_exposed_ports(MosquittoContainer.MQTT_PORT)
     container.with_command([
         "sh", "-c",
