@@ -2,6 +2,7 @@ jobs:
   test:
     name: Test Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20 # a healthy run takes ~3; a hang must fail with a log, not idle for 6 h
     steps:
       - uses: actions/checkout@v5
         with:

@@ -115,6 +115,9 @@ venvPath = "."
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"
 asyncio_mode = "auto"
+# A test (setup and teardown included) running past this dumps every thread's
+# stack: a hung CI job otherwise leaves no log to diagnose from.
+faulthandler_timeout = 300
 filterwarnings = [
     # testcontainers.community.mqtt uses its own deprecated
     # @wait_container_is_ready and wait_for_logs(...) helpers internally —
