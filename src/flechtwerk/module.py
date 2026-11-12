@@ -43,7 +43,7 @@ from .extractor import Extractor, ExtractorRunner
 from .keyring import Keyring, install_keyring, set_secret_observer
 from .metrics import Exporter, Metrics, acquire_exporter, release_exporter
 from .observer import Observer, PrometheusObserver
-from .state import ChangelogStateStore, RocksDBMemory, RocksDBStateStore, ensure_changelog_topic
+from .state import ChangelogStateStore, SQLiteStateStore, StateDatabase, ensure_changelog_topic
 from .transformer import Transformer, TransformerRunner
 
 log = logging.getLogger(__name__)
@@ -428,7 +428,7 @@ class _FlechtwerkModule(Flechtwerk):
     client_id: lookup[str]
     compression_type: lookup[CompressionType | None]
     extractor_runner: ExtractorRunner
-    inner_store: RocksDBStateStore
+    inner_store: SQLiteStateStore
     kafka_tls: lookup[ssl.SSLContext | None]
     keyring: lookup[Keyring | None]
     max_poll_records: lookup[int]
@@ -438,8 +438,8 @@ class _FlechtwerkModule(Flechtwerk):
     mqtt: lookup[MqttBrokerConfig | None]
     poll_interval: lookup[timedelta | None]
     registry: CollectorRegistry = REGISTRY
-    rocksdb_memory: RocksDBMemory
     stage: lookup[Extractor | Transformer]
+    state_database: StateDatabase
     transformer_runner: TransformerRunner
 
     @cached_property
@@ -599,9 +599,9 @@ class _FlechtwerkModule(Flechtwerk):
         the task's transaction) and pins changelog writes to the task's
         partition, so state lands where the task's restore reads it.
         """
-        inner = RocksDBStateStore()
-        inner.path = self.path / str(partition)
-        inner.rocksdb_memory = self.rocksdb_memory  # one pool for every task of the stage
+        inner = SQLiteStateStore()
+        inner.state_database = self.state_database  # one database, one cache, for every task of the stage
+        inner.table = f"task-{partition}"
         store = ChangelogStateStore()
         store.inner = inner
         store.observer = self.observer

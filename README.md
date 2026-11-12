@@ -21,7 +21,7 @@ Truly async Python stream processing with real Kafka transactions for exactly-on
 
 Flechtwerk (German: *interlacing, wickerwork*) is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to modern async Python.
 
-If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via real Kafka transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
+If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by a local store, recovery via changelog replay, exactly-once delivery via real Kafka transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
 It exists because the existing Python options each miss a constraint that matters for I/O-bound, transactional, multi-instance stream processing — Faust's multi-instance recovery is fragile and its "exactly-once" isn't real transactions; Quix Streams' core loop is synchronous; Bytewax is awkward for async I/O; Beam-on-Flink spans two runtimes. See [Why Flechtwerk exists](https://bsure-analytics.github.io/flechtwerk/concepts/#why-flechtwerk-exists) for the full comparison.
 
@@ -34,7 +34,7 @@ pip install "flechtwerk[secrets]" # with field-level secret encryption (installs
 uvx flechtctl --help              # keyring and secret-token tooling, without the framework
 ```
 
-Python 3.12+. Runtime dependencies: `aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`. Run it on `uvloop` for best throughput — the framework works on stock `asyncio` (and therefore on Windows), but the event loop is the application's choice.
+Python 3.12+. Runtime dependencies: `aiokafka[zstd]`, `prometheus-client`, and `reactor-di` — local state lives in the standard library's SQLite. Run it on `uvloop` for best throughput — the framework works on stock `asyncio` (and therefore on Windows), but the event loop is the application's choice.
 
 ## Quickstart
 

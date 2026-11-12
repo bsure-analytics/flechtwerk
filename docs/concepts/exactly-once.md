@@ -18,7 +18,7 @@ Each task owns three things:
 - a **partition-scoped `ChangelogStateStore`**, restored from the matching changelog partition;
 - the input offsets for its partitions.
 
-State identity is *(input partition, `extract_state_key`)*: each task keeps its own RocksDB store, writes its changelog entries to its own changelog partition (explicit-partition produce, not key hashing), and restores exactly that partition when it is assigned. The framework makes no assumptions about what `extract_state_key()` returns — with the default `extract_state_key = msg.key`, Kafka's key partitioning makes per-task state indistinguishable from a global key. An override therefore may **refine** the record key but never **coarsen** it: every record sharing a state key has to arrive on one partition, or the entry splits silently across tasks (the rule, with examples, is in [Look Up by the Key You Partition By](../guides/best-practices.md#look-up-by-the-key-you-partition-by)). An extractor is exempt — it derives *ownership* from the state key rather than from placement.
+State identity is *(input partition, `extract_state_key`)*: each task keeps its own local store, writes its changelog entries to its own changelog partition (explicit-partition produce, not key hashing), and restores exactly that partition when it is assigned. The framework makes no assumptions about what `extract_state_key()` returns — with the default `extract_state_key = msg.key`, Kafka's key partitioning makes per-task state indistinguishable from a global key. An override therefore may **refine** the record key but never **coarsen** it: every record sharing a state key has to arrive on one partition, or the entry splits silently across tasks (the rule, with examples, is in [Look Up by the Key You Partition By](../guides/best-practices.md#look-up-by-the-key-you-partition-by)). An extractor is exempt — it derives *ownership* from the state key rather than from placement.
 
 The store shares the task's producer via dependency injection, so a `put()` inside the task's transaction joins that open transaction rather than writing out-of-band.
 
@@ -40,7 +40,7 @@ Inside a batch, records are bucketed by *(task, state key)*:
 - **Buckets run concurrently** via `asyncio.gather`, so I/O-bound `transform()` calls overlap.
 - **Cross-bucket ordering is not preserved.** Within a bucket, records appear in `input_topics` order, then Kafka offset order.
 
-Each `transform()` call receives a defensive deepcopy of the running state, so in-place mutation without a `yield State(...)` can't leak into either the running state or a later same-key record. Stateless transformers simply never yield `State` and never open a RocksDB file.
+Each `transform()` call receives a defensive deepcopy of the running state, so in-place mutation without a `yield State(...)` can't leak into either the running state or a later same-key record. Stateless transformers simply never yield `State` and never open a state database.
 
 ## Fencing: Static Transactional IDs
 

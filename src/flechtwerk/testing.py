@@ -142,7 +142,7 @@ class RecordingObserver(Observer):
 
 
 class InMemoryStateStore(StateStore):
-    """In-memory state store for testing — mirrors `RocksDBStateStore`'s
+    """In-memory state store for testing — mirrors `SQLiteStateStore`'s
     bytes-on-disk semantics so test assertions match production behavior.
 
     Also duck-types `ChangelogStateStore.restore` as a no-op so the store

@@ -33,7 +33,7 @@ from flechtwerk.configs import ConfigStore
 from flechtwerk.extractor import Extractor, ExtractorRunner, token_for
 from flechtwerk.module import Flechtwerk
 from flechtwerk.observer import Observer
-from flechtwerk.state import RocksDBMemory, RocksDBStateStore
+from flechtwerk.state import SQLiteStateStore, StateDatabase
 from flechtwerk.types import Event, Message, State
 
 from .topics import create_topics
@@ -108,9 +108,9 @@ def _ensure_changelog(bootstrap: str, changelog_topic: str):
 
 def _make_runner(bootstrap: str, group_id: str, changelog_topic: str, stage: Extractor, state_path) -> ExtractorRunner:
     """Wire a sharded ExtractorRunner against a real Kafka broker, mirroring Flechtwerk's DI."""
-    inner = RocksDBStateStore()
-    inner.path = state_path
-    inner.rocksdb_memory = RocksDBMemory()
+    inner = SQLiteStateStore()
+    inner.state_database = StateDatabase()
+    inner.state_database.path = state_path
 
     def make_token_producer(token: int) -> AIOKafkaProducer:
         return AIOKafkaProducer(

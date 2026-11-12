@@ -4,11 +4,11 @@ Flechtwerk is built as a **hexagonal architecture** — ports and adapters. The 
 
 ## Ports and Adapters
 
-The core (`Extractor`, `Transformer`, and their runners) depends only on abstract ports: `StateStore`, `Observer`, and the `aiokafka` consumer/producer interfaces. It knows nothing about RocksDB, Prometheus, MQTT, or where configuration comes from.
+The core (`Extractor`, `Transformer`, and their runners) depends only on abstract ports: `StateStore`, `Observer`, and the `aiokafka` consumer/producer interfaces. It knows nothing about SQLite, Prometheus, MQTT, or where configuration comes from.
 
 Adapters plug into those ports:
 
-- `RocksDBStateStore` and `ChangelogStateStore` implement the `StateStore` port.
+- `SQLiteStateStore` and `ChangelogStateStore` implement the `StateStore` port.
 - `PrometheusObserver` implements the `Observer` port; `metrics_port == 0` swaps in the no-op `Observer`.
 - The `flechtwerk.mqtt` transport bridges a push-driven MQTT source into the extractor model.
 - `FakeKafkaConsumer`, `FakeKafkaProducer`, `FakeMqttConnection`, and friends (in `testing.py`) stand in for the real transports under test.
@@ -33,7 +33,7 @@ Everything ships under `src/flechtwerk/`.
 | `transformer.py` | `Transformer` (ABC; `transform` is abstract), `TransformerRunner`, `Task`, and `TaskRebalanceListener`. Splits work into per-input-partition tasks, each with its own transactional producer and changelog store. |
 | `kafka.py` | Wire helpers: `parse_message()`, `encode_json()`, `restore_changelog()`, `read_to_end()`, `is_tombstone()`, `decode_key()` / `decode_record()`. Both decoders are strict; a failure is mediated by `Stage.on_invalid_message` (see [Invalid messages](invalid-messages.md)). `decode_record` is parameterized by target record type — the wire carries no type, so the reader names the semantics. Runners type-hint aiokafka directly — no wrapper classes. |
 | `configs.py` | `ConfigStore` plus `bootstrap_config_store` and `drain_config_updates` — Kafka Streams' GlobalKTable pattern, specialized to configuration. Both return decoded `IncomingMessage`s, so a config record is decoded exactly once per occurrence. |
-| `state.py` | The `StateStore` port and its `RocksDBStateStore` / `ChangelogStateStore` adapters, plus `RocksDBMemory`, the one bounded memory pool (shared block cache and write-buffer manager) that every RocksDB store of a stage draws on. `rocksdict` is imported lazily on first RocksDB open. |
+| `state.py` | The `StateStore` port and its `SQLiteStateStore` / `ChangelogStateStore` adapters, plus `StateDatabase`, the stage's one SQLite database: every store is a table in it, behind one connection with one bounded page cache. `sqlite3` is imported lazily when the first store opens. |
 | `module.py` | `Flechtwerk` — the narrow application-facing handle — plus the private `_FlechtwerkModule` reactor-di container that lazily creates and shares all Kafka resources. Also hosts `MqttBrokerConfig`. |
 | `mqtt.py` | The MQTT→Kafka bridge: `MqttConnection`, `MqttSubscription`, and `MqttExtractor`. The only framework module importing paho-mqtt eagerly (shipped as the `flechtwerk[mqtt]` extra). |
 | `metrics.py` / `observer.py` | The `Observer` port and its `PrometheusObserver` adapter. Runners emit observer events; label *names* are caller-provided via `metrics_labels`. One scrape endpoint per `metrics_port`, shared by every stage in the process that names it. |

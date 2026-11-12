@@ -38,6 +38,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Distributed Computing",
 ]
@@ -45,7 +46,6 @@ dependencies = [
     "aiokafka[zstd]~=0.15",
     "prometheus-client~=0.21",
     "reactor-di~=0.6",
-    "rocksdict~=0.3",
 ]
 description = "Truly async Python stream processing with real Kafka transactions for exactly-once delivery, and an MQTT→Kafka bridge that ACKs only after Kafka has the data."
 dynamic = ["optional-dependencies", "version"]

@@ -34,7 +34,8 @@ pip install "flechtwerk[mqtt]"    # with the MQTT→Kafka bridge (paho-mqtt)
 ```
 
 Flechtwerk requires **Python 3.12+**. Its runtime dependencies are
-`aiokafka[zstd]`, `prometheus-client`, `reactor-di`, and `rocksdict`.
+`aiokafka[zstd]`, `prometheus-client`, and `reactor-di`; local state lives in
+the standard library's SQLite.
 
 !!! tip "The `mqtt` Extra Is Optional"
 
@@ -59,7 +60,7 @@ topics and turns it into a runnable stage.
 Both stage shapes apply this contract — an `Extractor` once per poll cycle, a
 `Transformer` once per input record. The runner persists a `State` only when it
 differs from the current one, so a stage that never yields `State` is stateless
-and never opens a RocksDB file.
+and never opens a state database.
 
 ## Running a Stage
 

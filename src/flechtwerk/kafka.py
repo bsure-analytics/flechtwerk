@@ -347,8 +347,8 @@ async def restore_changelog(
         consumer: An already-started AIOKafkaConsumer (group_id=None).
         topic: Changelog topic name.
         put_raw: async callable(key, raw_bytes) to store wire bytes for a key.
-            Per-key deduplication happens at the storage layer (RocksDB
-            overwrites earlier writes for the same key on disk), so memory
+            Per-key deduplication happens at the storage layer (SQLite
+            overwrites earlier writes for the same key), so memory
             usage stays bounded by the inner store's cache, not by the topic
             size. Deserialization is deferred to the first `get()` for the
             key — keys that are never read by the running stage never pay

@@ -1340,8 +1340,8 @@ def test_sharded_restore_precedes_polling():
             runner.membership_consumer.listener.on_partitions_assigned({TopicPartition("test-config", 0)})
             await asyncio.wait_for(cycled.wait(), 5)
             assert seen[0] == 7
-            # ...and the restored store handed its memtable back before polling
-            # began (see RocksDBStateStore.flush)
+            # ...and the restored store committed its last write batch before
+            # polling began (see SQLiteStateStore.flush)
             assert flushed_at == [1]
         finally:
             task.cancel()

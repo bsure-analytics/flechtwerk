@@ -528,7 +528,7 @@ class ExtractorRunner:
         """Stop cycling and close the replica's producer.
 
         Deliberately not ``close_tasks``: there is no local store to wipe,
-        and reaching for ``inner_store`` would open a RocksDB this stage
+        and reaching for ``inner_store`` would build a store this stage
         never used. A cancelled poll aborted its open transaction on the way
         out, so the producer stops with none. A no-op when ``start_dispatch``
         never got as far as starting anything.
@@ -717,7 +717,7 @@ class ExtractorRunner:
             )
         finally:
             await consumer.stop()
-        await self.inner_store.flush()  # hand the restore's memtable back (see RocksDBStateStore.flush)
+        await self.inner_store.flush()  # commit the restore's last write batch (see SQLiteStateStore.flush)
         self.cycle = asyncio.create_task(self.cycle_loop())
         log.info("Acquired tokens %s (%d changelog records restored)", sorted(pending), entries)
 
@@ -735,7 +735,7 @@ class ExtractorRunner:
     async def close_tasks(self) -> None:
         """Stop every token producer, then wipe the shared local store.
 
-        The store is ONE RocksDB shared by every token view (extractor state
+        The store is ONE table shared by every token view (extractor state
         is small and restore is restore-all), so it closes once, after the
         producers. A cancelled poll aborted its transaction on the way out,
         so no producer stops with one open.

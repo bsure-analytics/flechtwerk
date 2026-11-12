@@ -532,7 +532,7 @@ def test_restore_changelog_handles_none_key():
 
 def test_restore_changelog_passes_each_record_through_put_bytes():
     """Wire bytes are passed through verbatim — per-key dedup is the storage layer's
-    responsibility (RocksDB overwrites on the same key)."""
+    responsibility (SQLite overwrites on the same key)."""
     async def run():
         tp0 = aiokafka.TopicPartition("cl", 0)
         tp1 = aiokafka.TopicPartition("cl", 1)

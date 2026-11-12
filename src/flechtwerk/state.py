@@ -1,4 +1,4 @@
-"""State store port and adapters (RocksDB, changelog-backed) + JSON serialization."""
+"""State store port and adapters (SQLite, changelog-backed) + JSON serialization."""
 import json
 import logging
 import shutil
@@ -81,158 +81,174 @@ class StateStore(ABC):
         """
 
 
-class RocksDBMemory:
-    """One bounded memory pool shared by every RocksDB store of a stage.
+class StateDatabase:
+    """One SQLite database per stage: every local store of the stage is a table in it.
 
-    RocksDB's defaults are per database: each one gets its own 64 MiB memtable
-    and its own 32 MiB block cache. A transformer opens one database per task,
-    so one replica holding all eight tasks of an eight-partition topic grew
-    eight memtables, and a restore — which replays EVERY changelog record, the
-    superseded versions of a not-yet-compacted segment included — filled each
-    of them before the first flush. Memory then scaled with the number of
-    tasks a replica held: measured on rocksdict 0.3.29 (arm64 macOS, RSS),
-    eight stores restored from 56 MiB each took +463 MiB, and eight from
-    150 MiB each +600 MiB once reads had filled their caches.
+    The local store is a disposable copy of the changelog, never a source of
+    truth: it lives in a fresh temporary directory per stage, a revoke wipes
+    it, an assignment restores it, and a crashed process never reopens it.
+    So the database turns off everything that exists to survive a crash —
+    no rollback journal, no fsync, an exclusive lock — and keeps only what
+    the stage needs: point reads and writes that can spill to disk.
 
-    This pool caps the whole stage instead, the bounded-memory setup Kafka
-    Streams documents: ONE block cache, and ONE write-buffer manager charging
-    every memtable against that same cache, so the memtables cannot grow on
-    top of it. The cap is soft: a flush starts at 90% of the write budget,
-    writers are not stalled, and what arrives during a flush overshoots a
-    little (1.09x measured on a loaded CI runner). Index and filter blocks live in the cache too (level-0's
-    pinned), so the bound covers the per-file metadata as well. Measured the
-    same way, with each store flushed after its restore (see
-    `RocksDBStateStore.flush` — without it, restores ran 4x slower): eight
-    stores of 56 MiB took +122 MiB, eight of 150 MiB +127 MiB, at the
-    restore speed of the defaults. A store no longer keeps its data in RAM —
-    it flushes to disk at the budget, which is the point of having RocksDB.
+    Memory is bounded per stage, not per store. A transformer holds one store
+    per task, and a store per database would give each its own page cache,
+    so a replica's memory would grow with the tasks it held (measured on the
+    RocksDB backend this replaced: eight stores restored from 56 MiB each
+    took +463 MiB until they shared one budget). Every store of the stage
+    is therefore a table behind ONE connection with ONE page cache of
+    ``CACHE_BYTES``; state beyond it lives in the file and the OS page
+    cache, like any other file. The budget is deliberately not a knob: state
+    is small by design (a config-topic-sized extractor table, or one
+    partition's keys). One database per stage, never per process — several
+    stages in one process each own theirs, like everything else keyed by
+    stage (see "Several Stages in One Process").
 
-    The budget is deliberately not a knob: state is small by design (a
-    config-topic-sized extractor table, or one partition's keys), and a cache
-    only buys read speed the framework has never needed. One pool per stage,
-    never per process — several stages in one process each own theirs, like
-    everything else keyed by stage (see "Several Stages in One Process").
+    Writes are grouped into transactions of up to ``COMMIT_EVERY`` writes,
+    committed early by `commit` (each store's ``flush``). A transaction is
+    the unit SQLite writes out, so committing every write separately made
+    restoring state ten times the cache budget five times slower (58 s
+    instead of 17 s). Uncommitted writes are visible to every store of the
+    stage — there is only the one connection — and nothing outside it ever
+    reads the file, so grouping changes no result.
 
-    ``rocksdict`` is imported only when the first store opens, so a stateless
-    stage never loads it.
+    Measured against rocksdict 0.3.29 (eight stores, Linux container,
+    512 MiB memory limit): the production shape (8 x 62k keys, 120 B
+    records) restored in 0.5 s instead of 0.8 s with equal memory, and
+    state ten times the budget (4M records) in 17 s instead of 7 s — the
+    one regime where an LSM tree wins, and not one the framework targets.
+
+    Dropping the last table closes the connection and deletes the file, so
+    the database costs nothing once no store holds state, and the next
+    store to open starts from an empty file. ``sqlite3`` is imported only
+    when the first store opens, so a stateless stage never loads it.
     """
 
     CACHE_BYTES = 64 * 2**20
-    MEMTABLE_BYTES = 32 * 2**20  # charged against CACHE_BYTES, not added to it
-
-    @cached_property
-    def _pool(self) -> tuple[Any, Any]:
-        from rocksdict import Cache, WriteBufferManager
-
-        cache = Cache(self.CACHE_BYTES)
-        manager = WriteBufferManager.new_write_buffer_manager_with_cache(
-            self.MEMTABLE_BYTES, False, cache,
-        )
-        return cache, manager
-
-    def options(self) -> Any:
-        """Fresh `rocksdict.Options` drawing on this pool, one per opened database."""
-        from rocksdict import BlockBasedOptions, Options
-
-        cache, manager = self._pool
-        table = BlockBasedOptions()
-        table.set_block_cache(cache)
-        table.set_cache_index_and_filter_blocks(True)
-        table.set_pin_l0_filter_and_index_blocks_in_cache(True)
-        options = Options()
-        options.set_block_based_table_factory(table)
-        options.set_write_buffer_manager(manager)
-        return options
-
-
-class RocksDBStateStore(StateStore):
-    """RocksDB-backed state store.
-
-    State values are JSON-serialized via `serialize` (which uses each
-    `Attribute`'s codec). Every put() writes to the RocksDB WAL immediately — no
-    periodic snapshots.
-
-    Memory is bounded per stage, not per store: every store of a stage opens
-    with options drawn from the one ``rocksdb_memory`` pool (see
-    `RocksDBMemory`).
-
-    The ``path`` and ``rocksdb_memory`` attributes are set by the DI container
-    (reactor-di) or directly in tests. The database is opened lazily on first access, so stages that
-    never touch state (stateless transformers with zero restored entries)
-    never create the RocksDB file at all — and close() is a no-op in that
-    case, preserving the "nothing happened" shutdown path.
-
-    close() is a wipe, not an end-of-life: it drops the cached database so a
-    later put/get lazily reopens a fresh, empty store at the same path. The
-    sharded extractor runner relies on this to discard local state on token
-    revocation and re-restore from the changelog on the next assignment.
-    """
+    COMMIT_EVERY = 10_000
 
     path: Path
-    rocksdb_memory: RocksDBMemory
+
+    def __init__(self) -> None:
+        self.pending = 0
+        self.tables: set[str] = set()
 
     @cached_property
-    def db(self):
-        from rocksdict import Rdict
+    def connection(self) -> Any:
+        import sqlite3
 
         self.path.mkdir(parents=True, exist_ok=True)
-        db_path = self.path / "state.db"
-        log.info("Opened RocksDB state store at %s", db_path)
-        return Rdict(str(db_path), self.rocksdb_memory.options())
+        file = self.path / "state.sqlite"
+        # isolation_level=None: the module issues no implicit BEGIN; the
+        # transactions are ours (see `write`).
+        connection = sqlite3.connect(file, isolation_level=None)
+        for pragma in (
+            "journal_mode = OFF",       # no rollback: a failed process discards the file anyway
+            "synchronous = OFF",        # no fsync: the file never outlives the process
+            "locking_mode = EXCLUSIVE",  # one connection, so take the lock once
+            f"cache_size = -{self.CACHE_BYTES // 1024}",  # negative = KiB
+        ):
+            connection.execute(f"PRAGMA {pragma}")
+        log.info("Opened SQLite state database at %s", file)
+        return connection
+
+    def open_table(self, table: str) -> None:
+        self.connection.execute(f'CREATE TABLE IF NOT EXISTS "{table}" (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID')
+        self.tables.add(table)
+
+    def write(self, sql: str, params: tuple[Any, ...]) -> None:
+        connection = self.connection
+        if not connection.in_transaction:
+            connection.execute("BEGIN")
+        connection.execute(sql, params)
+        self.pending += 1
+        if self.pending >= self.COMMIT_EVERY:
+            self.commit()
+
+    def commit(self) -> None:
+        if "connection" in self.__dict__ and self.connection.in_transaction:
+            self.connection.execute("COMMIT")
+        self.pending = 0
+
+    def drop_table(self, table: str) -> None:
+        self.tables.discard(table)
+        if self.tables:
+            self.connection.execute(f'DROP TABLE IF EXISTS "{table}"')
+            return
+        # The last table: delete the file instead, which is instant, where a
+        # DROP TABLE frees page by page — and leaves no file behind.
+        self.connection.close()
+        del self.connection
+        self.pending = 0
+        shutil.rmtree(self.path, ignore_errors=True)
+        log.info("Closed and removed SQLite state database at %s", self.path)
+
+
+class SQLiteStateStore(StateStore):
+    """SQLite-backed state store: one table in the stage's `StateDatabase`.
+
+    State values are JSON-serialized via `serialize` (which uses each
+    `Attribute`'s codec) and stored as the changelog's wire bytes.
+
+    The ``state_database`` attribute is set by the DI container (reactor-di) or
+    directly in tests; ``table`` names this store's table, one per
+    transformer task. The table is created lazily on first access, so stages
+    that never touch state (stateless transformers with zero restored
+    entries) never create the database file at all — and close() and
+    flush() are no-ops in that case, preserving the "nothing happened"
+    shutdown path.
+
+    close() is a wipe, not an end-of-life: it drops the table so a later
+    put/get lazily recreates a fresh, empty one. The sharded extractor runner
+    relies on this to discard local state on token revocation and re-restore
+    from the changelog on the next assignment.
+    """
+
+    state_database: StateDatabase
+    table: str = "state"
+
+    @property
+    def opened(self) -> bool:
+        return self.table in self.state_database.tables
+
+    def open(self) -> None:
+        if not self.opened:
+            self.state_database.open_table(self.table)
 
     async def get(self, key: str) -> State | None:
-        try:
-            raw = self.db[key]
-        except KeyError:
-            return None
-        assert isinstance(raw, bytes)  # we only ever put bytes; rocksdict's stub widens to Any
-        return deserialize(raw)
+        self.open()
+        row = self.state_database.connection.execute(f'SELECT v FROM "{self.table}" WHERE k = ?', (key,)).fetchone()
+        return None if row is None else deserialize(row[0])
 
     async def put_bytes(self, key: str, raw: bytes) -> None:
-        # Bytes go straight to RocksDB — both `put` (via the default
+        # Bytes go straight to SQLite — both `put` (via the default
         # serialize→put_bytes path) and `restore_changelog` (passing raw
         # wire bytes) land here.
-        self.db[key] = raw
+        self.open()
+        self.state_database.write(f'INSERT OR REPLACE INTO "{self.table}" VALUES (?, ?)', (key, raw))
 
     async def delete(self, key: str) -> None:
-        try:
-            del self.db[key]
-        except KeyError:
-            pass
+        self.open()
+        self.state_database.write(f'DELETE FROM "{self.table}" WHERE k = ?', (key,))
 
     async def flush(self) -> None:
-        # A restore fills the memtable and then the store may go quiet for
-        # good, holding its share of the stage's write budget forever. The
-        # write-buffer manager can only flush the store being WRITTEN, so
-        # with restores running store after store, every later store was
-        # flushed in slivers of a few MiB — a flood of tiny files that made
-        # restoring eight 150 MiB stores take 64 s instead of 17 s. Flushed
-        # after restore: 17 s again, with the bound intact.
-        if "db" not in self.__dict__:
-            return  # never opened: nothing written, and no file to create
-        self.db.flush()
+        # A restore ends with a transaction of up to COMMIT_EVERY writes
+        # still open; committing turns its dirty pages into clean ones the
+        # shared cache may evict, rather than leaving them pinned until the
+        # store's next write, which may never come.
+        if self.opened:
+            self.state_database.commit()
 
     async def close(self) -> None:
-        # self.db is a cached_property — accessing it triggers the lazy
-        # open. For stages that never touch state (stateless transformers
-        # with 0 restored entries, no put()/get() during operation), the
-        # DB is never opened, and close() should be a no-op. Otherwise we
-        # would open the DB file on shutdown just to close it, producing a
-        # confusing "Opened … Closed" pair in the logs.
-        if "db" not in self.__dict__:
+        if not self.opened:
             return
-        self.db.close()
-        # Drop the cached_property so the next access reopens a fresh, empty
-        # store — close() must be a wipe, not an end-of-life (see class doc).
-        del self.db
-        shutil.rmtree(self.path, ignore_errors=True)
-        log.info("Closed and removed RocksDB state store at %s", self.path)
+        self.state_database.drop_table(self.table)
 
 
 class ChangelogStateStore(StateStore):
     """State store backed by a compacted Kafka changelog topic.
 
-    Wraps an inner StateStore (typically RocksDB) and produces every state
+    Wraps an inner StateStore (typically SQLite) and produces every state
     change to a Kafka topic. On startup, restore() rebuilds the inner store
     from the changelog, making the local store ephemeral.
 

@@ -8,7 +8,7 @@ tagline: "<strong>Easy + Reliable + Scalable => Productive</strong>"
 
 Flechtwerk (German: *interlacing, wickerwork*) is a truly async Kafka stream-processing framework for modern Python. It takes the operational design that Kafka Streams nailed a decade ago — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into a single atomic unit — and ports it to async Python.
 
-If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via real Kafka transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
+If you've run Kafka Streams in production, the model is immediately familiar: stateful operators backed by a local store, recovery via changelog replay, exactly-once delivery via real Kafka transactions, ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
 ## The Whole Contract Is Two Yields
 
@@ -41,7 +41,7 @@ That plus one `Flechtwerk.of(...).run()` call is the whole program — point it 
 
 !!! tip "Two Shapes, One Contract"
 
-    An `Extractor` is the same two-yield contract driven from the other end: `poll(config, state)` pulls from an external source once per config record per poll cycle and uses `State` as its resume cursor. A `Transformer` consumes partitioned input topics and publishes with exactly-once delivery. Both are ABCs — decorate a function with `@transformer(...)` / `@extractor(...)` (or call the `.of(...)` factory it wraps) for stateless or simply-stateful stages, or subclass directly when you need lifecycle management. Stateless stages simply never yield `State` and never open a RocksDB file.
+    An `Extractor` is the same two-yield contract driven from the other end: `poll(config, state)` pulls from an external source once per config record per poll cycle and uses `State` as its resume cursor. A `Transformer` consumes partitioned input topics and publishes with exactly-once delivery. Both are ABCs — decorate a function with `@transformer(...)` / `@extractor(...)` (or call the `.of(...)` factory it wraps) for stateless or simply-stateful stages, or subclass directly when you need lifecycle management. Stateless stages simply never yield `State` and never open a state database.
 
 ## Where to Next
 

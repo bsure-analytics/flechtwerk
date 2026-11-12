@@ -167,7 +167,7 @@ once per record, ever.
 
 ## Look Up by the Key You Partition By
 
-A task sees one partition. Everything local to it — its RocksDB store, its
+A task sees one partition. Everything local to it — its state store, its
 transaction, its fencing — is scoped to that partition, so a lookup is cheap and
 exact only when what is being looked up lives on the same partition as the record
 doing the looking. When the lookup key is not the record's key that alignment is
@@ -189,7 +189,7 @@ flowchart TB
 - **Task state — when the lookup key already *is* the record's key.** Nothing to
   arrange: `extract_state_key` defaults to the message key, Kafka's partitioner
   has already put every record for that key on one partition, and one task owns
-  it. The store is RocksDB behind a compacted changelog, so the table is
+  it. The store is a local SQLite table behind a compacted changelog, so the table is
   unbounded, restored on assignment, and every write joins the batch
   [transaction](../concepts/exactly-once.md). The cost is reach and record size:
   the table answers only for the keys of the partitions this instance owns, and
@@ -304,7 +304,7 @@ moving).
     that must **drive an action inside the pipeline**: alerting on a threshold,
     deduplicating within a time gap, stitching sessions in a way that changes
     *what gets stored*. Those need stateful stream processing, and a
-    [transformer](transformer.md) can do them with its RocksDB state and event
+    [transformer](transformer.md) can do them with its local state and event
     timestamps — Flechtwerk simply ships no window *abstraction*, so you build
     the state machine explicitly. Rule of thumb: aggregate at query time when the
     window feeds a **dashboard**; keep it in the transformer when it feeds a

@@ -142,7 +142,7 @@ typed-literal distinction in full.
 
 State behaves exactly as it does for a transformer: `yield State(...)` persists it
 for the current key, a falsy `State` tombstones the key, and a stage that never
-yields `State` is stateless and never opens a RocksDB file. Statefulness is
+yields `State` is stateless and never opens a state database. Statefulness is
 orthogonal to a stage's shape — it is the same mechanism on both ends, and either
 shape can use it or skip it. Most transformers are stateless; many extractors are
 not, because a poll loop usually needs to remember progress.

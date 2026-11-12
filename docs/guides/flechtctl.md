@@ -8,8 +8,8 @@ tokens** (seal, open, sign and verify a value, or look at what a token says abou
 
 It depends on [joserfc](https://jose.authlib.org/) only. It does not import Flechtwerk, so a
 form backend, a deployment script or a producer in another project can use it without
-installing Kafka clients, RocksDB or anything else — and `uvx` runs it on any supported
-Python, including versions the full framework does not install on yet. A stage that
+installing Kafka clients or anything else — and `uvx` runs it on any supported
+Python. A stage that
 declares `ENCRYPTED` attributes gets it automatically: `flechtwerk[secrets]` depends on
 the matching `flechtctl` version.
 

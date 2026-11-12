@@ -7,7 +7,7 @@ import pytest
 
 from flechtwerk.attribute import ANY, Attribute, DATETIME, DICT, INT, SET, STR
 from flechtwerk.observer import Observer
-from flechtwerk.state import ChangelogStateStore, RocksDBMemory, RocksDBStateStore, ensure_changelog_topic, serialize
+from flechtwerk.state import ChangelogStateStore, SQLiteStateStore, StateDatabase, ensure_changelog_topic, serialize
 from flechtwerk.testing import (
     FakeKafkaConsumer,
     FakeKafkaProducer,
@@ -98,47 +98,85 @@ def test_in_memory_nested_state():
     asyncio.run(run())
 
 
-def rocksdb_store(path, memory: RocksDBMemory | None = None) -> RocksDBStateStore:
-    store = RocksDBStateStore()
-    store.path = path
-    store.rocksdb_memory = memory or RocksDBMemory()
+def state_database(path) -> StateDatabase:
+    database = StateDatabase()
+    database.path = path
+    return database
+
+
+def sqlite_store(path_or_database, table: str = "state") -> SQLiteStateStore:
+    store = SQLiteStateStore()
+    store.state_database = (
+        path_or_database if isinstance(path_or_database, StateDatabase) else state_database(path_or_database)
+    )
+    store.table = table
     return store
 
 
-def test_rocksdb_stores_share_one_bounded_memtable_budget(tmp_path):
-    """Stores drawing on one pool charge ONE write-buffer manager, which caps
-    their memtables together: four stores written to three times the budget
-    stay near it. Under RocksDB's per-database defaults each store would keep
-    up to 64 MiB of its own, so a replica's memory grew with the number of
-    tasks it held.
-
-    The cap is soft — a flush starts at 90% of the budget but writers are not
-    stalled, so what arrives during the flush overshoots. Locally the peak sat
-    at the budget; a loaded CI runner measured 1.09x. The assertion therefore
-    tells "bounded" from "grows with what is written", not an exact ceiling."""
+def test_sqlite_stores_of_a_stage_share_one_connection_and_cache(tmp_path):
+    """Every store of a stage is a table behind ONE connection, so ONE page
+    cache bounds them together — a cache per store would make a replica's
+    memory grow with the number of tasks it held again. Tables keep their
+    stores apart: the same key in two stores is two entries."""
     async def run():
-        memory = RocksDBMemory()
-        stores = [rocksdb_store(tmp_path / str(i), memory) for i in range(4)]
-        _, manager = memory._pool
-        value = bytes(range(256)) * 4  # 1 KiB
-        written = peak = 0
+        database = state_database(tmp_path / "db")
+        first, second = sqlite_store(database, "task-0"), sqlite_store(database, "task-1")
         try:
-            while written < memory.MEMTABLE_BYTES * 3:
-                for i, store in enumerate(stores):
-                    await store.put_bytes(f"k{written}-{i}", value)
-                written += len(value) * len(stores)
-                peak = max(peak, manager.get_usage())
+            await first.put("k", State.wrap({"x": 1}))
+            await second.put("k", State.wrap({"x": 2}))
+            assert (await first.get("k"))[X] == 1
+            assert (await second.get("k"))[X] == 2
+            assert list((tmp_path / "db").iterdir()) == [tmp_path / "db" / "state.sqlite"]
+            cache_kib = database.connection.execute("PRAGMA cache_size").fetchone()[0]
+            assert cache_kib == -(StateDatabase.CACHE_BYTES // 1024)
         finally:
-            for store in stores:
-                await store.close()
-        assert peak > memory.MEMTABLE_BYTES // 2  # the stores charge the shared manager...
-        assert peak < memory.MEMTABLE_BYTES * 2   # ...and it holds them near the budget
+            await first.close()
+            await second.close()
     asyncio.run(run())
 
 
-def test_rocksdb_put_and_get(tmp_path):
+def test_sqlite_database_skips_what_only_crash_recovery_needs(tmp_path):
+    """The file never outlives its process, so journal and fsync are pure cost."""
+    async def run():
+        store = sqlite_store(tmp_path / "db")
+        try:
+            await store.put("k", State.wrap({"x": 1}))
+            pragma = lambda name: store.state_database.connection.execute(f"PRAGMA {name}").fetchone()[0]
+            assert pragma("journal_mode") == "off"
+            assert pragma("synchronous") == 0
+            assert pragma("locking_mode") == "exclusive"
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
+def test_sqlite_writes_are_grouped_into_transactions(tmp_path):
+    """Committing every write separately made big restores five times slower;
+    writes stay in one transaction until COMMIT_EVERY of them, or a flush —
+    and every store of the stage sees them before the commit."""
+    async def run():
+        database = state_database(tmp_path / "db")
+        database.COMMIT_EVERY = 3
+        store = sqlite_store(database)
+        try:
+            await store.put("k1", State.wrap({"x": 1}))
+            await store.put("k2", State.wrap({"x": 2}))
+            assert database.connection.in_transaction
+            assert (await store.get("k1"))[X] == 1  # visible before the commit
+            await store.delete("k1")  # a delete is a write too: the third commits
+            assert not database.connection.in_transaction
+            await store.put("k3", State.wrap({"x": 3}))
+            await store.flush()
+            assert not database.connection.in_transaction
+            assert database.pending == 0
+        finally:
+            await store.close()
+    asyncio.run(run())
+
+
+def test_sqlite_put_and_get(tmp_path):
     async def run(tmp_path):
-        store = rocksdb_store(tmp_path / "test-db")
+        store = sqlite_store(tmp_path / "test-db")
         try:
             await store.put("key1", State.wrap({"cursor": "2024-01-01", "count": 42}))
             result = await store.get("key1")
@@ -148,9 +186,9 @@ def test_rocksdb_put_and_get(tmp_path):
     asyncio.run(run(tmp_path))
 
 
-def test_rocksdb_get_missing_returns_none(tmp_path):
+def test_sqlite_get_missing_returns_none(tmp_path):
     async def run(tmp_path):
-        store = rocksdb_store(tmp_path / "test-db")
+        store = sqlite_store(tmp_path / "test-db")
         try:
             assert await store.get("nonexistent") is None
         finally:
@@ -158,21 +196,22 @@ def test_rocksdb_get_missing_returns_none(tmp_path):
     asyncio.run(run(tmp_path))
 
 
-def test_rocksdb_delete(tmp_path):
+def test_sqlite_delete(tmp_path):
     async def run(tmp_path):
-        store = rocksdb_store(tmp_path / "test-db")
+        store = sqlite_store(tmp_path / "test-db")
         try:
             await store.put("key1", State.wrap({"x": 1}))
             await store.delete("key1")
             assert await store.get("key1") is None
+            await store.delete("never-written")  # absent keys are fine
         finally:
             await store.close()
     asyncio.run(run(tmp_path))
 
 
-def test_rocksdb_datetime_round_trip(tmp_path):
+def test_sqlite_datetime_round_trip(tmp_path):
     async def run(tmp_path):
-        store = rocksdb_store(tmp_path / "test-db")
+        store = sqlite_store(tmp_path / "test-db")
         try:
             dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
             state = State()
@@ -186,12 +225,12 @@ def test_rocksdb_datetime_round_trip(tmp_path):
     asyncio.run(run(tmp_path))
 
 
-def test_rocksdb_close_is_a_wipe_not_end_of_life(tmp_path):
-    """close() drops the cached database and removes its files; the next
-    access lazily reopens a fresh, empty store — the sharded extractor
-    runner wipes and re-restores on every token assignment."""
+def test_sqlite_close_is_a_wipe_not_end_of_life(tmp_path):
+    """close() drops the store's table; the next access lazily recreates a
+    fresh, empty one — the sharded extractor runner wipes and re-restores
+    on every token assignment."""
     async def run(tmp_path):
-        store = rocksdb_store(tmp_path / "test-db")
+        store = sqlite_store(tmp_path / "test-db")
         try:
             await store.put("k1", State.wrap({"x": 1}))
             await store.close()
@@ -204,19 +243,23 @@ def test_rocksdb_close_is_a_wipe_not_end_of_life(tmp_path):
     asyncio.run(run(tmp_path))
 
 
-def test_rocksdb_set_round_trip(tmp_path):
-    async def run(tmp_path):
-        store = rocksdb_store(tmp_path / "test-db")
-        try:
-            state = State()
-            state[HASHES] = {"abc", "def"}   # encoder runs → sorted list in raw
-            await store.put("key", state)
-            restored = await store.get("key")
-            assert restored[HASHES] == {"abc", "def"}
-            assert isinstance(restored[HASHES], set)
-        finally:
-            await store.close()
-    asyncio.run(run(tmp_path))
+def test_sqlite_wiping_one_store_keeps_the_others(tmp_path):
+    """A task torn down alone must not take its siblings' state along; the
+    LAST store to close removes the database file and directory."""
+    async def run():
+        database = state_database(tmp_path / "db")
+        first, second = sqlite_store(database, "task-0"), sqlite_store(database, "task-1")
+        await first.put("k", State.wrap({"x": 1}))
+        await second.put("k", State.wrap({"x": 2}))
+
+        await first.close()
+        assert (await second.get("k"))[X] == 2
+        assert (tmp_path / "db").exists()
+
+        await second.close()
+        assert not (tmp_path / "db").exists()
+        assert "connection" not in database.__dict__
+    asyncio.run(run())
 
 
 
@@ -421,9 +464,9 @@ class FlushRecordingStore(InMemoryStateStore):
 
 
 def test_changelog_restore_flushes_inner_store_after_replay():
-    """A transformer task's restore hands its memtable back once the replay
-    is complete — otherwise the restored-then-idle store would hold its share
-    of the stage's write budget for good (see RocksDBStateStore.flush)."""
+    """A transformer task's restore commits its last write batch once the replay
+    is complete — otherwise the restore's last write batch would stay
+    uncommitted until the store's next write (see SQLiteStateStore.flush)."""
     async def run():
         store = ChangelogStateStore()
         store.inner = FlushRecordingStore()
@@ -440,29 +483,13 @@ def test_changelog_restore_flushes_inner_store_after_replay():
     asyncio.run(run())
 
 
-def test_rocksdb_flush_hands_the_memtable_back(tmp_path):
+def test_sqlite_flush_never_opens_an_unopened_store(tmp_path):
+    """A stage that never touched state must not get a database file from a flush or close."""
     async def run():
-        memory = RocksDBMemory()
-        store = rocksdb_store(tmp_path / "test-db", memory)
-        _, manager = memory._pool
-        try:
-            for k in range(1000):
-                await store.put_bytes(f"k{k}", b"x" * 1024)
-            before = manager.get_usage()
-            await store.flush()
-            assert manager.get_usage() < before
-            assert store.db["k999"] == b"x" * 1024  # now served from disk
-        finally:
-            await store.close()
-    asyncio.run(run())
-
-
-def test_rocksdb_flush_never_opens_an_unopened_store(tmp_path):
-    """A stage that never touched state must not get a RocksDB file from a flush."""
-    async def run():
-        store = rocksdb_store(tmp_path / "test-db")
+        store = sqlite_store(tmp_path / "test-db")
         await store.flush()
-        assert "db" not in store.__dict__
+        await store.close()
+        assert "connection" not in store.state_database.__dict__
         assert not (tmp_path / "test-db").exists()
     asyncio.run(run())
 
@@ -602,10 +629,12 @@ def test_module_wires_extractor_runner_state_collaborators():
 
         runner = mod.runner
 
-        # inner_store → ExtractorRunner.inner_store (name match), drawing on
-        # the stage's one RocksDB memory pool (name match again)
+        # inner_store → ExtractorRunner.inner_store (name match), a table in
+        # the stage's one state database (name match again), which lives
+        # under the module's temporary path (name match once more)
         assert runner.inner_store is mod.inner_store
-        assert mod.inner_store.rocksdb_memory is mod.rocksdb_memory
+        assert mod.inner_store.state_database is mod.state_database
+        assert mod.state_database.path == mod.path
 
         # changelog_topic cached_property → ExtractorRunner.changelog_topic
         assert runner.changelog_topic == "test-app-changelog"
@@ -649,10 +678,12 @@ def test_module_wires_task_store_observer():
 
     assert store.observer is mod.observer
     assert store.partition == 2
-    # Every task draws on ONE pool: a pool per task would make a replica's
-    # memory grow with the number of tasks it holds again.
-    assert store.inner.rocksdb_memory is mod.rocksdb_memory
-    assert mod.create_task_store(5, FakeKafkaProducer()).inner.rocksdb_memory is mod.rocksdb_memory
+    # Every task is a table in ONE database: a database per task would give
+    # each its own cache, and a replica's memory would grow with its tasks.
+    other = mod.create_task_store(5, FakeKafkaProducer())
+    assert store.inner.state_database is mod.state_database
+    assert other.inner.state_database is mod.state_database
+    assert (store.inner.table, other.inner.table) == ("task-2", "task-5")
 
 
 def test_module_lookups_resolve_from_parent():

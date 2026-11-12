@@ -8,7 +8,7 @@ tagline: The operational model Kafka Streams nailed a decade ago, rewoven in asy
 
 Flechtwerk (German: *interlacing, wickerwork*) is a small async stream processing framework for Kafka. It takes the operational design that Kafka Streams proved in production — consumer groups for partition assignment, compacted changelog topics as the durable state of record, Kafka transactions tying state writes, output messages, and offset commits into one atomic unit — and ports it to modern async Python built on `asyncio` and `aiokafka`. It runs on stock `asyncio` (and therefore on Windows); the event loop is the application's choice, and `uvloop` is the recommended pick for best throughput.
 
-If you have run Kafka Streams, the model is immediately familiar: stateful operators backed by RocksDB, recovery via changelog replay, exactly-once delivery via transactions, and ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
+If you have run Kafka Streams, the model is immediately familiar: stateful operators backed by a local store, recovery via changelog replay, exactly-once delivery via transactions, and ephemeral compute that can be killed and rescheduled freely because all durable state lives in Kafka.
 
 ## Two Stage Shapes
 
@@ -17,12 +17,12 @@ An application builds stages in one of two shapes. Both express their whole cont
 - **Extractor** — async-polls an external source once per config record per poll cycle, using `State` as its resume cursor. Its only Kafka input is its `config_topics`. The MQTT bridge is a push-driven extractor.
 - **Transformer** — consumes partitioned `input_topics`, runs `transform(msg, state)` per record, and publishes to Kafka with exactly-once delivery.
 
-Both are ABCs. Use the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management (HTTP clients, dedup instances) via `__aenter__` / `__aexit__`. Stateless stages simply never yield `State` and never open a RocksDB file.
+Both are ABCs. Use the `.of(...)` factory for stateless or simply-stateful stages, or subclass directly when you need lifecycle management (HTTP clients, dedup instances) via `__aenter__` / `__aexit__`. Stateless stages simply never yield `State` and never open a state database.
 
 ## The Operational Model
 
 - **Consumer groups** drive partition assignment and rebalancing — standard Kafka semantics, no custom coordination.
-- **Changelog topics** (compacted) are the durable state of record. RocksDB is a local cache rebuilt by replay on startup. Pods are ephemeral; no PVCs.
+- **Changelog topics** (compacted) are the durable state of record. The local SQLite store is a cache rebuilt by replay on startup. Pods are ephemeral; no PVCs.
 - **Kafka transactions** span all output messages, all state changelog writes, and offset commits for a single processing batch. Transformer work is split into per-input-partition tasks; each task owns a transactional producer (static transactional ID — EOS-v1 fencing) shared with its changelog state store via DI.
 - **Per-batch parallelism by state key.** Within a `getmany()` batch (capped at `max_poll_records`, default 500 — so a backlog drains as many ordinary batches, not one giant one), records are bucketed by state key within each task. Buckets run concurrently via `asyncio.gather` so I/O-bound `transform` calls overlap, while records sharing a key run serially inside their bucket — each one sees the previous one's yielded state. Cross-key ordering is not preserved.
 
@@ -31,13 +31,13 @@ Both are ABCs. Use the `.of(...)` factory for stateless or simply-stateful stage
 
 ## Where State Lives
 
-State lives in ephemeral RocksDB instances backed by a compacted Kafka changelog topic. Because all durable state lives in Kafka — input topics, output topics, and changelogs — a killed pod restarts, replays its changelog into a fresh RocksDB, and resumes exactly where it left off. There are no PVCs to snapshot and no opaque local state directories to copy.
+State lives in an ephemeral local SQLite database backed by a compacted Kafka changelog topic. Because all durable state lives in Kafka — input topics, output topics, and changelogs — a killed pod restarts, replays its changelog into a fresh local store, and resumes exactly where it left off. There are no PVCs to snapshot and no opaque local state directories to copy.
 
-State is on local disk, not in memory. A transformer opens one RocksDB per task, but all stores of a stage share one memory pool, about 64 MiB for block cache and write buffers together. A replica holding every partition therefore needs about as much memory as one holding a single partition. The data itself goes to the temp directory, so give that directory disk, not RAM: a Kubernetes `emptyDir` with `medium: Memory` would put all state back into the pod's memory limit.
+State is on local disk, not in memory. A transformer keeps one store per task, but all stores of a stage are tables in one database with one page cache of 64 MiB. A replica holding every partition therefore needs about as much memory as one holding a single partition. The data itself goes to the temp directory, so give that directory disk, not RAM: a Kubernetes `emptyDir` with `medium: Memory` would put all state back into the pod's memory limit.
 
 A restore replays every record still in the changelog, and compaction never touches the active segment. Under Kafka's defaults (1 GiB segments, 7-day roll), a young changelog therefore replays every state version ever written. When Flechtwerk creates a changelog topic itself, it sets `max.compaction.lag.ms` to one hour, which bounds that history. If other tooling creates the topic, such as a Strimzi `KafkaTopic`, set the same value there.
 
-The same property that makes pods disposable in production makes them reproducible on a laptop: mirror the relevant topics and committed consumer-group offsets into a local Kafka cluster, and a locally-run stage replays the changelog into a fresh RocksDB and resumes exactly where its production counterpart left off. Frameworks that hide state in framework-managed local stores cannot offer this cleanly; the Kafka Streams model can, and Flechtwerk inherits it. It is a property of the model, not a feature of the framework — the small mirror script lives in application code.
+The same property that makes pods disposable in production makes them reproducible on a laptop: mirror the relevant topics and committed consumer-group offsets into a local Kafka cluster, and a locally-run stage replays the changelog into a fresh local store and resumes exactly where its production counterpart left off. Frameworks that hide state in framework-managed local stores cannot offer this cleanly; the Kafka Streams model can, and Flechtwerk inherits it. It is a property of the model, not a feature of the framework — the small mirror script lives in application code.
 
 ## Why Flechtwerk Exists
 
