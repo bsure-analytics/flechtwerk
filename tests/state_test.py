@@ -169,6 +169,8 @@ def test_sqlite_writes_are_grouped_into_transactions(tmp_path):
             await store.flush()
             assert not database.connection.in_transaction
             assert database.pending == 0
+            await store.flush()  # nothing pending: a no-op, not an error
+            assert (await store.get("k3"))[X] == 3
         finally:
             await store.close()
     asyncio.run(run())
