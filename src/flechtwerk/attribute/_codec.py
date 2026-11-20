@@ -7,7 +7,7 @@ and `record.py` can reach the codec primitives without importing the public
 `record.py` and would otherwise close an import cycle.
 
 The catalogue is composable: atoms (`STR`, `INT`, `BOOL`, `BYTES`, `DATE`,
-`FLOAT`, `DATETIME`, `TIME`, `ZONE_INFO`) are fixed leaves; constructors
+`FLOAT`, `DECIMAL`, `DATETIME`, `TIME`, `ZONE_INFO`) are fixed leaves; constructors
 (`LIST`, `SET`, `TUPLE`, `DICT`) take an inner codec and return a
 parameterized container codec.
 Element validation is uniform — `LIST(STR).encode([1, 2, 3])` rejects
@@ -23,6 +23,7 @@ import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from decimal import Decimal, InvalidOperation
 from functools import cache
 from typing import Any, Final
 from zoneinfo import ZoneInfo, available_timezones
@@ -117,6 +118,70 @@ def _encode_bytes(b: bytes) -> str:
     return base64.b64encode(b).decode("ascii")
 
 
+def _decode_decimal(v: Any) -> Decimal:
+    """Decoder for `DECIMAL` — a finite decimal in canonical fixed-point notation.
+
+    The wire value must be a JSON *string*: Flechtwerk parses JSON with plain
+    `json.loads`, which turns a JSON number like `19.99` into a `float`
+    before any codec runs, so the precision this codec exists to keep would
+    already be gone. A number is therefore a `TypeError`, not something to
+    convert.
+
+    Canonical means `format(d, "f")` reproduces the input exactly — the
+    `BYTES` re-encode comparison. `Decimal()` itself is lenient: it accepts
+    `"1E+2"`, `"+5"`, `"05"`, `".5"`, `" 5 "`, `"1_000"` and non-ASCII
+    digits, each of which would decode to the value of some other wire
+    string. Rejecting them keeps the decoder injective, so a
+    decode/re-encode cycle never rewrites the wire form underneath a `State`
+    dedup or a value-equality check.
+
+    Scale and sign are part of the representation and survive the round
+    trip: `"1.0"`, `"1.00"` and `"-0"` decode to distinct `Decimal`s
+    (equal under `==`, but each re-encodes to its own string). Rounding is
+    the application's decision — the codec never quantizes.
+
+    `NaN`, `sNaN` and `Infinity` are rejected: they are valid `Decimal`s but
+    not quantities. Every failure is a `ValueError` — `Decimal()` raises
+    `InvalidOperation`, an `ArithmeticError`, which would slip past a caller
+    that rejects bad payloads by catching `ValueError` (the `ZONE_INFO`
+    argument).
+    """
+    if type(v) is not str:
+        raise TypeError(
+            f"expected a decimal str, got {type(v).__name__}: DECIMAL's wire form is a JSON string, "
+            "because a JSON number is parsed as a float before any codec runs"
+        )
+    try:
+        d = Decimal(v)
+    except InvalidOperation:
+        raise ValueError(f"not a decimal: {v!r}") from None
+    if not d.is_finite():
+        raise ValueError(f"not a finite decimal: {v!r}")
+    if format(d, "f") != v:
+        raise ValueError(f"non-canonical decimal: {v!r}, expected {format(d, 'f')!r}")
+    return d
+
+
+def _encode_decimal(d: Decimal) -> str:
+    """Encoder for `DECIMAL` — fixed-point notation, never an exponent.
+
+    `format(d, "f")` is exact: without a precision it neither rounds nor
+    consults the `decimal` context. Fixed point rather than `str(d)`, because
+    `str` switches to scientific notation for small magnitudes
+    (`str(Decimal("0.0000001")) == "1E-7"`), which downstream consumers
+    parsing the string as a number handle unevenly. The one representation
+    detail fixed point cannot carry is a positive exponent: `Decimal("1E+2")`
+    is written as `"100"` and reads back as `Decimal("100")` — equal, and
+    stable from then on.
+
+    Exact-type check (the `_validate` discipline) plus a finiteness check:
+    a non-finite value has no wire form this codec would read back.
+    """
+    assert type(d) is Decimal, f"expected Decimal, got {type(d).__name__}: {d!r}"
+    assert d.is_finite(), f"a non-finite Decimal has no wire form: {d!r}"
+    return format(d, "f")
+
+
 @cache
 def _zone_keys() -> frozenset[str]:
     """The canonical IANA keys on this host, scanned once on first `ZONE_INFO` decode (~600 entries)."""
@@ -198,6 +263,19 @@ framing at all — `BYTES` is for a binary *field* beside other typed ones.
 """
 DATE: Final = Codec[date](date.fromisoformat, date.isoformat)
 FLOAT: Final = Codec[float](_validate(float), _validate(float))
+DECIMAL: Final = Codec[Decimal](_decode_decimal, _encode_decimal)
+"""Codec for `decimal.Decimal` as a canonical fixed-point JSON string (`"19.99"`).
+
+For quantities that must be exact and are fractional by nature: unit prices
+with sub-cent precision, rates, percentages, or amounts a foreign API sends
+as decimal strings. For plain monetary amounts prefer `INT` in minor units
+(cents) beside a currency code — downstream stores aggregate an integer
+column natively, while a decimal string usually gets cast to a float on
+ingest.
+
+Like `BYTES` and `ZONE_INFO`, a `Decimal` is deliberately absent from the
+`ANY` walker: its wire form is a plain string that would read back as text.
+"""
 DATETIME: Final = Codec[datetime](datetime.fromisoformat, _encode_datetime)
 TIME: Final = Codec[time](time.fromisoformat, time.isoformat)
 ZONE_INFO: Final = Codec[ZoneInfo](_decode_zone_info, _encode_zone_info)

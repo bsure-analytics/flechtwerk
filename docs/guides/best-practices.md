@@ -328,6 +328,12 @@ site. A few rules keep that boundary honest:
   explicit rather than inferred. Weigh the 4/3 base64 inflation against
   Kafka's 1 MiB record ceiling — for a message that *is* a blob, send it as a
   `bytes` `Payload` and skip the field framing entirely.
+- **Money is never a `FLOAT`.** Carry an amount as an `INT` in minor units
+  (cents) beside a `STR` currency code — exact, and aggregated natively by
+  downstream stores. Reach for `DECIMAL` (a canonical decimal string) for
+  values that are fractional by nature: rates, percentages, sub-cent unit
+  prices. A JSON number is no substitute — Flechtwerk parses it as a float
+  before any codec runs.
 - **Required by default; `optional=True` only when absence is meaningful.** A
   required attribute rejects `None` at the write site so a missing value can't
   land silently as JSON `null`.

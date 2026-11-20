@@ -2,13 +2,14 @@ import ast
 import base64
 import json
 from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, localcontext
 from pathlib import Path
 from zoneinfo import TZPATH, ZoneInfo
 
 import pytest
 
 import flechtwerk.attribute as package
-from flechtwerk.attribute import ANY, BYTES, DATE, DATETIME, DICT, LIST, TIME, ZONE_INFO, Attribute, Codec, Record, codec
+from flechtwerk.attribute import ANY, BYTES, DATE, DATETIME, DECIMAL, DICT, LIST, SET, TIME, ZONE_INFO, Attribute, Codec, Record, codec
 
 
 def test_datetime_from_iso_utc_round_trip():
@@ -324,12 +325,104 @@ def test_any_rejects_zoneinfo():
         ANY.encode(ZoneInfo("UTC"))
 
 
+@pytest.mark.parametrize(
+    "wire",
+    ["19.99", "0", "1.00", "-1.5", "0.0000001", "100", "-0", "-0.00",
+     "123456789012345678901234567890.123456789"],
+)
+def test_decimal_round_trips_the_wire_form_exactly(wire):
+    """Scale and sign are part of the value: every accepted string re-encodes to itself."""
+    decoded = DECIMAL.decode(wire)
+    assert decoded == Decimal(wire)
+    assert DECIMAL.encode(decoded) == wire
+
+
+def test_decimal_keeps_scale_distinct():
+    """`1.0` and `1.00` are equal under `==` but are different representations — both survive."""
+    assert DECIMAL.encode(DECIMAL.decode("1.0")) == "1.0"
+    assert DECIMAL.encode(DECIMAL.decode("1.00")) == "1.00"
+
+
+@pytest.mark.parametrize("wire", ["1E+2", "1e2", "1E-7", "+5", "05", ".5", "5.", " 5", "5 ", "1_000", "١٢", "0.50e0"])
+def test_decimal_rejects_non_canonical_spellings(wire):
+    """`Decimal()` accepts each of these as some other wire string's value — the
+    decoder must not, or two wire strings decode to one value."""
+    with pytest.raises(ValueError, match="non-canonical decimal"):
+        DECIMAL.decode(wire)
+
+
+@pytest.mark.parametrize("wire", ["NaN", "-NaN", "sNaN", "Infinity", "-Infinity", "inf"])
+def test_decimal_rejects_non_finite_values(wire):
+    with pytest.raises(ValueError, match="not a finite decimal"):
+        DECIMAL.decode(wire)
+
+
+@pytest.mark.parametrize("wire", ["", "abc", "1.2.3", "1,5", "€1"])
+def test_decimal_rejects_garbage_with_value_error(wire):
+    """Never `InvalidOperation` — an `ArithmeticError` would slip past `except ValueError`."""
+    with pytest.raises(ValueError, match="not a decimal"):
+        DECIMAL.decode(wire)
+
+
+@pytest.mark.parametrize("wire", [19.99, 1999, True, None])
+def test_decimal_rejects_a_json_number(wire):
+    """A JSON number has already been through `json.loads`; a float there has lost the precision."""
+    with pytest.raises(TypeError, match="expected a decimal str"):
+        DECIMAL.decode(wire)
+
+
+def test_decimal_encode_never_uses_an_exponent():
+    assert DECIMAL.encode(Decimal("1E-7")) == "0.0000001"
+    assert DECIMAL.encode(Decimal("1E+2")) == "100"
+    assert DECIMAL.decode(DECIMAL.encode(Decimal("1E+2"))) == Decimal("1E+2")
+
+
+def test_decimal_encode_ignores_the_context_precision():
+    with localcontext() as ctx:
+        ctx.prec = 3
+        assert DECIMAL.encode(Decimal("123456.789")) == "123456.789"
+        assert DECIMAL.decode("123456.789") == Decimal("123456.789")
+
+
+@pytest.mark.parametrize("value", [19.99, 1999, "19.99"])
+def test_decimal_encode_rejects_other_types(value):
+    with pytest.raises(AssertionError, match="expected Decimal"):
+        DECIMAL.encode(value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [Decimal("NaN"), Decimal("sNaN"), Decimal("Infinity")])
+def test_decimal_encode_rejects_non_finite_values(value):
+    with pytest.raises(AssertionError, match="non-finite"):
+        DECIMAL.encode(value)
+
+
+def test_decimal_attribute_round_trips_through_json():
+    price = Attribute("price", DECIMAL)
+    record = Record({price: Decimal("0.1") + Decimal("0.2")})
+    assert record.raw == {"price": "0.3"}
+    wire = json.dumps(record.raw)
+    assert wire == '{"price": "0.3"}'
+    assert Record.wrap(json.loads(wire))[price] == Decimal("0.3")
+
+
+def test_decimal_composes_with_the_container_constructors():
+    assert LIST(DECIMAL).encode([Decimal("1.50"), Decimal("2")]) == ["1.50", "2"]
+    assert SET(DECIMAL).encode({Decimal("2"), Decimal("1.5")}) == ["1.5", "2"]
+    assert DICT(DECIMAL).decode({"vat": "0.19"}) == {"vat": Decimal("0.19")}
+
+
+def test_any_rejects_decimal():
+    """A decimal would read back as plain text — it needs an explicit `DECIMAL` attribute."""
+    with pytest.raises(TypeError, match="no encoder for Decimal"):
+        ANY.encode(Decimal("1.5"))
+
+
 def test_codec_module_is_the_complete_catalogue():
     """`flechtwerk.attribute.codec` is the one namespace holding every codec —
     the disambiguating import (`codec.DATE`) must never miss one the package
     exports, or an application with a colliding name has no way to reach it."""
     assert set(codec.__all__) == {
-        "ANY", "BOOL", "BYTES", "Codec", "DATE", "DATETIME", "DICT", "Decoder", "Encoder",
+        "ANY", "BOOL", "BYTES", "Codec", "DATE", "DATETIME", "DECIMAL", "DICT", "Decoder", "Encoder",
         "FLOAT", "INT", "LIST", "RECORD", "SET", "STR", "TIME", "TUPLE", "ZONE_INFO", "record_codec",
     }
     package_codecs = {name for name in package.__all__ if isinstance(getattr(package, name), Codec)}
