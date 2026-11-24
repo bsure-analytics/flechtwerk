@@ -332,6 +332,15 @@ writer's data error with fleet-wide blast radius — the design accepts that tra
 - **Write-side validation is the primary defense**: producers encrypt through
   the codec — a typed write or `encrypt_value` — so malformed tokens should never reach the
   topic; the read-side crash is the backstop.
+- **Size is checked on both sides alike**: a token's payload segment — the
+  base64url ciphertext of a `flenc` token, the base64url payload of a `flsig`
+  token — may be at most `MAX_SEGMENT_BYTES` (1 MiB, Kafka's default record
+  limit), which is about 768 KiB of encoded value. Writers refuse a larger one
+  with `SecretSizeError`, readers with `SecretDecryptError` /
+  `SecretSignatureError`, so every token a writer produces reads back. joserfc's
+  own defaults (64 KiB of ciphertext, a 128,000-byte JWS payload) are raised to
+  that limit: they were enforced on read only, so a record-sized value sealed
+  without complaint and then crashed every reader.
 - A **recovery runbook**: suspend or tombstone the offending record to restore
   the fleet, then re-produce it correctly encrypted (or fix the keyring). For
   pasted plaintext, follow the compromise procedure in

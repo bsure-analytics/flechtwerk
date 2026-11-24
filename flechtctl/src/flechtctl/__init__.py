@@ -28,6 +28,7 @@ from .errors import (
     SecretError,
     SecretFormatError,
     SecretSignatureError,
+    SecretSizeError,
     UnsignedSecretError,
 )
 from .keyring import (
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     # The lazy names, for type checkers and IDEs only: at runtime they resolve
     # through `__getattr__` below, so `import flechtctl` still loads no joserfc.
     from .tokens import (
+        MAX_SEGMENT_BYTES,
         PREFIX,
         SCHEME,
         SIGNATURE_PREFIX,
@@ -76,6 +78,7 @@ __all__ = [
     "KEY_BYTES",
     "Keyring",
     "KeyringError",
+    "MAX_SEGMENT_BYTES",
     "PREFIX",
     "PlaintextSecretError",
     "SCHEME",
@@ -85,6 +88,7 @@ __all__ = [
     "SecretError",
     "SecretFormatError",
     "SecretSignatureError",
+    "SecretSizeError",
     "UnknownKeyError",
     "UnsignedSecretError",
     "X25519Key",

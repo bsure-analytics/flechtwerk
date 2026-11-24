@@ -7,9 +7,11 @@ from flechtctl import (
     Ed25519Key,
     Keyring,
     KeyringError,
+    MAX_SEGMENT_BYTES,
     SecretDecryptError,
     SecretFormatError,
     SecretSignatureError,
+    SecretSizeError,
     X25519Key,
     decrypt,
     decrypt_bytes,
@@ -193,6 +195,36 @@ def test_sign_then_encrypt_composes():
     keyring = asymmetric()
     token = encrypt(keyring, sign(keyring, "hello", scope="demo"), scope="demo")
     assert verify(keyring, decrypt(keyring, token, scope="demo"), scope="demo") == "hello"
+
+
+# --- size ---
+
+LARGEST = MAX_SEGMENT_BYTES * 3 // 4
+"""The largest payload whose base64url segment fits exactly: GCM ciphertext is as long as its plaintext"""
+
+
+def test_a_payload_past_joserfcs_defaults_reads_back():
+    payload = bytes(500_000)  # joserfc alone refuses 64 KiB of ciphertext and a 128,000-byte JWS payload
+    keyring = asymmetric()
+    assert decrypt_bytes(OCT, encrypt_bytes(OCT, payload)) == payload
+    assert decrypt_bytes(keyring, encrypt_bytes(keyring, payload, scope="demo"), scope="demo") == payload
+    assert verify_bytes(keyring, sign_bytes(keyring, payload, scope="demo"), scope="demo") == payload
+
+
+def test_the_largest_payload_reads_back():
+    keyring = asymmetric()
+    assert decrypt_bytes(OCT, encrypt_bytes(OCT, bytes(LARGEST))) == bytes(LARGEST)
+    assert verify_bytes(keyring, sign_bytes(keyring, bytes(LARGEST), scope="demo"), scope="demo") == bytes(LARGEST)
+
+
+def test_one_byte_more_is_refused_when_written():
+    keyring = asymmetric()
+    with pytest.raises(SecretSizeError, match="exceeds the 1048576-byte limit") as sealed:
+        encrypt_bytes(keyring, bytes(LARGEST + 1), scope="demo")
+    with pytest.raises(SecretSizeError) as signed:
+        sign_bytes(keyring, bytes(LARGEST + 1), scope="demo")
+    assert sealed.value.scope == signed.value.scope == "demo"
+    assert sealed.value.size == signed.value.size == MAX_SEGMENT_BYTES + 2
 
 
 # --- read_header ---

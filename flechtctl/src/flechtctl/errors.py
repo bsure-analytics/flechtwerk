@@ -6,6 +6,7 @@ __all__ = [
     "SecretError",
     "SecretFormatError",
     "SecretSignatureError",
+    "SecretSizeError",
     "UnsignedSecretError",
 ]
 
@@ -47,6 +48,23 @@ class SecretDecryptError(SecretError):
             detail.append(f"topic={topic!r}")
         if reason is not None:
             detail.append(reason)
+        super().__init__("; ".join(detail))
+
+
+class SecretSizeError(SecretError):
+    """A value is too large to seal or sign: its token segment would exceed ``MAX_SEGMENT_BYTES``.
+
+    Raised by the writer, so an oversize value fails where it is produced instead of
+    being written as a token every reader refuses.
+    """
+
+    def __init__(self, *, scope: str = "", size: int, limit: int) -> None:
+        self.scope = scope
+        self.size = size
+        self.limit = limit
+        detail = [f"token segment of {size} bytes exceeds the {limit}-byte limit"]
+        if scope:
+            detail.append(f"scope={scope!r}")
         super().__init__("; ".join(detail))
 
 

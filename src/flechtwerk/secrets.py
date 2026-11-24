@@ -68,6 +68,7 @@ try:
         SecretError,
         SecretFormatError,
         SecretSignatureError,
+        SecretSizeError,
         UnsignedSecretError,
     )
     from flechtctl.tokens import (
@@ -109,6 +110,7 @@ __all__ = [
     "SecretError",
     "SecretFormatError",
     "SecretSignatureError",
+    "SecretSizeError",
     "UnsignedSecretError",
     "X25519Key",
     "encrypt_value",

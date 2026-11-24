@@ -38,7 +38,7 @@ from joserfc import jwe, jws
 from joserfc.jwk import OctKey, OKPKey
 from joserfc.registry import HeaderParameter
 
-from .errors import SecretDecryptError, SecretFormatError, SecretSignatureError
+from .errors import SecretDecryptError, SecretFormatError, SecretSignatureError, SecretSizeError
 from .keyring import (
     Ed25519Key,
     KEY_BYTES,
@@ -50,6 +50,7 @@ from .keyring import (
 )
 
 __all__ = [
+    "MAX_SEGMENT_BYTES",
     "PREFIX",
     "SCHEME",
     "SIGNATURE_PREFIX",
@@ -98,6 +99,12 @@ _FLENC_SCOPE = "flenc_scope"  # optional protected-header param — the domain-s
 _RECIPIENT_ALG = "ECDH-ES+A256KW"
 _SIGNATURE_ALG = "Ed25519"  # RFC 9864, fully specified — never the deprecated polymorphic "EdDSA"
 
+MAX_SEGMENT_BYTES = 1024 * 1024
+"""The largest payload segment a token may carry — a ``flenc`` token's base64url ciphertext, a
+``flsig`` token's base64url payload. Kafka's default 1 MiB record limit, so every token a record
+can hold also reads back; joserfc's own defaults (64 KiB ciphertext, 128,000-byte JWS payload)
+refuse to read tokens it writes without complaint. Writers enforce it too (`SecretSizeError`)."""
+
 # The one extension header every registry admits: flenc_scope is OPTIONAL (a
 # token may carry a scope or not).
 _HEADER_REGISTRY = {_FLENC_SCOPE: HeaderParameter("Flechtwerk domain-separation scope", "str", False)}
@@ -118,6 +125,8 @@ _RECIPIENT_REGISTRY = jwe.JWERegistry(
     algorithms=[_RECIPIENT_ALG, _ENC],
     strict_check_header=True,
 )
+_REGISTRY.max_ciphertext_length = MAX_SEGMENT_BYTES
+_RECIPIENT_REGISTRY.max_ciphertext_length = MAX_SEGMENT_BYTES
 # Signatures: exactly Ed25519. A signed token always carries flenc_scope (the
 # codec checks it), the registry merely admits the header.
 _SIGNATURE_REGISTRY = jws.JWSRegistry(
@@ -125,6 +134,7 @@ _SIGNATURE_REGISTRY = jws.JWSRegistry(
     algorithms=[_SIGNATURE_ALG],
     strict_check_header=True,
 )
+_SIGNATURE_REGISTRY.max_payload_length = MAX_SEGMENT_BYTES
 
 # A password-protected keyring file (an encrypted JWK Set) is not a token: its
 # own pinned registry, separate from the three above.
@@ -272,6 +282,12 @@ def canonical_json(value: object) -> bytes:
 # --- seal / open / sign / verify over an explicit keyring ---
 
 
+def _check_segment(segment: str, scope: str) -> None:
+    """Refuse a token whose payload segment no reader accepts — the writer's half of `MAX_SEGMENT_BYTES`."""
+    if len(segment) > MAX_SEGMENT_BYTES:
+        raise SecretSizeError(scope=scope, size=len(segment), limit=MAX_SEGMENT_BYTES)
+
+
 def encrypt_bytes(keyring: Keyring, payload: bytes, *, scope: str = "") -> str:
     """Encrypt raw payload bytes under the scope's sealing key, stamping ``scope`` if set.
 
@@ -294,6 +310,7 @@ def encrypt_bytes(keyring: Keyring, payload: bytes, *, scope: str = "") -> str:
     if scope:
         protected[_FLENC_SCOPE] = scope
     token = jwe.encrypt_compact(protected, payload, key, registry=registry)
+    _check_segment(token.split(".")[3], scope)
     return PREFIX + token
 
 
@@ -383,6 +400,7 @@ def sign_bytes(keyring: Keyring, payload: bytes, *, scope: str) -> str:
     key = _okp_private_key(kid, "Ed25519", signer.public, signer.private)
     protected = {"alg": _SIGNATURE_ALG, _FLENC_SCOPE: scope, "kid": kid}
     token = jws.serialize_compact(protected, payload, key, registry=_SIGNATURE_REGISTRY)
+    _check_segment(token.split(".")[1], scope)
     return SIGNATURE_PREFIX + token
 
 

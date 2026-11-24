@@ -141,6 +141,8 @@ The standalone `flechtctl` distribution — keyrings and secret tokens over an e
 
 ::: flechtctl.errors.SecretSignatureError
 
+::: flechtctl.errors.SecretSizeError
+
 ::: flechtctl.errors.UnsignedSecretError
 
 ::: flechtctl.keyring.KeyringError
