@@ -227,6 +227,12 @@ def test_one_byte_more_is_refused_when_written():
     assert sealed.value.size == signed.value.size == MAX_SEGMENT_BYTES + 2
 
 
+def test_an_unscoped_value_too_large_names_no_scope():
+    with pytest.raises(SecretSizeError) as error:
+        encrypt_bytes(OCT, bytes(LARGEST + 1))
+    assert str(error.value) == f"token segment of {MAX_SEGMENT_BYTES + 2} bytes exceeds the {MAX_SEGMENT_BYTES}-byte limit"
+
+
 # --- read_header ---
 
 
